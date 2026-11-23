@@ -574,8 +574,52 @@ def main() -> int:
         assert m_ds["polys"] == 4, f"Expected 4 polys (2 front + 2 back, 1 exact dup dropped), got {m_ds}"
         assert m_ds["verts"] == 8, f"Expected 8 verts (4 front + 4 unwelded back), got {m_ds}"
         assert m_ds["uv_layers"] == ["UVMap"] and m_ds["color_attrs"] == ["Color"], m_ds
-        assert any("2 double-sided faces kept unwelded, 1 exact duplicates removed" in inf for inf in r_ds["infos"]), r_ds["infos"]
+        assert any("2 double-sided and 0 layered faces kept unwelded, 1 exact duplicates removed" in inf for inf in r_ds["infos"]), r_ds["infos"]
         print("  PASS double_sided_kept_and_exact_dup_removed")
+
+        # Case 4c: Overlay / decal quad with identical geometry+winding but different material & UVs -> BOTH must survive
+        ov_verts = np.array(
+            [
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # base quad
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # decal overlay quad (same winding!)
+            ],
+            dtype=np.float32,
+        )
+        ov_norms = np.array([[0, 0, 1]] * 8, dtype=np.float32)
+        ov_uvs = np.array(
+            [
+                [0.0, 1.0], [1.0, 1.0], [1.0, 0.0], [0.0, 0.0],
+                [0.2, 0.8], [0.8, 0.8], [0.8, 0.2], [0.2, 0.2],
+            ],
+            dtype=np.float32,
+        )
+        ov_mesh = {
+            "type": 0,
+            "verts": ov_verts,
+            "tverts": ov_uvs,
+            "norms": ov_norms,
+            "primitives": [
+                (0, 6, 0x20000000 | 0),  # base_paint
+                (6, 6, 0x20000000 | 1),  # decal_logo
+            ],
+            "indices": np.array([0, 1, 2, 0, 2, 3, 4, 5, 6, 4, 6, 7], dtype=np.uint32),
+        }
+        c_ov = os.path.join(workdir, "overlay_decal_quad.cdae")
+        with open(c_ov, "wb") as f:
+            f.write(build_synthetic_cdae(
+                names=["Root", "DecalObj", "detail2"],
+                meshes=[ov_mesh],
+                materials=["base_paint", "decal_logo"],
+            ))
+        r_ov = _run_import(runner, worker_path, c_ov, workdir=workdir)
+        assert r_ov["ok"], r_ov["errors"]
+        assert not r_ov["warnings"], f"Expected 0 repair warnings on overlay mesh, got {r_ov['warnings']}"
+        m_ov = r_ov["meshes"][0]
+        assert m_ov["polys"] == 4, f"Expected all 4 polys (2 base + 2 overlay) to survive, got {m_ov}"
+        assert m_ov["verts"] == 8, f"Expected 8 verts (4 base + 4 unwelded overlay), got {m_ov}"
+        assert set(m_ov["materials"]) == {"base_paint", "decal_logo"}, m_ov
+        assert any("0 double-sided and 2 layered faces kept unwelded, 0 exact duplicates removed" in inf for inf in r_ov["infos"]), r_ov["infos"]
+        print("  PASS overlay_decal_quad_survives")
 
         # Case 4: Unsupported version (24) -> clear error naming version 24
         c4 = os.path.join(workdir, "bad_version.cdae")

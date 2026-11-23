@@ -204,26 +204,32 @@ def _merge_verts_by_distance(
 def _resolve_duplicate_faces(
     verts: np.ndarray,
     tris: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, np.ndarray]:
-    """Classify triangles sharing the same 3 vertices into double-sided vs exact duplicates.
+    tri_mats: np.ndarray,
+    uv0_loops: np.ndarray | None,
+    uv1_loops: np.ndarray | None,
+    col_loops: np.ndarray | None,
+    norm_loops: np.ndarray | None,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, int, np.ndarray]:
+    """Classify triangles sharing the same 3 vertices into double-sided, layered, or truly identical.
 
     - Opposite winding (same vertex set, reversed cyclic order): intentional double-sided
-      geometry. Keep both faces by assigning opposite-winding faces their own unwelded
-      vertex copies so Blender never treats them as duplicate polygons and UVs/colors/normals
-      are fully preserved.
-    - Same winding: exact duplicate junk; drop subsequent occurrences and their loop data.
+      geometry -> kept with dedicated unwelded vertex copies.
+    - Same winding, different material or differing per-corner UV0/UV1/color/normal:
+      overlay/decal layer -> kept with dedicated unwelded vertex copies.
+    - Same winding AND identical material, UV0, UV1, color, and normal (within tolerance):
+      truly identical duplicate junk -> dropped along with its loop data.
 
-    Returns (verts, tris, kept_mask, double_sided_kept, exact_dups_removed, extra_vert_sources).
+    Returns (verts, tris, kept_mask, double_sided_kept, layered_kept, exact_dups_removed, extra_vert_sources).
     """
     n_tris = len(tris)
     empty_src = np.empty(0, dtype=np.int32)
     if n_tris <= 1:
-        return verts, tris, np.ones(n_tris, dtype=bool), 0, 0, empty_src
+        return verts, tris, np.ones(n_tris, dtype=bool), 0, 0, 0, empty_src
 
     sorted_tris = np.sort(tris, axis=1)
     _, inv, counts = np.unique(sorted_tris, axis=0, return_inverse=True, return_counts=True)
     if not (counts > 1).any():
-        return verts, tris, np.ones(n_tris, dtype=bool), 0, 0, empty_src
+        return verts, tris, np.ones(n_tris, dtype=bool), 0, 0, 0, empty_src
 
     a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
     parity = (a < b).astype(np.int8) + (b < c).astype(np.int8) + (c < a).astype(np.int8)
@@ -235,42 +241,89 @@ def _resolve_duplicate_faces(
     split_pts = np.flatnonzero(np.diff(dup_groups)) + 1
     groups = np.split(dup_face_idx, split_pts)
 
+    uv0_f = uv0_loops.reshape(n_tris, 3, 2) if uv0_loops is not None else None
+    uv1_f = uv1_loops.reshape(n_tris, 3, 2) if uv1_loops is not None else None
+    col_f = col_loops.reshape(n_tris, 3, 4) if col_loops is not None else None
+    norm_f = norm_loops.reshape(n_tris, 3, 3) if norm_loops is not None else None
+
+    def _same_face_attrs(f0: int, fk: int) -> bool:
+        if int(tri_mats[f0]) != int(tri_mats[fk]):
+            return False
+        t0 = tris[f0].tolist()
+        tk = tris[fk].tolist()
+        # Same winding implies cyclic rotation aligns the 3 corners
+        shift = tk.index(t0[0])
+        perm = [shift, (shift + 1) % 3, (shift + 2) % 3]
+        if uv0_f is not None and float(np.abs(uv0_f[f0] - uv0_f[fk][perm]).max()) > 1e-4:
+            return False
+        if uv1_f is not None and float(np.abs(uv1_f[f0] - uv1_f[fk][perm]).max()) > 1e-4:
+            return False
+        if col_f is not None and float(np.abs(col_f[f0] - col_f[fk][perm]).max()) > 2e-3:
+            return False
+        if norm_f is not None and float(np.abs(norm_f[f0] - norm_f[fk][perm]).max()) > 1e-3:
+            return False
+        return True
+
     keep_mask = np.ones(n_tris, dtype=bool)
-    backside_faces: list[int] = []
+    # layer_faces[layer_idx] = list of face indices assigned to unwelded vertex layer (layer_idx >= 1)
+    layer_faces: list[list[int]] = []
+    double_sided_kept = 0
+    layered_kept = 0
     exact_dups_removed = 0
 
     for grp in groups:
-        seen_windings: set[int] = set()
+        # Track kept faces in this vertex-set group: list of (face_idx, winding)
+        kept_in_grp: list[tuple[int, int]] = []
         for fi in grp.tolist():
             w = int(parity[fi])
-            if w in seen_windings:
+            is_exact_dup = False
+            has_same_winding = False
+            for prev_fi, prev_w in kept_in_grp:
+                if prev_w == w:
+                    has_same_winding = True
+                    if _same_face_attrs(prev_fi, fi):
+                        is_exact_dup = True
+                        break
+            if is_exact_dup:
                 keep_mask[fi] = False
                 exact_dups_removed += 1
-            else:
-                if seen_windings:
-                    backside_faces.append(fi)
-                seen_windings.add(w)
+                continue
 
-    double_sided_kept = len(backside_faces)
+            layer_slot = len(kept_in_grp)
+            kept_in_grp.append((fi, w))
+            if layer_slot == 0:
+                continue  # stays on base merged vertex layer 0
+            if not has_same_winding:
+                double_sided_kept += 1
+            else:
+                layered_kept += 1
+            while len(layer_faces) < layer_slot:
+                layer_faces.append([])
+            layer_faces[layer_slot - 1].append(fi)
+
     out_tris = tris.copy()
     out_verts = verts
-    extra_src = empty_src
+    extra_src_parts: list[np.ndarray] = []
 
-    if backside_faces:
-        bf_arr = np.array(backside_faces, dtype=np.int32)
-        bf_verts = np.unique(out_tris[bf_arr])
-        base_idx = len(verts)
-        extra_verts = verts[bf_verts].copy()
-        out_verts = np.vstack([verts, extra_verts])
-        remap = np.arange(base_idx, dtype=np.int32)
-        remap[bf_verts] = np.arange(base_idx, base_idx + len(bf_verts), dtype=np.int32)
-        out_tris[bf_arr] = remap[out_tris[bf_arr]]
-        extra_src = bf_verts.astype(np.int32, copy=False)
+    if layer_faces:
+        vert_parts = [verts]
+        cur_base = len(verts)
+        for lf in layer_faces:
+            lf_arr = np.array(lf, dtype=np.int32)
+            lf_verts = np.unique(out_tris[lf_arr])
+            vert_parts.append(verts[lf_verts].copy())
+            remap = np.arange(len(verts), dtype=np.int32)
+            remap[lf_verts] = np.arange(cur_base, cur_base + len(lf_verts), dtype=np.int32)
+            out_tris[lf_arr] = remap[out_tris[lf_arr]]
+            extra_src_parts.append(lf_verts.astype(np.int32, copy=False))
+            cur_base += len(lf_verts)
+        out_verts = np.vstack(vert_parts)
 
+    extra_src = np.concatenate(extra_src_parts) if extra_src_parts else empty_src
     if exact_dups_removed > 0:
         out_tris = out_tris[keep_mask]
 
-    return out_verts, out_tris, keep_mask, double_sided_kept, exact_dups_removed, extra_src
+    return out_verts, out_tris, keep_mask, double_sided_kept, layered_kept, exact_dups_removed, extra_src
 
 
 class CdaeImporter:
@@ -611,12 +664,21 @@ class CdaeImporter:
             old_to_new = np.arange(len(verts), dtype=np.int32)
 
         # Classify duplicate faces sharing identical vertices: keep opposite-winding double-sided
-        # faces unwelded, and drop same-winding exact duplicate junk before me.validate().
-        verts, tris, dup_kept, n_double_sided, n_exact_dups, _extra_src = _resolve_duplicate_faces(verts, tris)
-        if n_double_sided > 0 or n_exact_dups > 0:
+        # faces and differing-material/attribute overlay layers unwelded; drop only truly identical
+        # duplicate junk before me.validate().
+        (
+            verts,
+            tris,
+            dup_kept,
+            n_double_sided,
+            n_layered,
+            n_exact_dups,
+            _extra_src,
+        ) = _resolve_duplicate_faces(verts, tris, tri_mats, uv0_loops, uv1_loops, col_loops, norm_loops)
+        if n_double_sided > 0 or n_layered > 0 or n_exact_dups > 0:
             self.infos.append(
-                f"Mesh '{mesh_name}': {n_double_sided} double-sided faces kept unwelded, "
-                f"{n_exact_dups} exact duplicates removed"
+                f"Mesh '{mesh_name}': {n_double_sided} double-sided and {n_layered} layered faces "
+                f"kept unwelded, {n_exact_dups} exact duplicates removed"
             )
             if n_exact_dups > 0:
                 tri_mats = tri_mats[dup_kept]
