@@ -51,7 +51,7 @@ def _quat16_to_blender(q16: np.ndarray) -> Quaternion:
     qz = float(q16[2]) / 32767.0
     qw = float(q16[3]) / 32767.0
     q = Quaternion((qw, -qx, -qy, -qz))
-    if q.length_squared > 0.0:
+    if q.magnitude > 0.0:
         q.normalize()
     else:
         q.identity()
