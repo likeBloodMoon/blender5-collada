@@ -333,13 +333,6 @@ class DocumentImporter:
         # 8. Match scale & up-axis rotation on root objects
         self._apply_unit_and_up_axis()
 
-        if pack_images:
-            for ima in self._loaded_images_from_archive:
-                try:
-                    ima.pack()
-                except Exception as e:
-                    self.warnings.append(f"Could not pack archive image {ima.name}: {e}")
-
         self.view_layer.update()
         return True
 
@@ -451,9 +444,16 @@ class DocumentImporter:
             try:
                 is_archive = self._archive_root is not None
                 ima = bpy.data.images.load(workpath, check_existing=not is_archive)
-                self.images_by_id[img_id] = ima
                 if is_archive:
+                    try:
+                        ima.pack()
+                    except Exception as e:
+                        self.warnings.append(f"Could not pack archive image {ima.name}: {e}")
+                        if ima.name in bpy.data.images:
+                            bpy.data.images.remove(ima)
+                        continue
                     self._loaded_images_from_archive.append(ima)
+                self.images_by_id[img_id] = ima
             except Exception as e:
                 self.warnings.append(f"Cannot load image {os.path.basename(workpath)}: {e}")
 

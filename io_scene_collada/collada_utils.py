@@ -415,7 +415,7 @@ def get_mesh_copy(
     """Return (mesh, needs_free).
 
     If apply_modifiers is True, gets evaluated mesh copy.
-    If triangulate is True, triangulates using SHORT_EDGE quad method and CLIP ngon method,
+    If triangulate is True, triangulates using SHORT_EDGE quad method and BEAUTY ngon method,
     matching bc_triangulate_mesh() in collada_utils.cpp.
     """
     if apply_modifiers:
