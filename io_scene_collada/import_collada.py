@@ -1326,58 +1326,71 @@ class DocumentImporter:
                     cur += vc
             me.from_pydata(verts_co, loose_edges, face_vert_indices)
 
+        if me.validate(clean_customdata=False):
+            self.warnings.append(f"Geometry '{geom_name}' had invalid data and was repaired")
+
         # Smooth/flat face flags (foreach_set)
         all_loop_normals = (
             (np.vstack(loop_norm_chunks) if len(loop_norm_chunks) > 1 else loop_norm_chunks[0])
             if (has_all_loop_normals and loop_norm_chunks)
             else None
         )
-        if total_faces > 0 and len(me.polygons) == total_faces:
-            if self.settings.sharp_edges_from_normals and all_loop_normals is not None and len(all_loop_normals) == len(me.loops):
+        cur_n_loops = len(me.loops)
+        cur_n_polys = len(me.polygons)
+        if total_faces > 0 and cur_n_polys == total_faces:
+            if self.settings.sharp_edges_from_normals and all_loop_normals is not None and len(all_loop_normals) == cur_n_loops:
                 me.polygons.foreach_set("use_smooth", np.ones(total_faces, dtype=bool))
             elif face_sharp_chunks:
                 all_sharp = np.concatenate(face_sharp_chunks) if len(face_sharp_chunks) > 1 else face_sharp_chunks[0]
                 me.polygons.foreach_set("use_smooth", np.logical_not(all_sharp))
 
-        # UVs (foreach_set)
-        for u_id in uv_set_order:
-            chunks = uv_chunks[u_id]
-            uv_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
-            if len(uv_arr) == len(me.loops):
-                uv_layer = me.uv_layers.new(name=u_id)
-                uv_layer.data.foreach_set("uv", uv_arr.ravel())
+        loops_match = (cur_n_loops == total_loops)
+        if not loops_match and (uv_set_order or col_set_order or all_loop_normals is not None):
+            self.warnings.append(
+                f"Geometry '{geom_name}': skipped per-loop UVs/colors/normals after mesh repair "
+                f"(loop count changed from {total_loops} to {cur_n_loops})"
+            )
 
-        # Byte Color Attributes (foreach_set)
-        for cn in col_set_order:
-            chunks = col_chunks[cn]
-            c_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
-            if len(c_arr) == len(me.loops):
-                cattr = me.color_attributes.new(name=cn, type="BYTE_COLOR", domain="CORNER")
-                cattr.data.foreach_set("color_srgb", c_arr.ravel())
+        if loops_match:
+            # UVs (foreach_set)
+            for u_id in uv_set_order:
+                chunks = uv_chunks[u_id]
+                uv_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+                if len(uv_arr) == cur_n_loops:
+                    uv_layer = me.uv_layers.new(name=u_id)
+                    uv_layer.data.foreach_set("uv", uv_arr.ravel())
 
-        # Custom normals / Clean sharp edges from normals
-        if all_loop_normals is not None and len(all_loop_normals) == len(me.loops) and len(all_loop_normals) > 0:
-            if self.settings.sharp_edges_from_normals:
-                self._apply_sharp_edges_from_normals(me, all_loop_normals, self.settings.sharp_angle_threshold)
-            elif self.settings.custom_normals:
-                if self.settings.fast_exact_normals:
-                    try:
-                        cn = me.attributes.get("custom_normal")
-                        if cn is not None and (cn.data_type != "FLOAT_VECTOR" or cn.domain != "CORNER"):
-                            me.attributes.remove(cn)
-                            cn = None
-                        if cn is None:
-                            cn = me.attributes.new(name="custom_normal", type="FLOAT_VECTOR", domain="CORNER")
-                        cn.data.foreach_set("vector", all_loop_normals.ravel())
-                    except Exception as e:
-                        self.warnings.append(f"Fast exact normals failed on {geom_name}, falling back: {e}")
-                        me.normals_split_custom_set(all_loop_normals.tolist())
-                else:
-                    try:
-                        # Passing a Python list is ~2.5x faster than passing an ndarray to Blender's RNA wrapper
-                        me.normals_split_custom_set(all_loop_normals.tolist())
-                    except Exception as e:
-                        self.warnings.append(f"Could not set custom normals on {geom_name}: {e}")
+            # Byte Color Attributes (foreach_set)
+            for cn in col_set_order:
+                chunks = col_chunks[cn]
+                c_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+                if len(c_arr) == cur_n_loops:
+                    cattr = me.color_attributes.new(name=cn, type="BYTE_COLOR", domain="CORNER")
+                    cattr.data.foreach_set("color_srgb", c_arr.ravel())
+
+            # Custom normals / Clean sharp edges from normals
+            if all_loop_normals is not None and len(all_loop_normals) == cur_n_loops and len(all_loop_normals) > 0:
+                if self.settings.sharp_edges_from_normals:
+                    self._apply_sharp_edges_from_normals(me, all_loop_normals, self.settings.sharp_angle_threshold)
+                elif self.settings.custom_normals:
+                    if self.settings.fast_exact_normals:
+                        try:
+                            cn = me.attributes.get("custom_normal")
+                            if cn is not None and (cn.data_type != "FLOAT_VECTOR" or cn.domain != "CORNER"):
+                                me.attributes.remove(cn)
+                                cn = None
+                            if cn is None:
+                                cn = me.attributes.new(name="custom_normal", type="FLOAT_VECTOR", domain="CORNER")
+                            cn.data.foreach_set("vector", all_loop_normals.ravel())
+                        except Exception as e:
+                            self.warnings.append(f"Fast exact normals failed on {geom_name}, falling back: {e}")
+                            me.normals_split_custom_set(all_loop_normals.tolist())
+                    else:
+                        try:
+                            # Passing a Python list is ~2.5x faster than passing an ndarray to Blender's RNA wrapper
+                            me.normals_split_custom_set(all_loop_normals.tolist())
+                        except Exception as e:
+                            self.warnings.append(f"Could not set custom normals on {geom_name}: {e}")
 
         me.update()
         self.meshes_by_id[geom_id] = me
