@@ -399,8 +399,9 @@ with open(out_json, "w", encoding="utf-8") as f:
 '''
 
 
-def _run_import(runner: list[str], worker_path: str, cdae_path: str, opts: dict | None = None) -> dict:
-    out_json = cdae_path + ".out.json"
+def _run_import(runner: list[str], worker_path: str, cdae_path: str, opts: dict | None = None, workdir: str | None = None) -> dict:
+    base_dir = workdir or os.path.dirname(cdae_path)
+    out_json = os.path.join(base_dir, os.path.basename(cdae_path) + ".out.json")
     opts_str = json.dumps(opts or {})
     if runner[0] == sys.executable:
         cmd = [runner[0], worker_path, REPO_ROOT, cdae_path, out_json, opts_str]
@@ -526,6 +527,56 @@ def main() -> int:
         assert any("2 animation sequence" in inf for inf in r3["infos"]), r3["infos"]
         print("  PASS skin_mesh_armature_and_sequence_info")
 
+        # Case 4b: Double-sided quad (opposite winding kept unwelded) + exact-duplicate triangle (dropped)
+        # Front quad: 2 tris (0,1,2) & (0,2,3); back quad: 2 tris (4,6,5) & (4,7,6) at identical positions;
+        # plus 1 exact same-winding duplicate of front tri (0,1,2) using verts (8,9,10).
+        ds_verts = np.array(
+            [
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # front
+                [0, 0, 0], [1, 0, 0], [1, 1, 0], [0, 1, 0],  # back
+                [0, 0, 0], [1, 0, 0], [1, 1, 0],             # exact dup of first front tri
+            ],
+            dtype=np.float32,
+        )
+        ds_norms = np.array(
+            [[0, 0, 1]] * 4 + [[0, 0, -1]] * 4 + [[0, 0, 1]] * 3,
+            dtype=np.float32,
+        )
+        ds_uvs = np.array(
+            [
+                [0, 1], [1, 1], [1, 0], [0, 0],
+                [0, 1], [1, 1], [1, 0], [0, 0],
+                [0, 1], [1, 1], [1, 0],
+            ],
+            dtype=np.float32,
+        )
+        ds_cols = np.full((11, 4), 255, dtype=np.uint8)
+        ds_mesh = {
+            "type": 0,
+            "verts": ds_verts,
+            "tverts": ds_uvs,
+            "colors": ds_cols,
+            "norms": ds_norms,
+            "primitives": [(0, 15, 0x20000000 | 0)],
+            "indices": np.array([0, 1, 2, 0, 2, 3, 4, 6, 5, 4, 7, 6, 8, 9, 10], dtype=np.uint32),
+        }
+        c_ds = os.path.join(workdir, "double_sided_and_exact_dup.cdae")
+        with open(c_ds, "wb") as f:
+            f.write(build_synthetic_cdae(
+                names=["Root", "GlassObj", "detail2"],
+                meshes=[ds_mesh],
+                materials=["glass_mat"],
+            ))
+        r_ds = _run_import(runner, worker_path, c_ds, workdir=workdir)
+        assert r_ds["ok"], r_ds["errors"]
+        assert not r_ds["warnings"], f"Expected 0 repair warnings on double-sided mesh, got {r_ds['warnings']}"
+        m_ds = r_ds["meshes"][0]
+        assert m_ds["polys"] == 4, f"Expected 4 polys (2 front + 2 back, 1 exact dup dropped), got {m_ds}"
+        assert m_ds["verts"] == 8, f"Expected 8 verts (4 front + 4 unwelded back), got {m_ds}"
+        assert m_ds["uv_layers"] == ["UVMap"] and m_ds["color_attrs"] == ["Color"], m_ds
+        assert any("2 double-sided faces kept unwelded, 1 exact duplicates removed" in inf for inf in r_ds["infos"]), r_ds["infos"]
+        print("  PASS double_sided_kept_and_exact_dup_removed")
+
         # Case 4: Unsupported version (24) -> clear error naming version 24
         c4 = os.path.join(workdir, "bad_version.cdae")
         with open(c4, "wb") as f:
@@ -606,7 +657,7 @@ for p in argv[1:]:
                 print(f"  Testing {len(real_files)} real .cdae file(s) from {local_dir}...")
                 for rf in real_files:
                     for mode in ("HIGHEST", "ALL"):
-                        rr = _run_import(runner, worker_path, rf, {"lod_mode": mode})
+                        rr = _run_import(runner, worker_path, rf, {"lod_mode": mode}, workdir=workdir)
                         assert rr["ok"], f"Real file {rf} ({mode}) failed: {rr['errors']}"
                         assert any(m["polys"] > 0 for m in rr["meshes"]), f"Real file {rf} ({mode}) had 0 polys"
                     print(f"    PASS real {os.path.basename(rf)}")

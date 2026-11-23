@@ -201,6 +201,78 @@ def _merge_verts_by_distance(
     return merged_verts, remapped[kept], kept, old_to_new
 
 
+def _resolve_duplicate_faces(
+    verts: np.ndarray,
+    tris: np.ndarray,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, int, int, np.ndarray]:
+    """Classify triangles sharing the same 3 vertices into double-sided vs exact duplicates.
+
+    - Opposite winding (same vertex set, reversed cyclic order): intentional double-sided
+      geometry. Keep both faces by assigning opposite-winding faces their own unwelded
+      vertex copies so Blender never treats them as duplicate polygons and UVs/colors/normals
+      are fully preserved.
+    - Same winding: exact duplicate junk; drop subsequent occurrences and their loop data.
+
+    Returns (verts, tris, kept_mask, double_sided_kept, exact_dups_removed, extra_vert_sources).
+    """
+    n_tris = len(tris)
+    empty_src = np.empty(0, dtype=np.int32)
+    if n_tris <= 1:
+        return verts, tris, np.ones(n_tris, dtype=bool), 0, 0, empty_src
+
+    sorted_tris = np.sort(tris, axis=1)
+    _, inv, counts = np.unique(sorted_tris, axis=0, return_inverse=True, return_counts=True)
+    if not (counts > 1).any():
+        return verts, tris, np.ones(n_tris, dtype=bool), 0, 0, empty_src
+
+    a, b, c = tris[:, 0], tris[:, 1], tris[:, 2]
+    parity = (a < b).astype(np.int8) + (b < c).astype(np.int8) + (c < a).astype(np.int8)
+
+    dup_face_idx = np.flatnonzero(counts[inv] > 1)
+    order = np.argsort(inv[dup_face_idx], kind="stable")
+    dup_face_idx = dup_face_idx[order]
+    dup_groups = inv[dup_face_idx]
+    split_pts = np.flatnonzero(np.diff(dup_groups)) + 1
+    groups = np.split(dup_face_idx, split_pts)
+
+    keep_mask = np.ones(n_tris, dtype=bool)
+    backside_faces: list[int] = []
+    exact_dups_removed = 0
+
+    for grp in groups:
+        seen_windings: set[int] = set()
+        for fi in grp.tolist():
+            w = int(parity[fi])
+            if w in seen_windings:
+                keep_mask[fi] = False
+                exact_dups_removed += 1
+            else:
+                if seen_windings:
+                    backside_faces.append(fi)
+                seen_windings.add(w)
+
+    double_sided_kept = len(backside_faces)
+    out_tris = tris.copy()
+    out_verts = verts
+    extra_src = empty_src
+
+    if backside_faces:
+        bf_arr = np.array(backside_faces, dtype=np.int32)
+        bf_verts = np.unique(out_tris[bf_arr])
+        base_idx = len(verts)
+        extra_verts = verts[bf_verts].copy()
+        out_verts = np.vstack([verts, extra_verts])
+        remap = np.arange(base_idx, dtype=np.int32)
+        remap[bf_verts] = np.arange(base_idx, base_idx + len(bf_verts), dtype=np.int32)
+        out_tris[bf_arr] = remap[out_tris[bf_arr]]
+        extra_src = bf_verts.astype(np.int32, copy=False)
+
+    if exact_dups_removed > 0:
+        out_tris = out_tris[keep_mask]
+
+    return out_verts, out_tris, keep_mask, double_sided_kept, exact_dups_removed, extra_src
+
+
 class CdaeImporter:
     """Imports a BeamNG .cdae v31 file into the active Blender scene."""
 
@@ -271,26 +343,13 @@ class CdaeImporter:
         # Select detail levels to import
         selected_details = self._select_details(shape)
 
-        # Create node hierarchy (Empties) in scene collection
-        node_empties: list = []
-        for i in range(n_nodes):
-            node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
-            ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
-            self.scene.collection.objects.link(ob_empty)
-            ob_empty.matrix_basis = local_mats[i]
-            ob_empty.select_set(True)
-            node_empties.append(ob_empty)
-
-        for i in range(n_nodes):
-            parent_idx = int(shape.nodes[i]["parent_index"])
-            if 0 <= parent_idx < n_nodes and parent_idx != i:
-                node_empties[i].parent = node_empties[parent_idx]
-
         # Build an Armature only if any selected mesh is a SkinMesh
         has_skin = any(m.mesh_type == MESH_TYPE_SKIN for m in shape.meshes)
         ob_armature = self._build_armature(shape, world_mats) if (has_skin and n_nodes > 0) else None
 
-        # Import objects per selected detail level
+        # Pre-collect (obj_i, obj_det, target_coll) pairs to import so 1-to-1 node+mesh
+        # pairs become a single mesh Object (matching .dae naming without .001 suffixes).
+        import_jobs: list[tuple[int, int, object]] = []
         if selected_details:
             for det_idx, det in selected_details:
                 det_name = _safe_name(shape.names, int(det["name_index"]), f"Detail_{det_idx}")
@@ -308,15 +367,88 @@ class CdaeImporter:
                     target_coll = self.scene.collection
 
                 for obj_i in range(first_obj, min(first_obj + num_objs, len(shape.objects))):
-                    self._import_object_at_detail(
-                        shape, obj_i, obj_det, materials, node_empties, ob_armature, target_coll
-                    )
+                    import_jobs.append((obj_i, obj_det, target_coll))
         else:
-            # Fallback if shape has no details table: import first mesh of every object
             for obj_i in range(len(shape.objects)):
-                self._import_object_at_detail(
-                    shape, obj_i, 0, materials, node_empties, ob_armature, self.scene.collection
-                )
+                import_jobs.append((obj_i, 0, self.scene.collection))
+
+        # Count how many valid non-skin jobs attach to each node
+        node_job_counts: dict[int, int] = {}
+        for obj_i, obj_det, target_coll in import_jobs:
+            obj = shape.objects[obj_i]
+            if 0 <= obj_det < int(obj["num_meshes"]):
+                mi = int(obj["start_mesh_index"]) + obj_det
+                if 0 <= mi < len(shape.meshes) and shape.meshes[mi].mesh_type not in (MESH_TYPE_NULL, MESH_TYPE_SKIN):
+                    ni = int(obj["node_index"])
+                    if 0 <= ni < n_nodes:
+                        node_job_counts[ni] = node_job_counts.get(ni, 0) + 1
+
+        # Create node objects: defer creating an Empty if a single non-skin mesh in the
+        # scene collection will occupy this node directly with the same name.
+        node_objects: list = [None] * n_nodes
+        direct_node_jobs: set[tuple[int, int]] = set()
+        if self.settings.lod_mode != "ALL":
+            for obj_i, obj_det, target_coll in import_jobs:
+                obj = shape.objects[obj_i]
+                ni = int(obj["node_index"])
+                if 0 <= ni < n_nodes and node_job_counts.get(ni) == 1 and target_coll == self.scene.collection:
+                    node_name = _safe_name(shape.names, int(shape.nodes[ni]["name_index"]), f"Node_{ni}")
+                    obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
+                    if obj_name == node_name:
+                        direct_node_jobs.add((obj_i, obj_det))
+
+        for i in range(n_nodes):
+            # Will be filled by mesh object if claimed in direct_node_jobs
+            if any(int(shape.objects[oi]["node_index"]) == i for oi, _ in direct_node_jobs):
+                continue
+            node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
+            ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
+            self.scene.collection.objects.link(ob_empty)
+            ob_empty.matrix_basis = local_mats[i]
+            ob_empty.select_set(True)
+            node_objects[i] = ob_empty
+
+        # Build mesh objects
+        deferred_children: list[tuple[object, int]] = []
+        for obj_i, obj_det, target_coll in import_jobs:
+            is_direct = (obj_i, obj_det) in direct_node_jobs
+            ob = self._import_object_at_detail(
+                shape,
+                obj_i,
+                obj_det,
+                materials,
+                node_objects,
+                ob_armature,
+                target_coll,
+                local_mats=local_mats,
+                direct_node=is_direct,
+            )
+            if ob is not None and not is_direct:
+                obj = shape.objects[obj_i]
+                mi = int(obj["start_mesh_index"]) + obj_det
+                if shape.meshes[mi].mesh_type != MESH_TYPE_SKIN:
+                    ni = int(obj["node_index"])
+                    if 0 <= ni < n_nodes:
+                        deferred_children.append((ob, ni))
+
+        # Ensure any direct node whose mesh was empty still gets an Empty so parenting works
+        for i in range(n_nodes):
+            if node_objects[i] is None:
+                node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
+                ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
+                self.scene.collection.objects.link(ob_empty)
+                ob_empty.matrix_basis = local_mats[i]
+                ob_empty.select_set(True)
+                node_objects[i] = ob_empty
+
+        # Hook up node hierarchy parenting
+        for i in range(n_nodes):
+            parent_idx = int(shape.nodes[i]["parent_index"])
+            if 0 <= parent_idx < n_nodes and parent_idx != i:
+                node_objects[i].parent = node_objects[parent_idx]
+
+        for ob, ni in deferred_children:
+            ob.parent = node_objects[ni]
 
         self.view_layer.update()
         return True
@@ -359,26 +491,29 @@ class CdaeImporter:
         obj_i: int,
         obj_det: int,
         materials: list,
-        node_empties: list,
+        node_objects: list,
         ob_armature,
         target_coll,
-    ) -> None:
+        *,
+        local_mats: list[Matrix] | None = None,
+        direct_node: bool = False,
+    ):
         obj = shape.objects[obj_i]
         num_meshes = int(obj["num_meshes"])
         start_mesh = int(obj["start_mesh_index"])
         if obj_det < 0 or obj_det >= num_meshes:
-            return
+            return None
         mesh_idx = start_mesh + obj_det
         if mesh_idx < 0 or mesh_idx >= len(shape.meshes):
-            return
+            return None
         c_mesh = shape.meshes[mesh_idx]
         if c_mesh.mesh_type == MESH_TYPE_NULL:
-            return
+            return None
 
         obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
         me, old_to_new = self._build_blender_mesh(c_mesh, obj_name, materials)
         if me is None:
-            return
+            return None
 
         ob = bpy.data.objects.new(name=obj_name, object_data=me)
         target_coll.objects.link(ob)
@@ -389,8 +524,10 @@ class CdaeImporter:
         if c_mesh.mesh_type == MESH_TYPE_SKIN and ob_armature is not None:
             ob.parent = ob_armature
             self._apply_skin_weights(shape, c_mesh, ob, ob_armature, old_to_new)
-        elif 0 <= node_idx < len(node_empties):
-            ob.parent = node_empties[node_idx]
+        elif direct_node and 0 <= node_idx < len(node_objects) and local_mats is not None:
+            ob.matrix_basis = local_mats[node_idx]
+            node_objects[node_idx] = ob
+        return ob
 
     def _build_blender_mesh(
         self,
@@ -472,6 +609,26 @@ class CdaeImporter:
                     norm_loops = norm_loops[kept_loops]
         else:
             old_to_new = np.arange(len(verts), dtype=np.int32)
+
+        # Classify duplicate faces sharing identical vertices: keep opposite-winding double-sided
+        # faces unwelded, and drop same-winding exact duplicate junk before me.validate().
+        verts, tris, dup_kept, n_double_sided, n_exact_dups, _extra_src = _resolve_duplicate_faces(verts, tris)
+        if n_double_sided > 0 or n_exact_dups > 0:
+            self.infos.append(
+                f"Mesh '{mesh_name}': {n_double_sided} double-sided faces kept unwelded, "
+                f"{n_exact_dups} exact duplicates removed"
+            )
+            if n_exact_dups > 0:
+                tri_mats = tri_mats[dup_kept]
+                kept_loops = np.repeat(dup_kept, 3)
+                if uv0_loops is not None:
+                    uv0_loops = uv0_loops[kept_loops]
+                if uv1_loops is not None:
+                    uv1_loops = uv1_loops[kept_loops]
+                if col_loops is not None:
+                    col_loops = col_loops[kept_loops]
+                if norm_loops is not None:
+                    norm_loops = norm_loops[kept_loops]
 
         total_faces = len(tris)
         if total_faces == 0:

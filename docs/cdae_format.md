@@ -179,22 +179,26 @@ Each `TSDrawPrimitive` is 12 bytes (`<3i`: `start`, `numElements`, `matIndex`) [
 
 ---
 
-## 6. Dependencies & Bundling Plan (Phase 0.4)
+## 6. Dependencies (Phase 0.4)
 
 - **MsgPack**: Pure-Python `io_scene_collada/cdae/msgpack_lite.py` implementing only the MsgPack types used by v31 (positive/negative fixint, `uint8/16/32/64`, `int8/16/32/64`, `bool`, `nil`, `float32/64`, `fixstr`/`str8/16/32`, `bin8/16/32`, `fixarray`/`array16/32`, `fixmap`/`map16/32`). Binary payloads (`pack_vector` data) are sliced as `memoryview` and read directly via `numpy.frombuffer`.
-- **Zstandard (`zstandard==0.25.0`)**: Verified on PyPI (`https://pypi.org/pypi/zstandard/json`) — prebuilt wheels exist for **all 4 target platforms** and **both Blender Python ABIs** (`cp311` for Blender 5.0, `cp313` for Blender 5.1/5.3):
-  - `windows-x64`: `zstandard-0.25.0-cp311-cp311-win_amd64.whl`, `zstandard-0.25.0-cp313-cp313-win_amd64.whl`
-  - `linux-x64`: `zstandard-0.25.0-cp311-cp311-manylinux2014_x86_64.manylinux_2_17_x86_64.whl`, `zstandard-0.25.0-cp313-cp313-manylinux2014_x86_64.manylinux_2_17_x86_64.whl`
-  - `macos-arm64`: `zstandard-0.25.0-cp311-cp311-macosx_11_0_arm64.whl`, `zstandard-0.25.0-cp313-cp313-macosx_11_0_arm64.whl`
-  - `macos-x64`: `zstandard-0.25.0-cp311-cp311-macosx_10_9_x86_64.whl`, `zstandard-0.25.0-cp313-cp313-macosx_10_13_x86_64.whl`
-- If `zstandard` is unavailable at runtime, reading a compressed `.cdae` reports a clear error (never a traceback), and writing uncompressed `.cdae` (`compression=False`) works without `zstandard`.
+- **Zstandard (`zstandard`)**: Not bundled as a wheel for now — imported at runtime from Blender's bundled Python environment (confirmed present as `zstandard 0.25.0` in local Blender 5.3.0; real Blender 5.0.x to be checked separately). If `zstandard` is unavailable at runtime, reading a compressed `.cdae` reports a clear error (never a traceback), and writing uncompressed `.cdae` (`compression=False`) works without `zstandard`.
 
 ---
 
-## 7. Items Pending Verification Against Real BeamNG `.cdae` Files
+## 7. Real BeamNG File Verification Status
 
-No local BeamNG.drive installation was found in default Steam paths (`C:/D:/E:`). Once real `.cdae` files are placed in `tests/_local_cdae/` (or pointed to via `CDAE_LOCAL_DIR`), Phase 1.5 and Phase 2.3 will verify:
-1. Whether real BeamNG v31 files ever use `Point3F`/`Box3F` as MsgPack lists vs `bin`, or `TSIntegerSet` as `bytes` vs `list`.
-2. Whether real BeamNG v31 files populate `encodedNorms` alongside `norms`, or leave `encodedNorms` empty.
-3. Exact `Quat16` sign & `initialTransforms` (row-major vs column-major) match against a paired `.dae` + `.cdae` from BeamNG.
-4. Where BeamNG writes cached `.cdae` files in the user folder (`%LOCALAPPDATA%/BeamNG.drive/<ver>/temp/` or alongside the `.dae`).
+### Verified Against Paired Real BeamNG `.dae` / `.cdae` Files (`tests/_local_cdae/`, git-ignored)
+Verified against 3 confirmed true pairs: `wigeon_bigwing` (`9` objs, `1,660` tris), `wigeon` (`108` objs, `83,937` tris), and `midtruck` (`279` objs, `282,940` tris, Zstd-compressed):
+1. **Outer container & Zstd compression** (`midtruck.cdae`, `wigeon.cdae`, `wigeon_bigwing.cdae`): `version=31 (exporter=124)`, MsgPack header map with `compression` (`True` on `midtruck`, `False` on `wigeon`/`wigeon_bigwing`) and on-disk `bodysize`; `Point3F` and `Box3F` encoded as MsgPack `list`s; every `pack_vector` `elemSize` matches §3.2/§3.4 exactly.
+2. **`encodedNorms` vs `norms`** (`midtruck.cdae`, `wigeon.cdae`, `wigeon_bigwing.cdae`): `0/396` meshes populate `encodedNorms`; all `396/396` store explicit `<3f` `norms` and `<4f` `tangents`.
+3. **`Quat16` conjugate sign rule** (`wigeon` 10 rotated nodes, `midtruck` 17 rotated nodes): `Quaternion((w, -x, -y, -z)).normalized()` matches `.dae` world rotations to `max 0.0396°` (`0.0000°` on `wigeon_steering_wheel` `101.43°`, `wigeon_pedal_gas` `140.60°`, `midtruck_shifter_tcase` `90.00°`), whereas non-conjugate fails by up to `180.0°`. Max world location error `0.000000 m`.
+4. **UV V-axis flip (`1.0 - v`)** (`wigeon_bigwing`, `wigeon`, `midtruck`): UV0 & UV1 match `.dae` with median `0.000000` error (`UV1 max 0.000015`) with `1.0 - v` flip vs `0.51–359.7` error without flip.
+5. **Vertex color space (`ColorI` sRGB bytes)** (`wigeon.wigeon_wiper`, `midtruck` 12 body objects): BeamNG stores **sRGB uint8 bytes** directly in `mesh.colors`, matching Blender `BYTE_COLOR` `color_srgb` (`wigeon_wiper`: `0.00000` max diff vs `0.09163` linear; `midtruck`: `0.00000` median / `0.00392 = 1/255` max diff vs `0.27827` linear).
+6. **Per-face material assignment & normals** (`wigeon_bigwing`, `wigeon`, `midtruck`): `100.00%` per-face material name match across `179,148` matched triangles; normal angle median `0.0027°`, p99 `≤ 0.028°`.
+
+### Still Open (Unverified Against Real Files)
+1. **`SkinMesh` (`meshType=1`) & `initialTransforms` row-major vs column-major order**: `0` skinned meshes in the 3 local files.
+2. **`parentMesh >= 0` child-mesh data sharing**: `0` child meshes with `parentMesh >= 0` in the 3 local files (verified against Torque3D MIT source & synthetic test only).
+3. **`TSIntegerSet` encoding in real animated `.cdae` files**: `0` sequences in the 3 local files.
+4. **BeamNG cache write location**: where BeamNG writes generated `.cdae` files from a custom `.dae` (to be confirmed during Phase 2.3).
