@@ -51,10 +51,10 @@ def get_native_lib() -> ctypes.CDLL | None:
         lib.fmt_i32_array_mt.argtypes = [ctypes.c_void_p, ctypes.c_size_t, ctypes.c_char_p, ctypes.c_int]
         lib.fmt_i32_array_mt.restype = ctypes.c_size_t
 
-        lib.parse_f32.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t]
+        lib.parse_f32.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int)]
         lib.parse_f32.restype = ctypes.c_size_t
 
-        lib.parse_i32.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t]
+        lib.parse_i32.argtypes = [ctypes.c_char_p, ctypes.c_size_t, ctypes.c_void_p, ctypes.c_size_t, ctypes.POINTER(ctypes.c_int)]
         lib.parse_i32.restype = ctypes.c_size_t
 
         _LIB = lib
@@ -101,12 +101,15 @@ def native_parse_f32(text: str):
         return None
     import numpy as np
 
-    raw = text.encode("ascii", errors="ignore")
+    raw = text.encode("ascii", errors="replace")
     if not raw:
         return np.empty(0, dtype=np.float32)
     cap = len(raw) // 2 + 2
     out = np.empty(cap, dtype=np.float32)
-    n = lib.parse_f32(raw, len(raw), out.ctypes.data, cap)
+    ok = ctypes.c_int(0)
+    n = lib.parse_f32(raw, len(raw), out.ctypes.data, cap, ctypes.byref(ok))
+    if ok.value == 0:
+        return None
     return out[:n].copy()
 
 
@@ -116,10 +119,13 @@ def native_parse_i32(text: str):
         return None
     import numpy as np
 
-    raw = text.encode("ascii", errors="ignore")
+    raw = text.encode("ascii", errors="replace")
     if not raw:
         return np.empty(0, dtype=np.int32)
     cap = len(raw) // 2 + 2
     out = np.empty(cap, dtype=np.int32)
-    n = lib.parse_i32(raw, len(raw), out.ctypes.data, cap)
+    ok = ctypes.c_int(0)
+    n = lib.parse_i32(raw, len(raw), out.ctypes.data, cap, ctypes.byref(ok))
+    if ok.value == 0:
+        return None
     return out[:n].copy()

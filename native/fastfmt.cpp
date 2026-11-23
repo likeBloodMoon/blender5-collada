@@ -97,34 +97,58 @@ extern "C" COLLADA_API size_t fmt_i32_array_mt(const int32_t* a, size_t n, char*
     return static_cast<size_t>(p - out);
 }
 
-// Parse whitespace-separated floats (for <float_array>): returns count parsed
-extern "C" COLLADA_API size_t parse_f32(const char* s, size_t len, float* out, size_t cap) {
+// Parse whitespace-separated floats (for <float_array>): returns count parsed.
+// Sets *ok = 1 if entire input was consumed (ignoring trailing whitespace), else 0.
+extern "C" COLLADA_API size_t parse_f32(const char* s, size_t len, float* out, size_t cap, int* ok) {
     const char* p = s;
     const char* e = s + len;
     size_t n = 0;
-    while (p < e && n < cap) {
+    int all_ok = 1;
+    while (p < e) {
         while (p < e && (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r')) ++p;
         if (p >= e) break;
+        if (n >= cap) {
+            all_ok = 0;
+            break;
+        }
+        // std::from_chars rejects a leading '+'
+        if (*p == '+' && (p + 1 < e) && p[1] != '+' && p[1] != '-') ++p;
         auto r = std::from_chars(p, e, out[n]);
-        if (r.ec != std::errc()) break;
+        if (r.ec != std::errc() || (r.ptr < e && !(*r.ptr == ' ' || *r.ptr == '\n' || *r.ptr == '\t' || *r.ptr == '\r'))) {
+            all_ok = 0;
+            break;
+        }
         ++n;
         p = r.ptr;
     }
+    if (ok) *ok = all_ok;
     return n;
 }
 
-// Parse whitespace-separated int32s (for <p> / <vcount>): returns count parsed
-extern "C" COLLADA_API size_t parse_i32(const char* s, size_t len, int32_t* out, size_t cap) {
+// Parse whitespace-separated int32s (for <p> / <vcount>): returns count parsed.
+// Sets *ok = 1 if entire input was consumed (ignoring trailing whitespace), else 0.
+extern "C" COLLADA_API size_t parse_i32(const char* s, size_t len, int32_t* out, size_t cap, int* ok) {
     const char* p = s;
     const char* e = s + len;
     size_t n = 0;
-    while (p < e && n < cap) {
+    int all_ok = 1;
+    while (p < e) {
         while (p < e && (*p == ' ' || *p == '\n' || *p == '\t' || *p == '\r')) ++p;
         if (p >= e) break;
+        if (n >= cap) {
+            all_ok = 0;
+            break;
+        }
+        // std::from_chars rejects a leading '+'
+        if (*p == '+' && (p + 1 < e) && p[1] != '+' && p[1] != '-') ++p;
         auto r = std::from_chars(p, e, out[n]);
-        if (r.ec != std::errc()) break;
+        if (r.ec != std::errc() || (r.ptr < e && !(*r.ptr == ' ' || *r.ptr == '\n' || *r.ptr == '\t' || *r.ptr == '\r'))) {
+            all_ok = 0;
+            break;
+        }
         ++n;
         p = r.ptr;
     }
+    if (ok) *ok = all_ok;
     return n;
 }
