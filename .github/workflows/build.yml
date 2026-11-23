@@ -1,4 +1,4 @@
-name: Build & Parity Tests
+name: Build, Lint & Parity Tests
 
 on:
   push:
@@ -10,16 +10,91 @@ on:
 
 env:
   BLENDER_45_VER: "4.5.1"
-  BLENDER_5X_VER: "5.3.0"
 
 jobs:
-  test-and-package:
+  lint:
     runs-on: ubuntu-latest
-    permissions:
-      contents: write
     steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - name: Run ruff lint check
+        run: |
+          python3 -m pip install --quiet ruff
+          ruff check io_scene_collada
+
+  build-native:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - platform: linux-x64
+            os: ubuntu-latest
+            lib: libfastfmt.so
+          - platform: windows-x64
+            os: windows-latest
+            lib: fastfmt.dll
+          - platform: macos-arm64
+            os: macos-14
+            lib: libfastfmt.dylib
+          - platform: macos-x64
+            os: macos-14
+            lib: libfastfmt.dylib
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build native fastfmt (linux-x64)
+        if: matrix.platform == 'linux-x64'
+        run: |
+          mkdir -p io_scene_collada/_native
+          g++ -O3 -std=c++17 -shared -fPIC -pthread native/fastfmt.cpp -o io_scene_collada/_native/libfastfmt.so
+          python3 -m pip install --quiet numpy
+          python3 tests/fuzz_fastfmt.py
+
+      - name: Build native fastfmt (windows-x64)
+        if: matrix.platform == 'windows-x64'
+        shell: cmd
+        run: |
+          call "C:\Program Files\Microsoft Visual Studio\2022\Enterprise\VC\Auxiliary\Build\vcvars64.bat"
+          mkdir io_scene_collada\_native
+          cl /O2 /std:c++17 /LD /EHsc native\fastfmt.cpp /Fe:io_scene_collada\_native\fastfmt.dll
+
+      - name: Build native fastfmt (macos-arm64)
+        if: matrix.platform == 'macos-arm64'
+        run: |
+          mkdir -p io_scene_collada/_native
+          clang++ -O3 -std=c++17 -arch arm64 -shared -fPIC native/fastfmt.cpp -o io_scene_collada/_native/libfastfmt.dylib
+
+      - name: Build native fastfmt (macos-x64)
+        if: matrix.platform == 'macos-x64'
+        run: |
+          mkdir -p io_scene_collada/_native
+          clang++ -O3 -std=c++17 -arch x86_64 -shared -fPIC native/fastfmt.cpp -o io_scene_collada/_native/libfastfmt.dylib
+
+      - name: Upload native binary
+        uses: actions/upload-artifact@v4
+        with:
+          name: native-${{ matrix.platform }}
+          path: io_scene_collada/_native/${{ matrix.lib }}
+
+  test-parity:
+    needs: [lint, build-native]
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - blender_ver: "5.0.1"
+            blender_dir: "Blender5.0"
+          - blender_ver: "5.3.0"
+            blender_dir: "Blender5.3"
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download linux-x64 native binary
+        uses: actions/download-artifact@v4
+        with:
+          name: native-linux-x64
+          path: io_scene_collada/_native
 
       - name: Install headless Blender runtime libraries
         run: |
@@ -27,39 +102,123 @@ jobs:
           sudo apt-get install -y -qq --no-install-recommends \
             libx11-6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libgl1 libxkbcommon0 libsm6 xz-utils
 
-      - name: Cache Blender 4.5.1 and 5.3.0
+      - name: Cache Blender 4.5.1 and ${{ matrix.blender_ver }}
         id: cache-blender
         uses: actions/cache@v4
         with:
           path: .tools
-          key: blender-linux-${{ env.BLENDER_45_VER }}-${{ env.BLENDER_5X_VER }}
+          key: blender-linux-${{ env.BLENDER_45_VER }}-${{ matrix.blender_ver }}
 
-      - name: Download Blender 4.5.1 LTS and Blender 5.3.0
+      - name: Download Blender 4.5.1 LTS and Blender ${{ matrix.blender_ver }}
         if: steps.cache-blender.outputs.cache-hit != 'true'
         run: |
           mkdir -p .tools
           curl -fsSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_45_VER}-linux-x64.tar.xz" | tar -xJ -C .tools
-          curl -fsSL "https://download.blender.org/release/Blender5.3/blender-${BLENDER_5X_VER}-linux-x64.tar.xz" | tar -xJ -C .tools
+          curl -fsSL "https://download.blender.org/release/${{ matrix.blender_dir }}/blender-${{ matrix.blender_ver }}-linux-x64.tar.xz" | tar -xJ -C .tools
 
-      - name: Configure portable Blender 5.3.0 and install extension
+      - name: Configure portable Blender ${{ matrix.blender_ver }} and install extension
         run: |
-          mkdir -p ".tools/blender-${BLENDER_5X_VER}-linux-x64/portable" dist
-          BLENDER_5X=".tools/blender-${BLENDER_5X_VER}-linux-x64/blender"
+          mkdir -p ".tools/blender-${{ matrix.blender_ver }}-linux-x64/portable" dist
+          BLENDER_5X=".tools/blender-${{ matrix.blender_ver }}-linux-x64/blender"
           "$BLENDER_5X" --command extension validate io_scene_collada
           "$BLENDER_5X" --command extension build --source-dir io_scene_collada --output-dir dist
           ZIP_FILE=$(ls dist/collada_io-*.zip | head -n 1)
           "$BLENDER_5X" --command extension install-file -r user_default -e "$ZIP_FILE"
 
-      - name: Run Core Export & Import Byte-Parity Suite (25 checks)
-        run: python3 tests/run_parity_tests.py
+      - name: Run Core & Deep Parity Suites (COLLADA_NATIVE=1)
+        env:
+          COLLADA_NATIVE: "1"
+        run: |
+          python3 tests/run_parity_tests.py
+          python3 tests/run_deep_verification.py
+          mkdir -p tests/_work_native
+          cp tests/_work/*_53.dae tests/_work_native/
 
-      - name: Run Deep Verification Suite (27 checks)
-        run: python3 tests/run_deep_verification.py
+      - name: Verify byte-identical output with COLLADA_NATIVE=0 fallback
+        env:
+          COLLADA_NATIVE: "0"
+        run: |
+          python3 tests/run_parity_tests.py
+          python3 -c "
+          import glob, os, sys
+          for p in sorted(glob.glob('tests/_work_native/*_53.dae')):
+              other = os.path.join('tests/_work', os.path.basename(p))
+              b1 = open(p, 'rb').read()
+              b2 = open(other, 'rb').read()
+              # Normalize only created/modified timestamps
+              import re
+              n1 = re.sub(rb'<(created|modified)>.*?</\1>', b'', b1)
+              n2 = re.sub(rb'<(created|modified)>.*?</\1>', b'', b2)
+              if n1 != n2:
+                  print(f'NATIVE vs FALLBACK DIFF in {os.path.basename(p)}')
+                  sys.exit(1)
+          print('ALL 19 EXPORTS BYTE-IDENTICAL BETWEEN NATIVE=1 AND NATIVE=0')
+          "
 
-      - name: Upload built extension artifact
+  package-and-release:
+    needs: [build-native, test-parity]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Download all native binaries
+        uses: actions/download-artifact@v4
+        with:
+          pattern: native-*
+          path: native_bins
+
+      - name: Install headless Blender runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libgl1 libxkbcommon0 libsm6 xz-utils
+
+      - name: Restore cached Blender 5.3.0
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: blender-linux-${{ env.BLENDER_45_VER }}-5.3.0
+
+      - name: Download Blender 5.3.0 if needed
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .tools
+          curl -fsSL "https://download.blender.org/release/Blender5.3/blender-5.3.0-linux-x64.tar.xz" | tar -xJ -C .tools
+
+      - name: Build pure-Python and per-platform accelerated extension zips
+        run: |
+          BLENDER=".tools/blender-5.3.0-linux-x64/blender"
+          VERSION=$(grep '^version' io_scene_collada/blender_manifest.toml | sed -E 's/.*"([^"]+)".*/\1/')
+          mkdir -p dist
+
+          # 1. Pure-Python universal zip (no native binary)
+          rm -rf io_scene_collada/_native
+          "$BLENDER" --command extension validate io_scene_collada
+          "$BLENDER" --command extension build --source-dir io_scene_collada --output-dir dist
+          mv "dist/collada_io-${VERSION}.zip" "dist/collada_io-${VERSION}-pure-python.zip"
+
+          # 2. Per-platform native-accelerated zips
+          cp io_scene_collada/blender_manifest.toml /tmp/manifest_orig.toml
+          for plat in linux-x64 windows-x64 macos-arm64 macos-x64; do
+            rm -rf io_scene_collada/_native
+            mkdir -p io_scene_collada/_native
+            cp native_bins/native-${plat}/* io_scene_collada/_native/
+            cp /tmp/manifest_orig.toml io_scene_collada/blender_manifest.toml
+            printf '\nplatforms = ["%s"]\n' "$plat" >> io_scene_collada/blender_manifest.toml
+            "$BLENDER" --command extension validate io_scene_collada
+            "$BLENDER" --command extension build --source-dir io_scene_collada --output-dir dist --split-platforms
+          done
+          cp /tmp/manifest_orig.toml io_scene_collada/blender_manifest.toml
+          rm -rf io_scene_collada/_native
+          ls -lh dist/
+
+      - name: Upload built extension artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: collada_io-extension
+          name: collada_io-extensions
           path: dist/collada_io-*.zip
 
       - name: Publish GitHub Release

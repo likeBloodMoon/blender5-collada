@@ -17,7 +17,7 @@ This extension brings back the full Blender 4.5.1 COLLADA importer and exporter 
 
 CLI install:
 ```bash
-blender --command extension install-file -r user_default -e collada_io-1.2.0.zip
+blender --command extension install-file -r user_default -e collada_io-1.3.0-windows-x64.zip
 ```
 
 ---
@@ -56,9 +56,9 @@ If you're importing game meshes (like car bodies) and want clean, editable sharp
 
 ## Parity Testing
 
-Every push and PR is tested in CI against **Blender 4.5.1 LTS** across 60 automated checks:
+Every push and PR is tested in CI against **Blender 4.5.1 LTS** (on both **Blender 5.0.1** and **5.3.0**) across 61 automated checks:
 
-- **Export byte-parity** (`tests/run_parity_tests.py`): 18 export configs checked for identical XML structure and float32 precision (`max Δ ≤ 1e-5`).
+- **Export byte-parity** (`tests/run_parity_tests.py`): 19 export configs checked for identical XML structure and float32 precision (`max Δ ≤ 1e-5`), verified byte-identical with both native and pure-Python fallback.
 - **Deep import & round-trip** (`tests/run_deep_verification.py`): per-vertex/normal/UV/weight/keyframe comparisons, `5.3 → 4.5.1` cross-version imports, `import → re-export` round-trips, import flag matrix, and third-party `Y_UP` / `.zae` / `<tristrips>` fixtures.
 
 ---

@@ -4,6 +4,24 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.0] - 2026-11-23
+
+### Added
+- **Fast Exact Normals** import option (`fast_exact_normals`, default `False`): writes COLLADA normals directly to Blender's `custom_normal` `FLOAT_VECTOR` `CORNER` attribute via `foreach_set`, avoiding `short2` compression and cutting large-mesh import time dramatically.
+- **Optional C++17 `fastfmt` native accelerator** (`native/fastfmt.cpp` + `io_scene_collada/_native_loader.py`): plain C ABI loaded via `ctypes` (`fmt_f32_array_mt`, `fmt_i32_array_mt`, `parse_f32`, `parse_i32`) with silent pure-Python fallback and `COLLADA_NATIVE=0` switch.
+- **Multi-platform CI & Releases**: GitHub Actions now runs `ruff` linting, builds native binaries for `windows-x64`, `linux-x64`, `macos-arm64`, and `macos-x64`, fuzz-tests 10M random `float32` values + edge cases, verifies byte-identical output between `COLLADA_NATIVE=1` and `COLLADA_NATIVE=0` across **Blender 5.0.1 and 5.3.0**, and packages both per-platform accelerated zips (`--split-platforms`) and a pure-Python universal zip.
+
+### Performance (Suzanne + Subdivision Level 5: 503,808 faces / 2,015,232 loops, Blender 5.3.0)
+| Operation | Before (`v1.2.0`) | After (`v1.3.0`, pure-Python) |
+| --- | --- | --- |
+| **Import (`custom_normals=True`, default)** | `9.47 s` | **`5.08 s`** (`all_loop_normals.tolist()` to `normals_split_custom_set`) |
+| **Import (`fast_exact_normals=True`)** | `9.47 s` | **`3.87 s`** (`custom_normal` `FLOAT_VECTOR` attribute via `foreach_set`) |
+
+### Fixed
+- Archive (`.zae`/`.kmz`/`.zip`) images are now packed immediately on load so mid-import errors never leave dangling temp-folder image paths.
+- Updated `get_mesh_copy()` docstring (`BEAUTY` n-gon method) and removed remaining unused imports/locals (`fmt_bool`, `double_round`, `Material`, `Action`, `fps`, `es_sock`, `irest_dae`).
+- Added `08_ngon7_bevel_mirror_tri` (7-gon + Bevel & Mirror modifiers with `triangulate=True`) to CI parity tests (now **61 / 61** checks).
+
 ## [1.2.0] - 2026-11-23
 
 ### Added
@@ -48,6 +66,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.3.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.0.0...v1.1.0
