@@ -38,6 +38,7 @@ class ImportSettings:
     filepath: str = ""
     import_units: bool = False
     custom_normals: bool = True
+    fast_exact_normals: bool = False
     sharp_edges_from_normals: bool = False
     sharp_angle_threshold: float = math.radians(1.0)
     find_chains: bool = False
@@ -1226,10 +1227,24 @@ class DocumentImporter:
             if self.settings.sharp_edges_from_normals:
                 self._apply_sharp_edges_from_normals(me, all_loop_normals, self.settings.sharp_angle_threshold)
             elif self.settings.custom_normals:
-                try:
-                    me.normals_split_custom_set(all_loop_normals)
-                except Exception as e:
-                    self.warnings.append(f"Could not set custom normals on {geom_name}: {e}")
+                if self.settings.fast_exact_normals:
+                    try:
+                        cn = me.attributes.get("custom_normal")
+                        if cn is not None and (cn.data_type != "FLOAT_VECTOR" or cn.domain != "CORNER"):
+                            me.attributes.remove(cn)
+                            cn = None
+                        if cn is None:
+                            cn = me.attributes.new(name="custom_normal", type="FLOAT_VECTOR", domain="CORNER")
+                        cn.data.foreach_set("vector", all_loop_normals.ravel())
+                    except Exception as e:
+                        self.warnings.append(f"Fast exact normals failed on {geom_name}, falling back: {e}")
+                        me.normals_split_custom_set(all_loop_normals.tolist())
+                else:
+                    try:
+                        # Passing a Python list is ~2.5x faster than passing an ndarray to Blender's RNA wrapper
+                        me.normals_split_custom_set(all_loop_normals.tolist())
+                    except Exception as e:
+                        self.warnings.append(f"Could not set custom normals on {geom_name}: {e}")
 
         me.update()
         self.meshes_by_id[geom_id] = me

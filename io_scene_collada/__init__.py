@@ -438,6 +438,16 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         default=True,
     )
 
+    fast_exact_normals: BoolProperty(
+        name="Fast Exact Normals",
+        description=(
+            "Write COLLADA normals directly to Blender's custom_normal FLOAT_VECTOR attribute "
+            "(much faster on large meshes and avoids short2 compression; normals stay locked "
+            "across Edit Mode edits until cleared via Clear Custom Split Normals Data)"
+        ),
+        default=False,
+    )
+
     sharp_edges_from_normals: BoolProperty(
         name="Mark Sharp from Normals",
         description=(
@@ -496,6 +506,8 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         box.label(text="Import Data Options", icon="MESH_DATA")
         box.prop(self, "import_units")
         box.prop(self, "custom_normals")
+        if self.custom_normals and not self.sharp_edges_from_normals:
+            box.prop(self, "fast_exact_normals")
         box.prop(self, "sharp_edges_from_normals")
         if self.sharp_edges_from_normals:
             box.prop(self, "sharp_angle_threshold")
@@ -520,6 +532,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
             filepath=self.filepath,
             import_units=self.import_units,
             custom_normals=self.custom_normals,
+            fast_exact_normals=self.fast_exact_normals,
             sharp_edges_from_normals=self.sharp_edges_from_normals,
             sharp_angle_threshold=self.sharp_angle_threshold,
             find_chains=self.find_chains,
