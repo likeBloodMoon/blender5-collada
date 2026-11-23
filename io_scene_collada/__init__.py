@@ -27,6 +27,7 @@ from bpy_extras.io_utils import (
     poll_file_object_drop,
 )
 
+from .cdae.importer import CdaeImporter, CdaeImportSettings
 from .export_collada import DocumentExporter, ExportSettings
 from .import_collada import DocumentImporter, ImportSettings
 
@@ -562,6 +563,118 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         return {"CANCELLED"}
 
 
+class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
+    """Load a BeamNG Cached Collada (.cdae v31) file"""
+
+    bl_idname = "import_scene.beamng_cdae"
+    bl_label = "BeamNG Cached Collada (.cdae)"
+    bl_options = {"PRESET", "UNDO"}
+
+    filename_ext = ".cdae"
+    filter_glob: StringProperty(
+        default="*.cdae",
+        options={"HIDDEN"},
+    )
+
+    lod_mode: EnumProperty(
+        name="Detail Level (LOD)",
+        description="Which detail levels to import from the .cdae shape",
+        items=(
+            ("HIGHEST", "Highest detail only", "Import only the highest-detail visible LOD"),
+            ("ALL", "All detail levels", "Import every detail level into its own collection"),
+        ),
+        default="HIGHEST",
+    )
+    import_collision: BoolProperty(
+        name="Import Collision Meshes",
+        description="Also import negative-size / collision detail levels",
+        default=False,
+    )
+    merge_by_distance: BoolProperty(
+        name="Merge by Distance",
+        description="Weld GPU-split duplicate vertices within each mesh while preserving per-corner UV/color/normal seams",
+        default=True,
+    )
+    merge_distance: FloatProperty(
+        name="Merge Distance",
+        description="Maximum distance between vertices to merge",
+        default=1e-5,
+        min=0.0,
+        max=0.1,
+        precision=6,
+    )
+    sharp_edges_from_normals: BoolProperty(
+        name="Mark Sharp from Normals",
+        description="Convert split normal discontinuities into clean sharp edges instead of locked custom normals",
+        default=True,
+    )
+    sharp_angle_threshold: FloatProperty(
+        name="Sharp Angle",
+        description="Minimum normal angle across an edge to mark it sharp",
+        default=math.radians(1.0),
+        min=0.0,
+        max=math.pi,
+        subtype="ANGLE",
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        box = layout.box()
+        box.label(text="Detail Levels", icon="MESH_DATA")
+        col = box.column(align=False)
+        col.prop(self, "lod_mode")
+        col.prop(self, "import_collision")
+
+        box = layout.box()
+        box.label(text="Geometry & Normals", icon="NORMALS_VERTEX_FACE")
+        col = box.column(align=False)
+        col.prop(self, "merge_by_distance")
+        sub = col.column()
+        sub.enabled = self.merge_by_distance
+        sub.prop(self, "merge_distance")
+        col.prop(self, "sharp_edges_from_normals")
+        sub2 = col.column()
+        sub2.enabled = self.sharp_edges_from_normals
+        sub2.prop(self, "sharp_angle_threshold")
+
+    def execute(self, context):
+        if not self.filepath or not os.path.exists(self.filepath):
+            self.report({"ERROR"}, "No filepath given or file does not exist")
+            return {"CANCELLED"}
+
+        settings = CdaeImportSettings(
+            filepath=self.filepath,
+            lod_mode=self.lod_mode,
+            import_collision=self.import_collision,
+            merge_by_distance=self.merge_by_distance,
+            merge_distance=self.merge_distance,
+            sharp_edges_from_normals=self.sharp_edges_from_normals,
+            sharp_angle_threshold=self.sharp_angle_threshold,
+        )
+        importer = CdaeImporter(context, settings)
+        ok = importer.import_document()
+        for info in importer.infos:
+            self.report({"INFO"}, info)
+        max_warnings = 5
+        for warn in importer.warnings[:max_warnings]:
+            self.report({"WARNING"}, warn)
+        if len(importer.warnings) > max_warnings:
+            self.report(
+                {"WARNING"},
+                f"... and {len(importer.warnings) - max_warnings} more warning(s)",
+            )
+        if ok:
+            return {"FINISHED"}
+        if importer.errors:
+            self.report({"ERROR"}, "; ".join(importer.errors))
+        else:
+            self.report({"ERROR"}, "BeamNG .cdae import failed")
+        return {"CANCELLED"}
+
+
 class IO_FH_collada(bpy.types.FileHandler):
     bl_idname = "IO_FH_collada"
     bl_label = "Collada"
@@ -574,8 +687,20 @@ class IO_FH_collada(bpy.types.FileHandler):
         return poll_file_object_drop(context)
 
 
+class IO_FH_beamng_cdae(bpy.types.FileHandler):
+    bl_idname = "IO_FH_beamng_cdae"
+    bl_label = "BeamNG Cached Collada"
+    bl_import_operator = "import_scene.beamng_cdae"
+    bl_file_extensions = ".cdae"
+
+    @classmethod
+    def poll_drop(cls, context):
+        return poll_file_object_drop(context)
+
+
 def menu_func_import(self, context):
     self.layout.operator(WM_OT_collada_import.bl_idname, text="Collada (Default) (.dae, .zae, .kmz)")
+    self.layout.operator(IMPORT_SCENE_OT_beamng_cdae.bl_idname, text="BeamNG Cached Collada (.cdae)")
 
 
 def menu_func_export(self, context):
@@ -585,7 +710,9 @@ def menu_func_export(self, context):
 classes = (
     WM_OT_collada_export,
     WM_OT_collada_import,
+    IMPORT_SCENE_OT_beamng_cdae,
     IO_FH_collada,
+    IO_FH_beamng_cdae,
 )
 
 
