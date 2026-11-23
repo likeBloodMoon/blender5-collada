@@ -926,7 +926,16 @@ class DocumentImporter:
                     try:
                         stride = int(acc.attrib["stride"])
                     except ValueError:
-                        stride = 3
+                        self.warnings.append(
+                            f"Invalid stride '{acc.attrib['stride']}' in source '{sid}' of geometry '{geom_name}'"
+                        )
+                        stride = 0
+            if stride <= 0:
+                self.warnings.append(
+                    f"Invalid stride {stride} in source '{sid}' of geometry '{geom_name}'"
+                )
+                vals = np.empty(0, dtype=np.float32)
+                stride = 3
             sources[sid] = (vals, stride, sname)
 
         # Parse <vertices>
@@ -983,8 +992,22 @@ class DocumentImporter:
             for inp in _find_children(child, "input"):
                 sem = inp.attrib.get("semantic", "")
                 src_id = _uri_to_local_id(inp.attrib.get("source"))
-                off = int(inp.attrib.get("offset", "0"))
-                iset = int(inp.attrib.get("set", "0"))
+                try:
+                    off = int(inp.attrib.get("offset", "0"))
+                except ValueError:
+                    self.warnings.append(
+                        f"Invalid input offset '{inp.attrib.get('offset')}' in geometry '{geom_name}'"
+                    )
+                    continue
+                if off < 0:
+                    self.warnings.append(
+                        f"Negative input offset {off} in geometry '{geom_name}'"
+                    )
+                    continue
+                try:
+                    iset = int(inp.attrib.get("set", "0"))
+                except ValueError:
+                    iset = 0
                 inputs.append((sem, src_id, off, iset))
                 if off > max_offset:
                     max_offset = off
