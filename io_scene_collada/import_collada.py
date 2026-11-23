@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import math
 import os
+import re
 import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
@@ -66,26 +67,49 @@ def _find_children(elem: ET.Element, name: str) -> list[ET.Element]:
     return [ch for ch in elem if _strip_ns(ch.tag) == name]
 
 
-def _parse_f32_np(text: str | None):
+_LEGACY_NONFINITE_RE = re.compile(r"[+-]?\d+\.#(?:QNAN|SNAN|IND|INF)\d*", re.IGNORECASE)
+
+
+def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: str = ""):
     import numpy as np
 
-    if not text:
+    if not text or not text.strip():
         return np.empty(0, dtype=np.float32)
     res = native_parse_f32(text)
     if res is not None:
         return res
-    return np.fromstring(text, sep=" ", dtype=np.float32)
+    try:
+        return np.fromstring(text, sep=" ", dtype=np.float32)
+    except ValueError:
+        if "#" in text:
+            cleaned, count = _LEGACY_NONFINITE_RE.subn("0.0", text)
+            if count > 0:
+                try:
+                    arr = np.fromstring(cleaned, sep=" ", dtype=np.float32)
+                    if warnings is not None:
+                        warnings.append(f"Replaced {count} legacy non-finite token(s) with 0.0 in {label}")
+                    return arr
+                except ValueError:
+                    pass
+        if warnings is not None:
+            warnings.append(f"Invalid number in {label}")
+        return None
 
 
-def _parse_i32_np(text: str | None):
+def _parse_i32_np(text: str | None, warnings: list[str] | None = None, label: str = ""):
     import numpy as np
 
-    if not text:
+    if not text or not text.strip():
         return np.empty(0, dtype=np.int32)
     res = native_parse_i32(text)
     if res is not None:
         return res
-    return np.fromstring(text, sep=" ", dtype=np.int32)
+    try:
+        return np.fromstring(text, sep=" ", dtype=np.int32)
+    except ValueError:
+        if warnings is not None:
+            warnings.append(f"Invalid integer in {label}")
+        return None
 
 
 def _parse_floats(text: str | None) -> list[float]:
@@ -877,19 +901,32 @@ class DocumentImporter:
     def _read_mesh(self, geom_id: str, geom_name: str, mesh_elem: ET.Element) -> None:
         import numpy as np
 
-        # Parse all <source> elements with C-speed np.fromstring
+        # Parse all <source> elements with C-speed parser
         sources: dict[str, tuple[np.ndarray, int, str]] = {}
         for src in _find_children(mesh_elem, "source"):
             sid = src.attrib.get("id", "")
             sname = src.attrib.get("name") or sid
             fa = _find_child(src, "float_array")
-            vals = _parse_f32_np(fa.text) if fa is not None else np.empty(0, dtype=np.float32)
+            if fa is not None:
+                fa_id = fa.attrib.get("id", sid)
+                vals = _parse_f32_np(
+                    fa.text,
+                    self.warnings,
+                    f"<float_array id='{fa_id}'> of geometry '{geom_name}'",
+                )
+                if vals is None:
+                    return
+            else:
+                vals = np.empty(0, dtype=np.float32)
             stride = 3
             tc = _find_child(src, "technique_common")
             if tc is not None:
                 acc = _find_child(tc, "accessor")
                 if acc is not None and "stride" in acc.attrib:
-                    stride = int(acc.attrib["stride"])
+                    try:
+                        stride = int(acc.attrib["stride"])
+                    except ValueError:
+                        stride = 3
             sources[sid] = (vals, stride, sname)
 
         # Parse <vertices>
@@ -984,7 +1021,9 @@ class DocumentImporter:
             if tag == "lines":
                 p_el = _find_child(child, "p")
                 if p_el is not None and p_el.text:
-                    p_arr = _parse_i32_np(p_el.text)
+                    p_arr = _parse_i32_np(p_el.text, self.warnings, f"<lines>/<p> of geometry '{geom_name}'")
+                    if p_arr is None:
+                        continue
                     cnt = p_arr.size // (2 * num_inputs)
                     if cnt > 0:
                         p2 = p_arr[:cnt * 2 * num_inputs].reshape(cnt, 2, num_inputs)
@@ -998,7 +1037,9 @@ class DocumentImporter:
             if tag == "triangles":
                 p_el = _find_child(child, "p")
                 if p_el is not None and p_el.text:
-                    p_raw = _parse_i32_np(p_el.text)
+                    p_raw = _parse_i32_np(p_el.text, self.warnings, f"<triangles>/<p> of geometry '{geom_name}'")
+                    if p_raw is None:
+                        continue
                     tri_count = p_raw.size // (3 * num_inputs)
                     if tri_count > 0:
                         prim_p = p_raw[:tri_count * 3 * num_inputs].reshape(tri_count * 3, num_inputs)
@@ -1007,8 +1048,10 @@ class DocumentImporter:
                 vc_el = _find_child(child, "vcount")
                 p_el = _find_child(child, "p")
                 if vc_el is not None and vc_el.text and p_el is not None and p_el.text:
-                    vc_raw = _parse_i32_np(vc_el.text)
-                    p_raw = _parse_i32_np(p_el.text)
+                    vc_raw = _parse_i32_np(vc_el.text, self.warnings, f"<polylist>/<vcount> of geometry '{geom_name}'")
+                    p_raw = _parse_i32_np(p_el.text, self.warnings, f"<polylist>/<p> of geometry '{geom_name}'")
+                    if vc_raw is None or p_raw is None:
+                        continue
                     n_tuples = p_raw.size // num_inputs
                     p_2d = p_raw[:n_tuples * num_inputs].reshape(n_tuples, num_inputs)
                     if vc_raw.size > 0 and bool((vc_raw >= 3).all()):
@@ -1016,6 +1059,16 @@ class DocumentImporter:
                         if need <= n_tuples:
                             prim_vcounts = vc_raw
                             prim_p = p_2d[:need]
+                        else:
+                            # vcount sum exceeds <p>; keep only complete polygons
+                            cs = np.cumsum(vc_raw)
+                            valid_n = int(np.searchsorted(cs, n_tuples, side="right"))
+                            if valid_n > 0:
+                                prim_vcounts = vc_raw[:valid_n]
+                                prim_p = p_2d[:int(cs[valid_n - 1])]
+                            self.warnings.append(
+                                f"Geometry '{geom_name}': <polylist> vcount sum ({need}) exceeds <p> tuples ({n_tuples}); truncated"
+                            )
                     elif vc_raw.size > 0:
                         valid_vc: list[int] = []
                         valid_rows: list[np.ndarray] = []
@@ -1038,7 +1091,9 @@ class DocumentImporter:
                         p_elems.append(pe)
                 for p_el in p_elems:
                     if p_el.text:
-                        pr = _parse_i32_np(p_el.text)
+                        pr = _parse_i32_np(p_el.text, self.warnings, f"<polygons>/<p> of geometry '{geom_name}'")
+                        if pr is None:
+                            continue
                         vc = pr.size // num_inputs
                         if vc >= 3:
                             vc_list.append(vc)
@@ -1051,7 +1106,9 @@ class DocumentImporter:
                 tri_total = 0
                 for p_el in _find_children(child, "p"):
                     if p_el.text:
-                        pr = _parse_i32_np(p_el.text)
+                        pr = _parse_i32_np(p_el.text, self.warnings, f"<trifans>/<p> of geometry '{geom_name}'")
+                        if pr is None:
+                            continue
                         vc = pr.size // num_inputs
                         if vc >= 3:
                             p2 = pr[:vc * num_inputs].reshape(vc, num_inputs)
@@ -1069,7 +1126,9 @@ class DocumentImporter:
                 tri_total = 0
                 for p_el in _find_children(child, "p"):
                     if p_el.text:
-                        pr = _parse_i32_np(p_el.text)
+                        pr = _parse_i32_np(p_el.text, self.warnings, f"<tristrips>/<p> of geometry '{geom_name}'")
+                        if pr is None:
+                            continue
                         vc = pr.size // num_inputs
                         if vc >= 3:
                             p2 = pr[:vc * num_inputs].reshape(vc, num_inputs)
