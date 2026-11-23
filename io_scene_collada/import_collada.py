@@ -8,8 +8,10 @@ from __future__ import annotations
 
 import math
 import os
+import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
+import zipfile
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
@@ -173,9 +175,11 @@ class DocumentImporter:
         # Scene instantiation state
         self.node_elem_by_id: dict[str, ET.Element] = {}
         self.object_by_node_id: dict[str, Object] = {}
+        self.node_elem_by_id: dict[str, ET.Element] = {}
         self.object_by_geom_id: dict[str, Object] = {}
         self.imported_mesh_objects: list[Object] = []
         self.root_objects: list[Object] = []
+        self._loaded_images_from_archive: list = []
 
         # Armature tracking
         self.root_joint_nodes: list[tuple[ET.Element, Object]] = []  # (joint_elem, ob_arm)
@@ -185,9 +189,58 @@ class DocumentImporter:
         self.joint_bone_name_by_id: dict[str, str] = {}
         self.joint_parent_elem_by_id: dict[str, ET.Element | None] = {}
 
+    def _extract_archive_dae(self, archive_path: str, tmpdir: str) -> str | None:
+        """Safely extract a .zae / .kmz / .zip archive and return the primary .dae path."""
+        base_real = os.path.realpath(tmpdir)
+        extracted_daes: list[str] = []
+        manifest_path: str | None = None
+
+        with zipfile.ZipFile(archive_path, "r") as zf:
+            for info in zf.infolist():
+                if info.is_dir():
+                    continue
+                target = os.path.realpath(os.path.join(tmpdir, info.filename))
+                if not (target == base_real or target.startswith(base_real + os.sep)):
+                    continue
+                os.makedirs(os.path.dirname(target), exist_ok=True)
+                with zf.open(info, "r") as src, open(target, "wb") as dst:
+                    dst.write(src.read())
+                low = info.filename.lower()
+                if low == "manifest.xml" or low.endswith("/manifest.xml"):
+                    manifest_path = target
+                elif low.endswith(".dae"):
+                    extracted_daes.append(target)
+
+        if manifest_path is not None:
+            try:
+                mroot = ET.parse(manifest_path).getroot()
+                dae_root_el = _find_child(mroot, "dae_root")
+                if dae_root_el is not None and dae_root_el.text:
+                    rel = _uri_to_native_path(dae_root_el.text.strip())
+                    cand = os.path.realpath(os.path.join(os.path.dirname(manifest_path), rel))
+                    if cand.startswith(base_real + os.sep) and os.path.isfile(cand):
+                        return cand
+            except Exception:
+                pass
+
+        return extracted_daes[0] if extracted_daes else None
+
     def import_document(self) -> bool:
+        ext = os.path.splitext(self.settings.filepath)[1].lower()
+        if ext in (".zae", ".kmz", ".zip"):
+            with tempfile.TemporaryDirectory(prefix="blender_collada_") as tmpdir:
+                dae_path = self._extract_archive_dae(self.settings.filepath, tmpdir)
+                if dae_path is None:
+                    print(f"Collada import: No .dae file found inside archive {self.settings.filepath}")
+                    return False
+                self.dae_dir = os.path.dirname(dae_path)
+                ok = self._import_dae_file(dae_path, pack_images=True)
+                return ok
+        return self._import_dae_file(self.settings.filepath, pack_images=False)
+
+    def _import_dae_file(self, dae_path: str, pack_images: bool = False) -> bool:
         try:
-            tree = ET.parse(self.settings.filepath)
+            tree = ET.parse(dae_path)
         except Exception as e:
             print(f"Collada import: Failed to parse XML: {e}")
             return False
@@ -259,6 +312,13 @@ class DocumentImporter:
         # 8. Match scale & up-axis rotation on root objects
         self._apply_unit_and_up_axis()
 
+        if pack_images:
+            for ima in self._loaded_images_from_archive:
+                try:
+                    ima.pack()
+                except Exception:
+                    pass
+
         self.view_layer.update()
         return True
 
@@ -312,23 +372,41 @@ class DocumentImporter:
     # <library_images>
     # ------------------------------------------------------------------
 
+    def _resolve_image_path(self, raw_uri: str) -> str | None:
+        native = _uri_to_native_path(raw_uri)
+        # Normalize embedded backslashes so Windows-authored DAEs resolve on Linux/macOS
+        norm = native.replace("\\", os.sep)
+        bname = os.path.basename(norm)
+        candidates = [
+            os.path.join(self.dae_dir, native),
+            os.path.join(self.dae_dir, norm),
+            native,
+            norm,
+            os.path.join(self.dae_dir, bname),
+            os.path.join(self.dae_dir, "textures", bname),
+            os.path.join(self.dae_dir, "Textures", bname),
+            os.path.join(self.dae_dir, "images", bname),
+            os.path.join(self.dae_dir, "Images", bname),
+            os.path.join(self.dae_dir, "maps", bname),
+        ]
+        for cand in candidates:
+            if cand and os.path.isfile(cand):
+                return cand
+        return None
+
     def _read_library_images(self, lib: ET.Element) -> None:
         for img_elem in _find_children(lib, "image"):
             img_id = img_elem.attrib.get("id", "")
             init_from = _find_child(img_elem, "init_from")
             if init_from is None or not init_from.text:
                 continue
-            native = _uri_to_native_path(init_from.text.strip())
-            cand = os.path.join(self.dae_dir, native)
-            if os.path.exists(cand):
-                workpath = cand
-            elif os.path.exists(native):
-                workpath = native
-            else:
+            workpath = self._resolve_image_path(init_from.text.strip())
+            if workpath is None:
                 continue
             try:
                 ima = bpy.data.images.load(workpath, check_existing=True)
                 self.images_by_id[img_id] = ima
+                self._loaded_images_from_archive.append(ima)
             except Exception as e:
                 print(f"Collada import: Cannot load image {workpath}: {e}")
 
@@ -783,7 +861,7 @@ class DocumentImporter:
 
         for child in mesh_elem:
             tag = _strip_ns(child.tag)
-            if tag not in ("triangles", "polylist", "polygons", "trifans", "lines"):
+            if tag not in ("triangles", "polylist", "polygons", "trifans", "tristrips", "lines"):
                 continue
 
             inputs: list[tuple[str, str, int, int]] = []
@@ -868,17 +946,39 @@ class DocumentImporter:
                     vc = len(p_ints) // num_inputs
                     if vc >= 3:
                         poly_chunks.append((p_ints, 0, vc))
+                for ph_el in _find_children(child, "ph"):
+                    p_el = _find_child(ph_el, "p")
+                    if p_el is not None:
+                        p_ints = _parse_ints(p_el.text)
+                        vc = len(p_ints) // num_inputs
+                        if vc >= 3:
+                            poly_chunks.append((p_ints, 0, vc))
             elif tag == "trifans":
                 for p_el in _find_children(child, "p"):
                     p_ints = _parse_ints(p_el.text)
                     vc = len(p_ints) // num_inputs
                     if vc >= 3:
                         for k in range(1, vc - 1):
-                            # Construct mini fan triangle p_ints
                             tri_p = (
                                 p_ints[0:num_inputs]
                                 + p_ints[k * num_inputs:(k + 1) * num_inputs]
                                 + p_ints[(k + 1) * num_inputs:(k + 2) * num_inputs]
+                            )
+                            poly_chunks.append((tri_p, 0, 3))
+            elif tag == "tristrips":
+                for p_el in _find_children(child, "p"):
+                    p_ints = _parse_ints(p_el.text)
+                    vc = len(p_ints) // num_inputs
+                    if vc >= 3:
+                        for k in range(2, vc):
+                            if (k % 2) == 0:
+                                i0, i1, i2 = k - 2, k - 1, k
+                            else:
+                                i0, i1, i2 = k - 1, k - 2, k
+                            tri_p = (
+                                p_ints[i0 * num_inputs:(i0 + 1) * num_inputs]
+                                + p_ints[i1 * num_inputs:(i1 + 1) * num_inputs]
+                                + p_ints[i2 * num_inputs:(i2 + 1) * num_inputs]
                             )
                             poly_chunks.append((tri_p, 0, 3))
 
@@ -1282,6 +1382,7 @@ class DocumentImporter:
                 self.root_objects.append(ob)
             if node_id:
                 self.object_by_node_id[node_id] = ob
+                self.node_elem_by_id[node_id] = node
 
         primary_ob = created[0] if created else parent_ob
         for ch in child_nodes:
@@ -1667,7 +1768,7 @@ class DocumentImporter:
                     self._apply_joint_matrix_animation(ob_arm, bname, jnode, ch, fps)
                 else:
                     self._apply_decomposed_animation(
-                        ob_arm, f'pose.bones["{bname}"].', prop_name, axis_part, ch, fps
+                        ob_arm, f'pose.bones["{bname}"].', prop_name, axis_part, ch, fps, node_elem=jnode
                     )
                 continue
 
@@ -1677,7 +1778,9 @@ class DocumentImporter:
                 if ch.stride == 16:
                     self._apply_object_matrix_animation(ob, ch, fps)
                 else:
-                    self._apply_decomposed_animation(ob, "", prop_name, axis_part, ch, fps)
+                    self._apply_decomposed_animation(
+                        ob, "", prop_name, axis_part, ch, fps, node_elem=self.node_elem_by_id.get(target_id)
+                    )
                 continue
 
             # Check camera
@@ -1816,6 +1919,38 @@ class DocumentImporter:
             fcu = create_fcurve_on_channelbag(cbag, f"{prefix}scale", a)
             self._populate_fcurve(fcu, ch.times, scales[a], ch.interps, fps)
 
+    def _resolve_transform_sid(self, node_elem: ET.Element | None, prop_name: str) -> tuple[str, int]:
+        """Resolve a transform sid on node_elem to (kind, rot_axis_idx) for third-party DCCs."""
+        if node_elem is not None:
+            for child in node_elem:
+                if child.attrib.get("sid") == prop_name:
+                    tag = _strip_ns(child.tag)
+                    if tag == "translate":
+                        return ("location", -1)
+                    if tag == "scale":
+                        return ("scale", -1)
+                    if tag == "rotate":
+                        vals = _parse_floats(child.text)
+                        if len(vals) >= 3:
+                            ax = Vector((abs(vals[0]), abs(vals[1]), abs(vals[2])))
+                            if ax.x >= ax.y and ax.x >= ax.z and ax.x > 0.5:
+                                return ("rotation", 0)
+                            if ax.y >= ax.x and ax.y >= ax.z and ax.y > 0.5:
+                                return ("rotation", 1)
+                            if ax.z > 0.5:
+                                return ("rotation", 2)
+        if prop_name in ("location", "translate"):
+            return ("location", -1)
+        if prop_name == "scale":
+            return ("scale", -1)
+        if prop_name in ("rotationX", "rotateX"):
+            return ("rotation", 0)
+        if prop_name in ("rotationY", "rotateY"):
+            return ("rotation", 1)
+        if prop_name in ("rotationZ", "rotateZ"):
+            return ("rotation", 2)
+        return ("", -1)
+
     def _apply_decomposed_animation(
         self,
         ob: Object,
@@ -1824,10 +1959,12 @@ class DocumentImporter:
         axis_part: str,
         ch: _AnimChannelData,
         fps: float,
+        node_elem: ET.Element | None = None,
     ) -> None:
         _, cbag = ensure_action_and_channelbag(ob)
         axis_map = {"X": 0, "Y": 1, "Z": 2}
-        if prop_name == "location":
+        kind, rot_axis = self._resolve_transform_sid(node_elem, prop_name)
+        if kind == "location":
             if ch.stride == 3:
                 for a in range(3):
                     vals = [ch.values[i * 3 + a] for i in range(len(ch.times))]
@@ -1839,7 +1976,7 @@ class DocumentImporter:
                 self._populate_fcurve(
                     fcu, ch.times, ch.values, ch.interps, fps, ch.in_tangents, ch.out_tangents
                 )
-        elif prop_name == "scale":
+        elif kind == "scale":
             if ch.stride == 3:
                 for a in range(3):
                     vals = [ch.values[i * 3 + a] for i in range(len(ch.times))]
@@ -1851,10 +1988,9 @@ class DocumentImporter:
                 self._populate_fcurve(
                     fcu, ch.times, ch.values, ch.interps, fps, ch.in_tangents, ch.out_tangents
                 )
-        elif prop_name in ("rotationX", "rotationY", "rotationZ"):
-            a = {"rotationX": 0, "rotationY": 1, "rotationZ": 2}[prop_name]
+        elif kind == "rotation" and rot_axis >= 0:
             vals = [math.radians(v) for v in ch.values]
-            fcu = create_fcurve_on_channelbag(cbag, f"{prefix}rotation_euler", a)
+            fcu = create_fcurve_on_channelbag(cbag, f"{prefix}rotation_euler", rot_axis)
             self._populate_fcurve(
                 fcu, ch.times, vals, ch.interps, fps, ch.in_tangents, ch.out_tangents, is_angle=True
             )

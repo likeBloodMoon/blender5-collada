@@ -634,6 +634,86 @@ def main() -> int:
     record(run_deep_import_compare("ext_yup_cm_units", ext["ext_yup_cm_ngon_phong"], ext["ext_yup_cm_ngon_phong"], {"import_units": True}))
     record(run_deep_import_compare("ext_skin_bsm_idref", ext["ext_skin_bsm_idref"], ext["ext_skin_bsm_idref"], {}))
 
+    # ------------------------------------------------------------------
+    # 5. EXTENDED PRO FEATURES (5.3.0: .zae archive, <tristrips>, Maya sid anim)
+    # ------------------------------------------------------------------
+    print("\n=== 5. EXTENDED PRO FEATURES (.zae, <tristrips>, DCC sid anim) ===")
+    import zipfile
+
+    # 5A. .zae archive with manifest.xml + bundled .dae
+    zae_path = os.path.join(DEEP_WORK, "ext_archive.zae")
+    with zipfile.ZipFile(zae_path, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("manifest.xml", '<?xml version="1.0"?><dae_manifest><dae_root>models/pentagon.dae</dae_root></dae_manifest>')
+        zf.write(ext["ext_yup_cm_ngon_phong"], "models/pentagon.dae")
+
+    j_zae = os.path.join(DEEP_WORK, "deep_pro_zae_53.json")
+    r_zae = run_blender(BLENDER_53, None, DEEP_INSPECT_SCRIPT.format(dae=zae_path, out_json=j_zae, kwargs_repr="{}"))
+    j_ref = os.path.join(DEEP_WORK, "deep_ext_yup_cm_default_53.json")
+    if r_zae.returncode == 0 and os.path.exists(j_zae) and not compare_deep(json.load(open(j_ref)), json.load(open(j_zae))):
+        print("[PASS] pro_zae_archive (manifest.xml + .zae matches direct .dae import)")
+        record(True)
+    else:
+        print(f"[FAIL] pro_zae_archive\n{r_zae.stderr[-400:]}")
+        record(False)
+
+    # 5B. <tristrips> + Maya-style <translate sid="translate"> / <rotate sid="rotateZ"> animation
+    pro_dae = os.path.join(DEEP_WORK, "ext_tristrips_dcc_anim.dae")
+    with open(pro_dae, "w", encoding="utf-8") as f:
+        f.write("""<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="StripQuad-mesh" name="StripQuad">
+      <mesh>
+        <source id="StripQuad-pos">
+          <float_array id="StripQuad-pos-arr" count="12">0 0 0 1 0 0 0 1 0 1 1 0</float_array>
+          <technique_common><accessor source="#StripQuad-pos-arr" count="4" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="StripQuad-verts"><input semantic="POSITION" source="#StripQuad-pos"/></vertices>
+        <tristrips count="1">
+          <input semantic="VERTEX" source="#StripQuad-verts" offset="0"/>
+          <p>0 1 2 3</p>
+        </tristrips>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_animations>
+    <animation id="MayaMoveX">
+      <source id="MayaMoveX-in"><float_array id="MayaMoveX-in-arr" count="2">0.04166667 0.4166667</float_array><technique_common><accessor source="#MayaMoveX-in-arr" count="2" stride="1"><param name="TIME" type="float"/></accessor></technique_common></source>
+      <source id="MayaMoveX-out"><float_array id="MayaMoveX-out-arr" count="2">0 5</float_array><technique_common><accessor source="#MayaMoveX-out-arr" count="2" stride="1"><param name="X" type="float"/></accessor></technique_common></source>
+      <source id="MayaMoveX-int"><Name_array id="MayaMoveX-int-arr" count="2">LINEAR LINEAR</Name_array><technique_common><accessor source="#MayaMoveX-int-arr" count="2" stride="1"><param name="INTERPOLATION" type="name"/></accessor></technique_common></source>
+      <sampler id="MayaMoveX-samp"><input semantic="INPUT" source="#MayaMoveX-in"/><input semantic="OUTPUT" source="#MayaMoveX-out"/><input semantic="INTERPOLATION" source="#MayaMoveX-int"/></sampler>
+      <channel source="#MayaMoveX-samp" target="StripObj/translate.X"/>
+    </animation>
+  </library_animations>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="StripObj" name="StripObj" type="NODE">
+        <translate sid="translate">0 0 0</translate>
+        <rotate sid="rotateZ">0 0 1 0</rotate>
+        <instance_geometry url="#StripQuad-mesh"/>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>""")
+
+    j_pro = os.path.join(DEEP_WORK, "deep_pro_tristrips_53.json")
+    r_pro = run_blender(BLENDER_53, None, DEEP_INSPECT_SCRIPT.format(dae=pro_dae, out_json=j_pro, kwargs_repr="{}"))
+    if r_pro.returncode == 0 and os.path.exists(j_pro):
+        d_pro = json.load(open(j_pro))
+        ok_mesh = len(d_pro.get("StripObj", {}).get("polys", [])) == 2
+        ok_anim = d_pro.get("__anim__", {}).get("10", {}).get("StripObj", {}).get("loc", [0])[0] == 5.0
+        if ok_mesh and ok_anim:
+            print("[PASS] pro_tristrips_and_dcc_sid_anim (2 tris from <tristrips>, Maya translate.X -> 5.0 at f10)")
+            record(True)
+        else:
+            print(f"[FAIL] pro_tristrips_and_dcc_sid_anim: ok_mesh={ok_mesh}, ok_anim={ok_anim}")
+            record(False)
+    else:
+        print(f"[FAIL] pro_tristrips_and_dcc_sid_anim\n{r_pro.stderr[-400:]}")
+        record(False)
+
     print(f"\nDEEP VERIFICATION SUMMARY: {total_pass}/{total_pass + total_fail} PASS")
     return 0 if total_fail == 0 else 1
 

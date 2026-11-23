@@ -412,7 +412,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
     filename_ext = ".dae"
 
     filter_glob: StringProperty(
-        default="*.dae",
+        default="*.dae;*.zae;*.kmz;*.zip",
         options={"HIDDEN"},
     )
 
@@ -509,7 +509,7 @@ class IO_FH_collada(bpy.types.FileHandler):
     bl_label = "Collada"
     bl_import_operator = "wm.collada_import"
     bl_export_operator = "wm.collada_export"
-    bl_file_extensions = ".dae"
+    bl_file_extensions = ".dae;.zae;.kmz"
 
     @classmethod
     def poll_drop(cls, context):
@@ -517,7 +517,7 @@ class IO_FH_collada(bpy.types.FileHandler):
 
 
 def menu_func_import(self, context):
-    self.layout.operator(WM_OT_collada_import.bl_idname, text="Collada (Default) (.dae)")
+    self.layout.operator(WM_OT_collada_import.bl_idname, text="Collada (Default) (.dae, .zae, .kmz)")
 
 
 def menu_func_export(self, context):

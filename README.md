@@ -15,12 +15,12 @@ This extension implements the complete Blender 4.5.1 COLLADA importer and export
 ## Features
 
 - **Drop-in Operator Compatibility**: Registers the original `bpy.ops.wm.collada_import` and `bpy.ops.wm.collada_export` operators with all Blender 4.5.1 properties, defaults, and tabbed UI — existing scripts and pipelines work without modification.
-- **Drag-and-Drop Support**: Registers `IO_FH_collada` (`bpy.types.FileHandler`) so `.dae` files can be dragged directly into the Blender viewport.
-- **Meshes & Geometry**: Polylists, triangulated meshes (`SHORT_EDGE` / `EAR_CLIP`), n-gons, loose edges, custom split normals, multi-UV maps (`active_uv_only`), byte vertex colors, modifier application, and geometry instancing.
-- **Materials & Textures**: Principled BSDF import/export, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, emission, IOR, alpha/transparency, diffuse/emission/normal textures, and texture copy export (`use_texture_copies`).
+- **Drag-and-Drop & Archive Support**: Registers `IO_FH_collada` (`bpy.types.FileHandler`) for `.dae`, `.zae`, and `.kmz` files — drag-and-drop directly into Blender, with automatic `manifest.xml` resolution and texture packing for `.zae`/`.kmz`/`.zip` archives.
+- **Meshes & Geometry**: Polylists, triangulated meshes (`SHORT_EDGE` / `EAR_CLIP`), `<polygons>` (including `<ph>`), `<trifans>`, `<tristrips>`, n-gons, loose edges, custom split normals, multi-UV maps (`active_uv_only`), byte vertex colors, modifier application, and geometry instancing.
+- **Materials & Textures**: Principled BSDF import/export, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, emission, IOR, alpha/transparency, diffuse/emission/normal textures, smart cross-platform texture path fallback (`textures/`, `images/`, `maps/`, basename lookup), and texture copy export (`use_texture_copies`).
 - **Cameras & Lights**: Perspective & orthographic cameras; Point, Sun, Spot, and Area lights with full Blender `<extra>` profile DNA preservation.
 - **Armatures, Skinning & Morphing**: Skeleton hierarchies, vertex weights, `<bind_shape_matrix>`, `Name_array` and `IDREF_array` joints, bone collections, shape keys (`<morph>`), OpenSim / Second Life compatibility (`open_sim`, `deform_bones_only`), and armature import flags (`auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info`).
-- **Animations**: Object and pose-bone animations (matrix sampled, decomposed sampled, and keyframe curves with smooth tangents), fully ported to Blender 5.0+'s layered Action / Slot / Channelbag system.
+- **Animations**: Object and pose-bone animations (matrix sampled, decomposed sampled, keyframe curves with smooth tangents, plus third-party Maya/DCC `sid` transform resolution), fully ported to Blender 5.0+'s layered Action / Slot / Channelbag system.
 - **Coordinate Systems & Units**: `Z_UP` / `Y_UP` / `X_UP` axis conversion, global orientation export, and `import_units` scaling.
 
 ## Installation
