@@ -71,4 +71,4 @@ blender --command extension build --source-dir io_scene_collada --output-dir dis
 
 ## License
 
-Licensed under **GPL-2.0-or-later**, matching Blender 4.5.1 LTS. See [LICENSE](LICENSE) for details.
+Licensed under **GPL-2.0-or-later**, matching Blender 4.5.1 LTS. See [LICENSE](LICENSE) for details and [CHANGELOG.md](CHANGELOG.md) for version history.
