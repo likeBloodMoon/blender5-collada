@@ -99,6 +99,7 @@ class ExportSettings:
     open_sim: bool = False
     limit_precision: bool = False
     keep_bind_info: bool = False
+    collection: str = ""
     global_transform: Matrix = field(default_factory=lambda: Matrix.Identity(4))
 
 
@@ -288,6 +289,7 @@ class DocumentExporter:
             s.include_children,
             s.include_armatures,
             s.sort_by_name,
+            s.collection,
         )
         self.export_set_ptrs = {ob.as_pointer() for ob in self.export_set}
 

@@ -286,11 +286,22 @@ def build_export_set(
     include_children: bool,
     include_armatures: bool,
     sort_by_name: bool,
+    collection: str = "",
 ) -> list[Object]:
     """Exact port of BKE_object_relational_superset + bc_bubble_sort_by_Object_name."""
     # Base objects in view_layer order (matching BKE_object_relational_superset)
     # In Blender C++, view_layer->object_bases is iterated in order.
-    visible_objs = [ob for ob in view_layer.objects if ob.visible_get(view_layer=view_layer)]
+    if collection:
+        coll = bpy.data.collections.get(collection)
+        if coll is None:
+            return []
+        coll_ptrs = {ob.as_pointer() for ob in coll.all_objects}
+        visible_objs = [
+            ob for ob in view_layer.objects
+            if ob.as_pointer() in coll_ptrs and ob.visible_get(view_layer=view_layer)
+        ]
+    else:
+        visible_objs = [ob for ob in view_layer.objects if ob.visible_get(view_layer=view_layer)]
 
     if selected:
         seed = [ob for ob in visible_objs if ob.select_get(view_layer=view_layer)]

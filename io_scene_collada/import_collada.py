@@ -12,11 +12,11 @@ import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import bpy
-from mathutils import Euler, Matrix, Quaternion, Vector
+from mathutils import Matrix, Vector
 
 from .collada_utils import (
     create_fcurve_on_channelbag,
@@ -177,11 +177,13 @@ class DocumentImporter:
         # Scene instantiation state
         self.node_elem_by_id: dict[str, ET.Element] = {}
         self.object_by_node_id: dict[str, Object] = {}
-        self.node_elem_by_id: dict[str, ET.Element] = {}
         self.object_by_geom_id: dict[str, Object] = {}
         self.imported_mesh_objects: list[Object] = []
         self.root_objects: list[Object] = []
+        self._archive_root: str | None = None
         self._loaded_images_from_archive: list = []
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
 
         # Armature tracking
         self.root_joint_nodes: list[tuple[ET.Element, Object]] = []  # (joint_elem, ob_arm)
@@ -222,8 +224,8 @@ class DocumentImporter:
                     cand = os.path.realpath(os.path.join(os.path.dirname(manifest_path), rel))
                     if cand.startswith(base_real + os.sep) and os.path.isfile(cand):
                         return cand
-            except Exception:
-                pass
+            except Exception as e:
+                self.warnings.append(f"Could not parse archive manifest.xml: {e}")
 
         return extracted_daes[0] if extracted_daes else None
 
@@ -231,25 +233,42 @@ class DocumentImporter:
         ext = os.path.splitext(self.settings.filepath)[1].lower()
         if ext in (".zae", ".kmz", ".zip"):
             with tempfile.TemporaryDirectory(prefix="blender_collada_") as tmpdir:
-                dae_path = self._extract_archive_dae(self.settings.filepath, tmpdir)
-                if dae_path is None:
-                    print(f"Collada import: No .dae file found inside archive {self.settings.filepath}")
+                self._archive_root = os.path.realpath(tmpdir)
+                self._loaded_images_from_archive = []
+                ok = False
+                try:
+                    dae_path = self._extract_archive_dae(self.settings.filepath, tmpdir)
+                    if dae_path is None:
+                        self.errors.append(f"No .dae file found inside archive: {os.path.basename(self.settings.filepath)}")
+                        return False
+                    self.dae_dir = os.path.dirname(dae_path)
+                    ok = self._import_dae_file(dae_path, pack_images=True)
+                    return ok
+                except Exception as e:
+                    self.errors.append(f"Archive import failed: {e}")
                     return False
-                self.dae_dir = os.path.dirname(dae_path)
-                ok = self._import_dae_file(dae_path, pack_images=True)
-                return ok
+                finally:
+                    if not ok:
+                        for ima in self._loaded_images_from_archive:
+                            try:
+                                if ima.name in bpy.data.images:
+                                    bpy.data.images.remove(ima)
+                            except Exception:
+                                pass
+                    self._loaded_images_from_archive = []
+                    self._archive_root = None
         return self._import_dae_file(self.settings.filepath, pack_images=False)
 
     def _import_dae_file(self, dae_path: str, pack_images: bool = False) -> bool:
         try:
             tree = ET.parse(dae_path)
         except Exception as e:
-            print(f"Collada import: Failed to parse XML: {e}")
+            self.errors.append(f"Failed to parse XML: {e}")
             return False
 
         root = tree.getroot()
         if _strip_ns(root.tag) != "COLLADA":
-            print("Collada import: Root element is not <COLLADA>")
+            self.errors.append("Root element is not <COLLADA>")
             return False
 
         # Deselect all existing objects
@@ -318,8 +337,8 @@ class DocumentImporter:
             for ima in self._loaded_images_from_archive:
                 try:
                     ima.pack()
-                except Exception:
-                    pass
+                except Exception as e:
+                    self.warnings.append(f"Could not pack archive image {ima.name}: {e}")
 
         self.view_layer.update()
         return True
@@ -379,6 +398,28 @@ class DocumentImporter:
         # Normalize embedded backslashes so Windows-authored DAEs resolve on Linux/macOS
         norm = native.replace("\\", os.sep)
         bname = os.path.basename(norm)
+
+        if self._archive_root is not None:
+            # Confine archive texture lookups strictly inside the extracted temp directory
+            rel_candidates = [
+                os.path.join(self.dae_dir, native),
+                os.path.join(self.dae_dir, norm),
+                os.path.join(self.dae_dir, bname),
+                os.path.join(self.dae_dir, "textures", bname),
+                os.path.join(self.dae_dir, "Textures", bname),
+                os.path.join(self.dae_dir, "images", bname),
+                os.path.join(self.dae_dir, "Images", bname),
+                os.path.join(self.dae_dir, "maps", bname),
+            ]
+            prefix = self._archive_root + os.sep
+            for cand in rel_candidates:
+                if not cand:
+                    continue
+                real = os.path.realpath(cand)
+                if real.startswith(prefix) and os.path.isfile(real):
+                    return real
+            return None
+
         candidates = [
             os.path.join(self.dae_dir, native),
             os.path.join(self.dae_dir, norm),
@@ -402,15 +443,19 @@ class DocumentImporter:
             init_from = _find_child(img_elem, "init_from")
             if init_from is None or not init_from.text:
                 continue
-            workpath = self._resolve_image_path(init_from.text.strip())
+            raw_ref = init_from.text.strip()
+            workpath = self._resolve_image_path(raw_ref)
             if workpath is None:
+                self.warnings.append(f"Missing texture: {os.path.basename(_uri_to_native_path(raw_ref)) or raw_ref}")
                 continue
             try:
-                ima = bpy.data.images.load(workpath, check_existing=True)
+                is_archive = self._archive_root is not None
+                ima = bpy.data.images.load(workpath, check_existing=not is_archive)
                 self.images_by_id[img_id] = ima
-                self._loaded_images_from_archive.append(ima)
+                if is_archive:
+                    self._loaded_images_from_archive.append(ima)
             except Exception as e:
-                print(f"Collada import: Cannot load image {workpath}: {e}")
+                self.warnings.append(f"Cannot load image {os.path.basename(workpath)}: {e}")
 
     # ------------------------------------------------------------------
     # <library_effects> & <library_materials>
@@ -1185,7 +1230,7 @@ class DocumentImporter:
                 try:
                     me.normals_split_custom_set(all_loop_normals)
                 except Exception as e:
-                    print(f"Collada import: Could not set custom normals on {geom_name}: {e}")
+                    self.warnings.append(f"Could not set custom normals on {geom_name}: {e}")
 
         me.update()
         self.meshes_by_id[geom_id] = me
@@ -1519,7 +1564,6 @@ class DocumentImporter:
                 self.root_objects.append(ob)
             if node_id:
                 self.object_by_node_id[node_id] = ob
-                self.node_elem_by_id[node_id] = node
 
         primary_ob = created[0] if created else parent_ob
         for ch in child_nodes:

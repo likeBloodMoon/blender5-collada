@@ -4,6 +4,20 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.2.0] - 2026-11-23
+
+### Added
+- **Collection Exporters support**: added hidden `collection` property to `wm.collada_export` so Blender 5.0+'s per-collection Exporters panel exports only objects belonging to that collection (ideal for exporting individual vehicle/game parts in one click).
+- **UI error and warning reporting**: `wm.collada_import` now collects exact diagnostics (e.g., `"Root element is not <COLLADA>"`, `"Missing texture: wood.png"`, XML parse errors, archive errors) and surfaces them directly via `self.report()` instead of hiding them in the system console.
+
+### Fixed
+- **Archive (`.zae` / `.kmz` / `.zip`) texture security**: confined archive image resolution strictly to the extracted temporary directory so an archive cannot read or pack arbitrary files from outside the archive on disk.
+- **Archive partial-failure cleanup**: if an archive import fails partway, any newly loaded temporary images are removed from `bpy.data.images` before the temp directory is deleted.
+- Removed duplicate `node_elem_by_id` initialization/assignment and unused imports (`Euler`, `Quaternion`, `field`) in `import_collada.py`.
+
+### Tests
+- Added `pro_zae_blocks_external_disk_image`, `pro_collection_exporter`, and `pro_error_reporting` to CI deep verification (now **60 / 60** checks).
+
 ## [1.1.1] - 2026-11-23
 
 ### Fixed
@@ -34,6 +48,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.2.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/likeBloodMoon/blender5-collada/releases/tag/v1.0.0

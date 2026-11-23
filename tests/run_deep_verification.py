@@ -774,6 +774,87 @@ print("SHARP_RESULT:", json.dumps({{"sharp": sharp_keys, "all_smooth": all_smoot
         print(f"[FAIL] pro_sharp_edges_from_normals\n{r_sh.stderr[-400:]}")
         record(False)
 
+    # 5D. .zae security: archive referencing an external image on disk MUST NOT load/pack it
+    ext_png = os.path.join(DEEP_WORK, "secret_outside.png")
+    # Write a minimal valid 1x1 PNG on disk outside the archive
+    import base64
+    with open(ext_png, "wb") as f:
+        f.write(base64.b64decode("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="))
+    zae_sec = os.path.join(DEEP_WORK, "ext_sec_test.zae")
+    ext_uri = ext_png.replace("\\", "/")
+    if len(ext_uri) >= 2 and ext_uri[1] == ":":
+        ext_uri = "file:///" + ext_uri
+    sec_dae = f"""<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>
+  <library_images><image id="ExtImg"><init_from>{ext_uri}</init_from></image></library_images>
+  <library_visual_scenes><visual_scene id="Scene"><node id="Empty" name="Empty" type="NODE"/></visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>"""
+    with zipfile.ZipFile(zae_sec, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("model.dae", sec_dae)
+    sec_check = f"""
+import bpy
+for im in list(bpy.data.images): bpy.data.images.remove(im)
+bpy.ops.wm.collada_import(filepath=r"{zae_sec}")
+print("SEC_IMAGES:", len(bpy.data.images))
+"""
+    r_sec = run_blender(BLENDER_53, None, sec_check)
+    if r_sec.returncode == 0 and "SEC_IMAGES: 0" in r_sec.stdout:
+        print("[PASS] pro_zae_blocks_external_disk_image (0 images loaded from outside archive)")
+        record(True)
+    else:
+        print(f"[FAIL] pro_zae_blocks_external_disk_image:\n{r_sec.stdout[-300:]}\n{r_sec.stderr[-300:]}")
+        record(False)
+
+    # 5E. Collection Exporters: collection="Wheel" exports only cylinder, excludes Suzanne
+    coll_dae = os.path.join(DEEP_WORK, "ext_coll_wheel.dae")
+    coll_check = f"""
+import bpy
+for ob in list(bpy.data.objects): bpy.data.objects.remove(ob, do_unlink=True)
+wheel_col = bpy.data.collections.new("Wheel")
+bpy.context.scene.collection.children.link(wheel_col)
+bpy.ops.mesh.primitive_cylinder_add()
+cyl = bpy.context.active_object
+cyl.name = "WheelCyl"
+for c in list(cyl.users_collection): c.objects.unlink(cyl)
+wheel_col.objects.link(cyl)
+bpy.ops.mesh.primitive_monkey_add()
+mon = bpy.context.active_object
+mon.name = "OutsideSuzanne"
+res = bpy.ops.wm.collada_export(filepath=r"{coll_dae}", collection="Wheel", check_existing=False)
+assert "FINISHED" in res
+"""
+    r_col = run_blender(BLENDER_53, None, coll_check)
+    dae_txt = open(coll_dae, "r", encoding="utf-8").read() if os.path.exists(coll_dae) else ""
+    if r_col.returncode == 0 and "WheelCyl" in dae_txt and "OutsideSuzanne" not in dae_txt:
+        print("[PASS] pro_collection_exporter (Wheel collection exported only WheelCyl, excluded OutsideSuzanne)")
+        record(True)
+    else:
+        print(f"[FAIL] pro_collection_exporter:\n{r_col.stderr[-300:]}")
+        record(False)
+
+    # 5F. User-visible error reporting on invalid XML root
+    bad_dae = os.path.join(DEEP_WORK, "ext_bad_root.dae")
+    with open(bad_dae, "w", encoding="utf-8") as f:
+        f.write("<NOT_COLLADA/>")
+    err_check = f"""
+import bpy
+try:
+    res = bpy.ops.wm.collada_import(filepath=r"{bad_dae}")
+    print("BAD_RES:", res)
+except RuntimeError as e:
+    print("BAD_ERR:", e)
+"""
+    r_err = run_blender(BLENDER_53, None, err_check)
+    combined_err = r_err.stdout + "\n" + r_err.stderr
+    if "Root element is not <COLLADA>" in combined_err and ("BAD_ERR:" in r_err.stdout or "CANCELLED" in r_err.stdout):
+        print("[PASS] pro_error_reporting (surfaces exact reason via self.report)")
+        record(True)
+    else:
+        print(f"[FAIL] pro_error_reporting:\n{combined_err[-400:]}")
+        record(False)
+
     print(f"\nDEEP VERIFICATION SUMMARY: {total_pass}/{total_pass + total_fail} PASS")
     return 0 if total_fail == 0 else 1
 

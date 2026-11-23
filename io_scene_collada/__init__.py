@@ -55,6 +55,13 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
         options={"HIDDEN"},
     )
 
+    collection: StringProperty(
+        name="Collection",
+        description="Export only objects in this collection (used by Blender Collection Exporters)",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
     prop_bc_export_ui_section: EnumProperty(
         name="Export Section",
         description="Only for User Interface organization",
@@ -392,6 +399,7 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             open_sim=self.open_sim,
             limit_precision=self.limit_precision,
             keep_bind_info=self.keep_bind_info,
+            collection=self.collection,
         )
 
         exporter = DocumentExporter(context, settings)
@@ -522,10 +530,16 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         )
 
         importer = DocumentImporter(context, settings)
-        if importer.import_document():
+        ok = importer.import_document()
+        for warn in importer.warnings:
+            self.report({"WARNING"}, warn)
+        if ok:
             return {"FINISHED"}
 
-        self.report({"ERROR"}, "Parsing errors in Document (see Blender Console)")
+        if importer.errors:
+            self.report({"ERROR"}, "; ".join(importer.errors))
+        else:
+            self.report({"ERROR"}, "Collada import failed")
         return {"CANCELLED"}
 
 
