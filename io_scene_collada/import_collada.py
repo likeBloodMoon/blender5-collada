@@ -11,6 +11,7 @@ import math
 import os
 import re
 import urllib.parse
+import warnings as _warnings_mod
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -83,17 +84,21 @@ def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: st
     if res is not None:
         return res
     try:
-        return np.fromstring(text, sep=" ", dtype=np.float32)
-    except ValueError:
+        with _warnings_mod.catch_warnings():
+            _warnings_mod.simplefilter("error", DeprecationWarning)
+            return np.fromstring(text, sep=" ", dtype=np.float32)
+    except (ValueError, DeprecationWarning):
         if "#" in text:
             cleaned, count = _LEGACY_NONFINITE_RE.subn("0.0", text)
             if count > 0:
                 try:
-                    arr = np.fromstring(cleaned, sep=" ", dtype=np.float32)
+                    with _warnings_mod.catch_warnings():
+                        _warnings_mod.simplefilter("error", DeprecationWarning)
+                        arr = np.fromstring(cleaned, sep=" ", dtype=np.float32)
                     if warnings is not None:
                         warnings.append(f"Replaced {count} legacy non-finite token(s) with 0.0 in {label}")
                     return arr
-                except ValueError:
+                except (ValueError, DeprecationWarning):
                     pass
         if warnings is not None:
             warnings.append(f"Invalid number in {label}")
@@ -109,8 +114,10 @@ def _parse_i32_np(text: str | None, warnings: list[str] | None = None, label: st
     if res is not None:
         return res
     try:
-        return np.fromstring(text, sep=" ", dtype=np.int32)
-    except ValueError:
+        with _warnings_mod.catch_warnings():
+            _warnings_mod.simplefilter("error", DeprecationWarning)
+            return np.fromstring(text, sep=" ", dtype=np.int32)
+    except (ValueError, DeprecationWarning):
         if warnings is not None:
             warnings.append(f"Invalid integer in {label}")
         return None
