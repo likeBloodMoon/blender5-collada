@@ -49,7 +49,11 @@ def normalize_dae_metadata(data: bytes) -> bytes:
     # so top-level <animation id="action_container-..."> order varies by heap address across OSes.
     def _sort_anim_containers(m: re.Match) -> str:
         body = m.group(1)
-        blocks = re.findall(r'    <animation id="action_container-[^"]*".*?    </animation>\n', body, flags=re.DOTALL)
+        blocks = re.findall(
+            r'    <animation id="action_container-[^"]*".*?\n    </animation>\n',
+            body,
+            flags=re.DOTALL,
+        )
         if len(blocks) >= 2 and "".join(blocks) == body:
             blocks.sort(key=lambda b: re.search(r'id="(action_container-[^"]*)"', b).group(1))
             return "<library_animations>\n" + "".join(blocks) + "  </library_animations>"
