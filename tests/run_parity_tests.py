@@ -379,6 +379,27 @@ pb.keyframe_insert(data_path="rotation_euler", frame=10)
 
 bpy.ops.wm.save_as_mainfile(filepath=r"{blend}")
 """,
+    "07_sharp_autosmooth": """
+import bpy, math
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cylinder_add(vertices=32, radius=1.0, depth=2.0, end_fill_type="NGON")
+cyl = bpy.context.active_object
+cyl.name = "SharpCylinder"
+me = cyl.data
+for p in me.polygons:
+    p.use_smooth = True
+# Mark the 64 rim edges (top and bottom cap perimeters) sharp
+se = me.attributes.new(name="sharp_edge", type="BOOLEAN", domain="EDGE")
+verts = me.vertices
+se.data.foreach_set("value", [
+    abs(verts[e.vertices[0]].co.z - verts[e.vertices[1]].co.z) < 1e-4
+    for e in me.edges
+])
+me.update()
+
+bpy.ops.wm.save_as_mainfile(filepath=r"{blend}")
+""",
 }
 
 
@@ -399,6 +420,8 @@ EXPORT_TEST_CASES: list[tuple[str, str, dict]] = [
     ("06_anim_matrix_sample", "06_animations", {"include_animations": True, "export_animation_type_selection": "sample", "export_animation_transformation_type_selection": "matrix", "sampling_rate": 3}),
     ("06_anim_decomposed_sample", "06_animations", {"include_animations": True, "export_animation_type_selection": "sample", "export_animation_transformation_type_selection": "decomposed", "sampling_rate": 3}),
     ("06_anim_curves_keys", "06_animations", {"include_animations": True, "export_animation_type_selection": "keys", "keep_smooth_curves": True}),
+    ("07_sharp_autosmooth_polylist", "07_sharp_autosmooth", {"triangulate": False}),
+    ("07_sharp_autosmooth_triangulated", "07_sharp_autosmooth", {"triangulate": True}),
 ]
 
 

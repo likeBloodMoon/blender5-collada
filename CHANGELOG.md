@@ -4,6 +4,15 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.1.1] - 2026-11-23
+
+### Fixed
+- **Hard edges / Shade Auto Smooth smoothed over on export**: `_create_normals()` now uses `mesh.corner_normals` whenever `mesh.has_custom_normals or mesh.normals_domain == "CORNER"` (matching Blender 4.5.1's `GeometryExporter.cpp:635`), preserving sharp rim/crease normals on meshes with `sharp_edge` or mixed flat/smooth faces.
+- **N-gon triangulation parity**: switched `bmesh.ops.triangulate()` in `collada_utils.py` from `ngon_method="EAR_CLIP"` to `ngon_method="BEAUTY"` and added `bm.normal_update()` before triangulation to match Blender 4.5.1's `bc_triangulate_mesh()` (`calc_face_normal = true`, `use_beauty = false` = `MOD_TRIANGULATE_NGON_BEAUTY`).
+
+### Tests
+- Added `07_sharp_autosmooth_polylist` and `07_sharp_autosmooth_triangulated` (32-sided cylinder with 64 sharp rim edges and n-gon caps) to CI parity tests (now **57 / 57** checks).
+
 ## [1.1.0] - 2026-11-23
 
 ### Performance
@@ -25,5 +34,6 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.1.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.0...v1.1.1
 [1.1.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.0.0...v1.1.0
 [1.0.0]: https://github.com/likeBloodMoon/blender5-collada/releases/tag/v1.0.0

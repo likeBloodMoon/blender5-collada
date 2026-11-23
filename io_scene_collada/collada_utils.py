@@ -418,11 +418,12 @@ def get_mesh_copy(
     if triangulate:
         bm = bmesh.new()
         bm.from_mesh(mesh_copy)
+        bm.normal_update()
         bmesh.ops.triangulate(
             bm,
             faces=bm.faces[:],
             quad_method="SHORT_EDGE",
-            ngon_method="EAR_CLIP",
+            ngon_method="BEAUTY",
         )
         bm.to_mesh(mesh_copy)
         bm.free()

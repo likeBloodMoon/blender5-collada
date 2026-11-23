@@ -813,11 +813,11 @@ class DocumentExporter:
         if n_polys == 0:
             return np.empty((0, 3), dtype=np.float32), np.empty((0,), dtype=np.int32)
 
-        has_custom = mesh.has_custom_normals
-        all_vert_normals = has_custom or bool(use_smooth.all())
-        all_flat = (not has_custom) and (not bool(use_smooth.any()))
+        use_corner_normals = mesh.has_custom_normals or mesh.normals_domain == "CORNER"
+        all_vert_normals = use_corner_normals or bool(use_smooth.all())
+        all_flat = (not use_corner_normals) and (not bool(use_smooth.any()))
 
-        # Fast path 1: all flat faces (no custom normals) -> 1 normal per polygon, no dedup
+        # Fast path 1: all flat faces (no corner normals) -> 1 normal per polygon, no dedup
         if all_flat:
             poly_normals = np.empty(n_polys * 3, dtype=np.float32)
             mesh.polygons.foreach_get("normal", poly_normals)
@@ -825,9 +825,9 @@ class DocumentExporter:
             loop_norm_idx = np.repeat(np.arange(n_polys, dtype=np.int32), loop_totals)
             return normals_arr, loop_norm_idx
 
-        # Fast path 2: all custom normals or all smooth faces -> deduplicate in first-seen order
+        # Fast path 2: corner normals or all smooth faces -> deduplicate in first-seen order
         if all_vert_normals:
-            if has_custom:
+            if use_corner_normals:
                 raw_n = np.empty(n_loops * 3, dtype=np.float32)
                 mesh.corner_normals.foreach_get("vector", raw_n)
                 raw_n = raw_n.reshape(n_loops, 3)
