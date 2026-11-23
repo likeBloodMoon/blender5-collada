@@ -544,8 +544,14 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
 
         importer = DocumentImporter(context, settings)
         ok = importer.import_document()
-        for warn in importer.warnings:
+        max_warnings = 5
+        for warn in importer.warnings[:max_warnings]:
             self.report({"WARNING"}, warn)
+        if len(importer.warnings) > max_warnings:
+            self.report(
+                {"WARNING"},
+                f"... and {len(importer.warnings) - max_warnings} more warning(s)",
+            )
         if ok:
             return {"FINISHED"}
 
