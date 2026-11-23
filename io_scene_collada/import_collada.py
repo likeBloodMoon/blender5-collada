@@ -582,7 +582,6 @@ class DocumentImporter:
             tex = _find_child(em, "texture")
             col_el = _find_child(em, "color")
             ec_sock = shader_node.inputs.get("Emission Color")
-            es_sock = shader_node.inputs.get("Emission Strength")
             if tex is not None:
                 ima = resolve_texture_image(tex)
                 if ima is not None and ec_sock is not None:
@@ -2067,7 +2066,6 @@ class DocumentImporter:
 
         # Compute rest matrices (AnimationImporter::apply_matrix_curves formula: iR @ M @ iR_dae @ R)
         rest_local = self._read_node_matrix(jnode)
-        irest_dae = rest_local.inverted()
         rest = bone.matrix_local.copy()
         irest = rest.inverted()
 

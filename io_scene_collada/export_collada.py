@@ -21,7 +21,6 @@ from .xml_writer import (
     ColladaStreamWriter,
     encode_xml,
     f32,
-    fmt_bool,
     fmt_f32,
     fmt_f32_array,
     fmt_float,
@@ -38,7 +37,6 @@ from .collada_utils import (
     bc_decompose,
     build_export_set,
     build_global_transform,
-    double_round,
     focallength_to_fov,
     get_action_id,
     get_assigned_armature,
@@ -65,7 +63,7 @@ from .collada_utils import (
 )
 
 if TYPE_CHECKING:
-    from bpy.types import Bone, Context, Material, Mesh, Object, Scene
+    from bpy.types import Bone, Context, Mesh, Object, Scene
 
 
 @dataclass
@@ -1495,8 +1493,6 @@ class DocumentExporter:
         animated_objs = [ob for ob in reversed(self.export_set) if self._object_has_animations(ob)]
         if not animated_objs:
             return
-
-        fps = self.scene.render.fps / self.scene.render.fps_base
 
         if True:
             self.sw.open_element("library_animations")

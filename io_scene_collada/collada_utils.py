@@ -18,7 +18,7 @@ from mathutils import Euler, Matrix, Quaternion, Vector
 from bpy_extras.io_utils import axis_conversion
 
 if TYPE_CHECKING:
-    from bpy.types import Action, AnimData, Bone, FCurve, Material, Mesh, Object, Scene, ViewLayer
+    from bpy.types import AnimData, Bone, FCurve, Material, Mesh, Object, Scene, ViewLayer
 
 
 LIMITED_PRECISION = 6

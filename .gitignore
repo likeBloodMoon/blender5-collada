@@ -1,5 +1,6 @@
-# Local Blender portable installations & reference source
+# Local Blender portable installations, venvs & reference source
 .tools/
+.venv*/
 blender-4.5.1-src/
 
 # Built extension archives (attach to GitHub Releases instead)
