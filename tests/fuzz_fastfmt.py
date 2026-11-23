@@ -141,6 +141,18 @@ def main() -> int:
     i_parsed = native_parse_i32(i_nat)
     assert np.array_equal(i_parsed, i_arr)
     print(f"[PASS] fmt_i32_array & parse_i32 ({len(i_parsed)} ints)")
+
+    # 4. Leading '+' and ok==0 fallback on invalid tokens
+    fp_plus = native_parse_f32("+1 +0 +2.5 -3.5  \n")
+    assert fp_plus is not None and np.allclose(fp_plus, [1.0, 0.0, 2.5, -3.5])
+    ip_plus = native_parse_i32("+0 +1 +42 -7  \t")
+    assert ip_plus is not None and np.array_equal(ip_plus, [0, 1, 42, -7])
+    assert native_parse_f32("1 2 x 4") is None
+    assert native_parse_f32("1.#QNAN 2") is None
+    assert native_parse_f32("++1 2") is None
+    assert native_parse_i32("0 1 x 3") is None
+    assert native_parse_i32("0 1.5 2") is None
+    print("[PASS] parse_f32 / parse_i32 leading '+' and invalid-token fallback")
     return 0
 
 

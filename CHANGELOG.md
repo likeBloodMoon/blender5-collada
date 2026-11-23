@@ -4,6 +4,16 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.3.1] - 2026-11-23
+
+- Fixed: malformed files could create invalid meshes that crash Blender; archive textures are now read directly from the zip
+
+### Details
+- **Native & Python array parsing**: `native/fastfmt.cpp` (`parse_f32` / `parse_i32`) now accepts a single leading `+` and reports incomplete parses via an `int* ok` out-param so `_native_loader.py` falls back to Python. Python parsing wraps `np.fromstring`, replaces legacy 3ds Max `1.#QNAN`/`#IND`/`#INF`/`#SNAN` tokens with `0.0` (+ warning), and skips broken geometries with clear warnings instead of tracebacks.
+- **Mesh safety & validation**: Vectorized NumPy bounds checks drop only faces with out-of-range/negative `VERTEX`/`NORMAL`/`TEXCOORD`/`COLOR` indices and replace non-finite positions/attributes with `0.0`. Every imported mesh runs `me.validate(clean_customdata=False)` before applying per-loop UVs/colors/normals and shape keys, and `wm.collada_import` caps UI warnings to the first 5 plus an `"and N more"` summary.
+- **In-memory archive import (`.zae`/`.kmz`/`.zip`)**: Reads the root `.dae` (`manifest.xml` `<dae_root>` first, else deterministic sorted `.dae`) and all textures directly from `zipfile.ZipFile` in memory without temporary directories, never reads textures from the real filesystem, packs & verifies decoded textures via `img.pack(data=..., data_len=...)`, and enforces zip-bomb limits (1 GiB single entry, 4 GiB total, >200× ratio above 50 MB).
+- **Tests**: Added `tests/test_malformed.py`, `tests/fuzz_import.py` (200 seeded iterations), and `tests/test_archives.py` to CI across Blender 5.0.1 and 5.3.0 with `COLLADA_NATIVE=1` and `COLLADA_NATIVE=0`.
+
 ## [1.3.0] - 2026-11-23
 
 ### Added
