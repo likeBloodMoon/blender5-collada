@@ -612,7 +612,36 @@ class DocumentImporter:
             bname = raw_ref.replace("\\", "/").rsplit("/", 1)[-1]
             self.warnings.append(f"Texture not found in archive: {bname or raw_ref}")
             return None
-        return hit
+        norm_entry, info = hit
+        cached = self._archive_images_by_entry.get(norm_entry)
+        if cached is not None:
+            return cached
+        assert self._archive_zf is not None
+        data = self._read_zip_entry(self._archive_zf, info)
+        if not data:
+            self.warnings.append(f"Archive texture is empty: {norm_entry}")
+            return None
+        name = norm_entry.rsplit("/", 1)[-1] or "Image"
+        img = None
+        try:
+            img = bpy.data.images.new(name, 8, 8)
+            img.pack(data=data, data_len=len(data))
+            img.source = "FILE"
+            img.filepath = f"//{self._archive_basename}/{norm_entry}"
+            # Trigger decode and verify pixels/has_data
+            px_len = len(img.pixels)
+            if not img.has_data or px_len == 0:
+                raise RuntimeError("image data could not be decoded")
+            self._archive_images_by_entry[norm_entry] = img
+            return img
+        except Exception as e:
+            self.warnings.append(f"Could not decode archive texture '{norm_entry}': {e}")
+            if img is not None:
+                try:
+                    bpy.data.images.remove(img)
+                except Exception:
+                    pass
+            return None
 
     def _read_library_images(self, lib: ET.Element) -> None:
         for img_elem in _find_children(lib, "image"):
@@ -623,7 +652,7 @@ class DocumentImporter:
             raw_ref = init_from.text.strip()
             if self._archive_zf is not None:
                 ima = self._load_archive_image(raw_ref)
-                if ima is not None and not isinstance(ima, tuple):
+                if ima is not None:
                     self.images_by_id[img_id] = ima
                 continue
 
