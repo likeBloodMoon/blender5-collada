@@ -6,6 +6,7 @@
 
 from __future__ import annotations
 
+import io
 import math
 import os
 import re
@@ -162,6 +163,21 @@ def _uri_to_native_path(uri: str) -> str:
     return urllib.parse.unquote(uri)
 
 
+def _norm_archive_path(raw: str) -> str:
+    """Normalize a zip entry or URI path strictly within the archive namespace."""
+    s = raw.replace("\\", "/")
+    parts: list[str] = []
+    for seg in s.split("/"):
+        if not seg or seg == ".":
+            continue
+        if seg == "..":
+            if parts:
+                parts.pop()
+            continue
+        parts.append(seg)
+    return "/".join(parts)
+
+
 @dataclass
 class _SkinData:
     controller_id: str
@@ -230,6 +246,14 @@ class DocumentImporter:
         self.root_objects: list[Object] = []
         self._archive_root: str | None = None
         self._loaded_images_from_archive: list = []
+        self._archive_zf: zipfile.ZipFile | None = None
+        self._archive_basename: str = ""
+        self._archive_dae_dir: str = ""
+        self._archive_entries: dict[str, zipfile.ZipInfo] = {}
+        self._archive_entries_ci: dict[str, tuple[str, zipfile.ZipInfo]] = {}
+        self._archive_by_basename: dict[str, list[tuple[str, zipfile.ZipInfo]]] = {}
+        self._archive_images_by_entry: dict[str, object] = {}
+        self._archive_bytes_read: int = 0
         self.errors: list[str] = []
         self.warnings: list[str] = []
 
@@ -277,34 +301,109 @@ class DocumentImporter:
 
         return extracted_daes[0] if extracted_daes else None
 
+    def _find_archive_root_dae(self, zf: zipfile.ZipFile) -> tuple[str, zipfile.ZipInfo] | None:
+        """Select root .dae inside an open ZipFile: manifest.xml <dae_root> first, else sorted .dae."""
+        manifest_entries: list[tuple[str, zipfile.ZipInfo]] = []
+        dae_entries: list[tuple[str, zipfile.ZipInfo]] = []
+        for norm_name, info in sorted(self._archive_entries.items()):
+            low = norm_name.lower()
+            if low == "manifest.xml" or low.endswith("/manifest.xml"):
+                manifest_entries.append((norm_name, info))
+            elif low.endswith(".dae"):
+                dae_entries.append((norm_name, info))
+
+        for m_norm, m_info in manifest_entries:
+            try:
+                m_bytes = self._read_zip_entry(zf, m_info)
+                mroot = ET.parse(io.BytesIO(m_bytes)).getroot()
+                dae_root_el = _find_child(mroot, "dae_root")
+                if dae_root_el is not None and dae_root_el.text:
+                    rel = dae_root_el.text.strip()
+                    m_dir = m_norm.rsplit("/", 1)[0] if "/" in m_norm else ""
+                    found = self._lookup_archive_path(m_dir, rel)
+                    if found is not None:
+                        return found
+            except ValueError:
+                raise
+            except Exception as e:
+                self.warnings.append(f"Could not parse archive manifest.xml: {e}")
+
+        return dae_entries[0] if dae_entries else None
+
+    def _read_zip_entry(self, zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
+        return zf.read(info)
+
+    def _build_archive_index(self, zf: zipfile.ZipFile) -> None:
+        self._archive_entries = {}
+        self._archive_entries_ci = {}
+        self._archive_by_basename = {}
+        for info in sorted(zf.infolist(), key=lambda i: i.filename):
+            if info.is_dir():
+                continue
+            norm = _norm_archive_path(info.filename)
+            if not norm:
+                continue
+            if norm not in self._archive_entries:
+                self._archive_entries[norm] = info
+            low = norm.lower()
+            if low not in self._archive_entries_ci:
+                self._archive_entries_ci[low] = (norm, info)
+            bname_low = norm.rsplit("/", 1)[-1].lower()
+            self._archive_by_basename.setdefault(bname_low, []).append((norm, info))
+
+    def _lookup_archive_path(self, base_dir: str, rel_uri: str) -> tuple[str, zipfile.ZipInfo] | None:
+        raw = urllib.parse.unquote(rel_uri.strip())
+        if raw.lower().startswith("file:///"):
+            raw = raw[8:]
+        elif raw.lower().startswith("file://"):
+            raw = raw[7:]
+        raw = raw.replace("\\", "/")
+        cand = _norm_archive_path(f"{base_dir}/{raw}" if base_dir else raw)
+        if cand in self._archive_entries:
+            return (cand, self._archive_entries[cand])
+        ci = self._archive_entries_ci.get(cand.lower())
+        if ci is not None:
+            return ci
+        cand2 = _norm_archive_path(raw)
+        if cand2 in self._archive_entries:
+            return (cand2, self._archive_entries[cand2])
+        return self._archive_entries_ci.get(cand2.lower())
+
     def import_document(self) -> bool:
         ext = os.path.splitext(self.settings.filepath)[1].lower()
         if ext in (".zae", ".kmz", ".zip"):
-            with tempfile.TemporaryDirectory(prefix="blender_collada_") as tmpdir:
-                self._archive_root = os.path.realpath(tmpdir)
-                self._loaded_images_from_archive = []
-                ok = False
-                try:
-                    dae_path = self._extract_archive_dae(self.settings.filepath, tmpdir)
-                    if dae_path is None:
-                        self.errors.append(f"No .dae file found inside archive: {os.path.basename(self.settings.filepath)}")
+            self._archive_basename = os.path.basename(self.settings.filepath)
+            self._archive_images_by_entry = {}
+            self._archive_bytes_read = 0
+            try:
+                with zipfile.ZipFile(self.settings.filepath, "r") as zf:
+                    self._archive_zf = zf
+                    self._build_archive_index(zf)
+                    root_entry = self._find_archive_root_dae(zf)
+                    if root_entry is None:
+                        self.errors.append(
+                            f"No .dae file found inside archive: {self._archive_basename}"
+                        )
                         return False
-                    self.dae_dir = os.path.dirname(dae_path)
-                    ok = self._import_dae_file(dae_path, pack_images=True)
-                    return ok
-                except Exception as e:
-                    self.errors.append(f"Archive import failed: {e}")
-                    return False
-                finally:
-                    if not ok:
-                        for ima in self._loaded_images_from_archive:
-                            try:
-                                if ima.name in bpy.data.images:
-                                    bpy.data.images.remove(ima)
-                            except Exception:
-                                pass
-                    self._loaded_images_from_archive = []
-                    self._archive_root = None
+                    dae_norm, dae_info = root_entry
+                    self._archive_dae_dir = dae_norm.rsplit("/", 1)[0] if "/" in dae_norm else ""
+                    dae_bytes = self._read_zip_entry(zf, dae_info)
+                    try:
+                        tree = ET.parse(io.BytesIO(dae_bytes))
+                    except Exception as e:
+                        self.errors.append(f"Failed to parse XML: {e}")
+                        return False
+                    return self._import_dae_tree(tree)
+            except Exception as e:
+                self.errors.append(f"Archive import failed: {e}")
+                return False
+            finally:
+                self._archive_zf = None
+                self._archive_entries = {}
+                self._archive_entries_ci = {}
+                self._archive_by_basename = {}
+                self._archive_images_by_entry = {}
+                self._archive_dae_dir = ""
         return self._import_dae_file(self.settings.filepath, pack_images=False)
 
     def _import_dae_file(self, dae_path: str, pack_images: bool = False) -> bool:
@@ -313,6 +412,9 @@ class DocumentImporter:
         except Exception as e:
             self.errors.append(f"Failed to parse XML: {e}")
             return False
+        return self._import_dae_tree(tree)
+
+    def _import_dae_tree(self, tree: ET.ElementTree) -> bool:
 
         root = tree.getroot()
         if _strip_ns(root.tag) != "COLLADA":
