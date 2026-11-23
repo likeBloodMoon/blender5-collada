@@ -40,6 +40,14 @@ Blender's old Collada importer often leaves meshes with missing sharp edges (whe
 
 If you're importing game meshes (like car bodies) and want clean, editable sharp edges, turn on **Mark Sharp from Normals** under **Import Data Options** and adjust **Sharp Threshold** (default `1.0°`).
 
+| Default Import (missed creases & stray sharp edges) | With **Mark Sharp from Normals** |
+| :---: | :---: |
+| ![Before: missed sharp edges on grille](docs/images/sharp_before_missed.jpg) | ![After: clean sharp edges on grille](docs/images/sharp_after_grille.jpg) |
+
+Automatic sharp-edge reconstruction on a vehicle fender imported from `.dae` (louvers, headlight recess, wheel-arch lip, and panel seams):
+
+![Imported vehicle fender with clean sharp edges](docs/images/sharp_after_fender.jpg)
+
 ---
 
 ## What's Supported
