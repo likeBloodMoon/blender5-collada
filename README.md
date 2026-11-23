@@ -33,7 +33,7 @@ This extension implements the complete Blender 4.5.1 COLLADA importer and export
 
 ### Option 2: Install via Blender CLI
 ```bash
-blender --command extension install-file -r user_default -e collada_io-1.0.0.zip
+blender --command extension install-file -r user_default -e collada_io-1.1.0.zip
 ```
 
 ## Usage

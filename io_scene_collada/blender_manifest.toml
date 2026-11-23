@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "collada_io"
-version = "1.0.0"
+version = "1.1.0"
 name = "Collada (DAE) Import/Export"
 tagline = "Collada (.dae) import/export for Blender 5.0+ (based on 4.5.1)"
 maintainer = "likeBloodMoon"

@@ -49,6 +49,42 @@ def fmt_f32(val: float) -> str:
     return fmt_float(f32(val), 7)
 
 
+def _fmt_f32_sanitized(v: float) -> str:
+    """Fast formatter for already-float32, finite, +0-normalized scalars."""
+    if v == 0.0:
+        return "0"
+    av = -v if v < 0.0 else v
+    if av < 1e-4 or av >= 1e7:
+        s = f"{v:.6g}"
+        if "e-0" in s:
+            return s.replace("e-0", "e-")
+        if "e+0" in s:
+            return s.replace("e+0", "e+")
+        return s
+    return f"{v:.7g}"
+
+
+def fmt_f32_array(arr) -> str:
+    """Format a 1D/ND numpy float32 array to space-separated OpenCOLLADA floats."""
+    import numpy as np
+
+    a = np.asarray(arr, dtype=np.float32).ravel()
+    if a.size == 0:
+        return ""
+    if not np.isfinite(a).all():
+        a = np.where(np.isfinite(a), a, np.float32(0.0))
+    # Normalize -0.0 to +0.0
+    if (a == 0.0).any():
+        a = a.copy()
+        a[a == 0.0] = 0.0
+    return " ".join(map(_fmt_f32_sanitized, a.tolist()))
+
+
+def fmt_int_array(arr) -> str:
+    """Format a 1D/ND numpy integer array to space-separated ints."""
+    return " ".join(map(str, arr.ravel().tolist()))
+
+
 def fmt_int(val: int) -> str:
     return str(int(val))
 

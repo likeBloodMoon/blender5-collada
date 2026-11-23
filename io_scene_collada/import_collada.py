@@ -807,13 +807,19 @@ class DocumentImporter:
             self._read_mesh(geom_id, geom_name, mesh_elem)
 
     def _read_mesh(self, geom_id: str, geom_name: str, mesh_elem: ET.Element) -> None:
-        # Parse all <source> elements
-        sources: dict[str, tuple[list[float], int, str]] = {}
+        import numpy as np
+
+        # Parse all <source> elements with C-speed np.fromstring
+        sources: dict[str, tuple[np.ndarray, int, str]] = {}
         for src in _find_children(mesh_elem, "source"):
             sid = src.attrib.get("id", "")
             sname = src.attrib.get("name") or sid
             fa = _find_child(src, "float_array")
-            vals = _parse_floats(fa.text) if fa is not None else []
+            vals = (
+                np.fromstring(fa.text, sep=" ", dtype=np.float32)
+                if (fa is not None and fa.text)
+                else np.empty(0, dtype=np.float32)
+            )
             stride = 3
             tc = _find_child(src, "technique_common")
             if tc is not None:
@@ -824,11 +830,9 @@ class DocumentImporter:
 
         # Parse <vertices>
         verts_elem = _find_child(mesh_elem, "vertices")
-        verts_id = ""
         pos_source_id = ""
         vert_normal_src_id = ""
         if verts_elem is not None:
-            verts_id = verts_elem.attrib.get("id", "")
             for inp in _find_children(verts_elem, "input"):
                 sem = inp.attrib.get("semantic", "")
                 if sem == "POSITION":
@@ -836,22 +840,25 @@ class DocumentImporter:
                 elif sem == "NORMAL":
                     vert_normal_src_id = _uri_to_local_id(inp.attrib.get("source"))
 
-        pos_vals, pos_stride, _ = sources.get(pos_source_id, ([], 3, ""))
+        pos_vals, pos_stride, _ = sources.get(pos_source_id, (np.empty(0, dtype=np.float32), 3, ""))
         if pos_stride <= 0:
             pos_stride = 3
-        num_verts = len(pos_vals) // pos_stride
+        num_verts = pos_vals.size // pos_stride
 
-        # Collect primitives
-        face_vert_indices: list[list[int]] = []
-        face_sharp: list[bool] = []
-        loop_normals: list[tuple[float, float, float]] = []
+        # Collect per-primitive vectorized chunks
+        vcount_chunks: list[np.ndarray] = []
+        loop_vert_chunks: list[np.ndarray] = []
+        face_sharp_chunks: list[np.ndarray] = []
+        loop_norm_chunks: list[np.ndarray] = []
         has_all_loop_normals = True
-        uv_sets: dict[str, list[tuple[float, float]]] = {}
+        uv_chunks: dict[str, list[np.ndarray]] = {}
         uv_set_order: list[str] = []
-        col_sets: dict[str, list[tuple[float, float, float, float]]] = {}
+        col_chunks: dict[str, list[np.ndarray]] = {}
         col_set_order: list[str] = []
         loose_edges: list[tuple[int, int]] = []
         mat_prims: dict[str, list[tuple[int, int]]] = {}  # material_symbol -> [(start_face, count)]
+        total_faces = 0
+        total_loops = 0
 
         def extract_vcolname(src_id: str, src_name: str) -> str:
             if src_name and src_name != src_id:
@@ -891,15 +898,19 @@ class DocumentImporter:
                     norm_off = off
                     norm_src_id = src_id
                 elif sem == "TEXCOORD":
-                    if src_id not in uv_sets:
-                        uv_sets[src_id] = []
+                    if src_id not in uv_chunks:
+                        uv_chunks[src_id] = (
+                            [np.zeros((total_loops, 2), dtype=np.float32)] if total_loops > 0 else []
+                        )
                         uv_set_order.append(src_id)
                     uv_inputs.append((src_id, off))
                 elif sem == "COLOR":
                     sname = sources[src_id][2] if src_id in sources else src_id
                     cname = extract_vcolname(src_id, sname)
-                    if cname not in col_sets:
-                        col_sets[cname] = []
+                    if cname not in col_chunks:
+                        col_chunks[cname] = (
+                            [np.ones((total_loops, 4), dtype=np.float32)] if total_loops > 0 else []
+                        )
                         col_set_order.append(cname)
                     col_inputs.append((cname, src_id, off))
 
@@ -908,203 +919,273 @@ class DocumentImporter:
 
             if tag == "lines":
                 p_el = _find_child(child, "p")
-                if p_el is not None:
-                    p_ints = _parse_ints(p_el.text)
-                    cnt = len(p_ints) // (2 * num_inputs)
-                    for i in range(cnt):
-                        v0 = p_ints[(2 * i) * num_inputs + vert_off]
-                        v1 = p_ints[(2 * i + 1) * num_inputs + vert_off]
-                        loose_edges.append((v0, v1))
+                if p_el is not None and p_el.text:
+                    p_arr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                    cnt = p_arr.size // (2 * num_inputs)
+                    if cnt > 0:
+                        p2 = p_arr[:cnt * 2 * num_inputs].reshape(cnt, 2, num_inputs)
+                        loose_edges.extend(zip(p2[:, 0, vert_off].tolist(), p2[:, 1, vert_off].tolist()))
                 continue
 
-            # Face primitives
-            mat_sym = child.attrib.get("material", "")
-            prim_start_face = len(face_vert_indices)
-            prim_face_count = 0
+            # Parse primitive into (prim_vcounts, prim_p[n_loops, num_inputs])
+            prim_vcounts: np.ndarray | None = None
+            prim_p: np.ndarray | None = None
 
-            # Build list of polygons as lists of tuple-starts into p_ints
-            poly_chunks: list[tuple[list[int], int, int]] = []  # (p_ints, start_vert_elem, vcount)
             if tag == "triangles":
                 p_el = _find_child(child, "p")
-                if p_el is not None:
-                    p_ints = _parse_ints(p_el.text)
-                    tri_count = len(p_ints) // (3 * num_inputs)
-                    for t in range(tri_count):
-                        poly_chunks.append((p_ints, t * 3, 3))
+                if p_el is not None and p_el.text:
+                    p_raw = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                    tri_count = p_raw.size // (3 * num_inputs)
+                    if tri_count > 0:
+                        prim_p = p_raw[:tri_count * 3 * num_inputs].reshape(tri_count * 3, num_inputs)
+                        prim_vcounts = np.full(tri_count, 3, dtype=np.int32)
             elif tag == "polylist":
                 vc_el = _find_child(child, "vcount")
                 p_el = _find_child(child, "p")
-                if vc_el is not None and p_el is not None:
-                    vcounts = _parse_ints(vc_el.text)
-                    p_ints = _parse_ints(p_el.text)
-                    cursor = 0
-                    for vc in vcounts:
-                        if vc >= 3:
-                            poly_chunks.append((p_ints, cursor, vc))
-                        cursor += abs(vc)
+                if vc_el is not None and vc_el.text and p_el is not None and p_el.text:
+                    vc_raw = np.fromstring(vc_el.text, sep=" ", dtype=np.int32)
+                    p_raw = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                    n_tuples = p_raw.size // num_inputs
+                    p_2d = p_raw[:n_tuples * num_inputs].reshape(n_tuples, num_inputs)
+                    if vc_raw.size > 0 and bool((vc_raw >= 3).all()):
+                        need = int(vc_raw.sum())
+                        if need <= n_tuples:
+                            prim_vcounts = vc_raw
+                            prim_p = p_2d[:need]
+                    elif vc_raw.size > 0:
+                        valid_vc: list[int] = []
+                        valid_rows: list[np.ndarray] = []
+                        cursor = 0
+                        for vc in vc_raw.tolist():
+                            if vc >= 3 and cursor + vc <= n_tuples:
+                                valid_vc.append(vc)
+                                valid_rows.append(p_2d[cursor:cursor + vc])
+                            cursor += abs(vc)
+                        if valid_vc:
+                            prim_vcounts = np.asarray(valid_vc, dtype=np.int32)
+                            prim_p = np.vstack(valid_rows)
             elif tag == "polygons":
-                for p_el in _find_children(child, "p"):
-                    p_ints = _parse_ints(p_el.text)
-                    vc = len(p_ints) // num_inputs
-                    if vc >= 3:
-                        poly_chunks.append((p_ints, 0, vc))
+                p_list: list[np.ndarray] = []
+                vc_list: list[int] = []
+                p_elems = list(_find_children(child, "p"))
                 for ph_el in _find_children(child, "ph"):
-                    p_el = _find_child(ph_el, "p")
-                    if p_el is not None:
-                        p_ints = _parse_ints(p_el.text)
-                        vc = len(p_ints) // num_inputs
+                    pe = _find_child(ph_el, "p")
+                    if pe is not None:
+                        p_elems.append(pe)
+                for p_el in p_elems:
+                    if p_el.text:
+                        pr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                        vc = pr.size // num_inputs
                         if vc >= 3:
-                            poly_chunks.append((p_ints, 0, vc))
+                            vc_list.append(vc)
+                            p_list.append(pr[:vc * num_inputs].reshape(vc, num_inputs))
+                if vc_list:
+                    prim_vcounts = np.asarray(vc_list, dtype=np.int32)
+                    prim_p = np.vstack(p_list)
             elif tag == "trifans":
+                tri_rows: list[np.ndarray] = []
+                tri_total = 0
                 for p_el in _find_children(child, "p"):
-                    p_ints = _parse_ints(p_el.text)
-                    vc = len(p_ints) // num_inputs
-                    if vc >= 3:
-                        for k in range(1, vc - 1):
-                            tri_p = (
-                                p_ints[0:num_inputs]
-                                + p_ints[k * num_inputs:(k + 1) * num_inputs]
-                                + p_ints[(k + 1) * num_inputs:(k + 2) * num_inputs]
-                            )
-                            poly_chunks.append((tri_p, 0, 3))
+                    if p_el.text:
+                        pr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                        vc = pr.size // num_inputs
+                        if vc >= 3:
+                            p2 = pr[:vc * num_inputs].reshape(vc, num_inputs)
+                            idx = np.empty((vc - 2) * 3, dtype=np.int32)
+                            idx[0::3] = 0
+                            idx[1::3] = np.arange(1, vc - 1, dtype=np.int32)
+                            idx[2::3] = np.arange(2, vc, dtype=np.int32)
+                            tri_rows.append(p2[idx])
+                            tri_total += vc - 2
+                if tri_total > 0:
+                    prim_vcounts = np.full(tri_total, 3, dtype=np.int32)
+                    prim_p = np.vstack(tri_rows)
             elif tag == "tristrips":
+                tri_rows = []
+                tri_total = 0
                 for p_el in _find_children(child, "p"):
-                    p_ints = _parse_ints(p_el.text)
-                    vc = len(p_ints) // num_inputs
-                    if vc >= 3:
-                        for k in range(2, vc):
-                            if (k % 2) == 0:
-                                i0, i1, i2 = k - 2, k - 1, k
-                            else:
-                                i0, i1, i2 = k - 1, k - 2, k
-                            tri_p = (
-                                p_ints[i0 * num_inputs:(i0 + 1) * num_inputs]
-                                + p_ints[i1 * num_inputs:(i1 + 1) * num_inputs]
-                                + p_ints[i2 * num_inputs:(i2 + 1) * num_inputs]
-                            )
-                            poly_chunks.append((tri_p, 0, 3))
+                    if p_el.text:
+                        pr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                        vc = pr.size // num_inputs
+                        if vc >= 3:
+                            p2 = pr[:vc * num_inputs].reshape(vc, num_inputs)
+                            nt = vc - 2
+                            ks = np.arange(2, vc, dtype=np.int32)
+                            even = (ks % 2) == 0
+                            idx = np.empty(nt * 3, dtype=np.int32)
+                            idx[0::3] = np.where(even, ks - 2, ks - 1)
+                            idx[1::3] = np.where(even, ks - 1, ks - 2)
+                            idx[2::3] = ks
+                            tri_rows.append(p2[idx])
+                            tri_total += nt
+                if tri_total > 0:
+                    prim_vcounts = np.full(tri_total, 3, dtype=np.int32)
+                    prim_p = np.vstack(tri_rows)
 
-            norm_vals, norm_stride, _ = sources.get(norm_src_id, ([], 3, ""))
+            if prim_vcounts is None or prim_p is None or prim_vcounts.size == 0:
+                continue
+
+            prim_face_count = int(prim_vcounts.size)
+            prim_loop_count = int(prim_p.shape[0])
+            mat_sym = child.attrib.get("material", "")
+            mat_prims.setdefault(mat_sym, []).append((total_faces, prim_face_count))
+
+            l_verts = prim_p[:, vert_off]
+            vcount_chunks.append(prim_vcounts)
+            loop_vert_chunks.append(l_verts)
+
+            # Normals (vectorized)
+            norm_vals, norm_stride, _ = sources.get(norm_src_id, (np.empty(0, dtype=np.float32), 3, ""))
             if norm_stride <= 0:
                 norm_stride = 3
-
-            for p_ints, vstart, vc in poly_chunks:
-                fverts: list[int] = []
-                fnorms: list[Vector] = []
-                for j in range(vc):
-                    base = (vstart + j) * num_inputs
-                    vi = p_ints[base + vert_off]
-                    fverts.append(vi)
-
-                    if norm_off >= 0 and norm_vals:
-                        ni = p_ints[base + norm_off]
-                        nb = ni * norm_stride
-                        nv = Vector((norm_vals[nb], norm_vals[nb + 1], norm_vals[nb + 2]))
-                        if nv.length > 0.0:
-                            nv.normalize()
-                        fnorms.append(nv)
-                    elif vert_normal_src_id and norm_vals:
-                        nb = vi * norm_stride
-                        nv = Vector((norm_vals[nb], norm_vals[nb + 1], norm_vals[nb + 2]))
-                        if nv.length > 0.0:
-                            nv.normalize()
-                        fnorms.append(nv)
-
-                # Pad any existing UV/color sets that aren't in this primitive
-                cur_uv_srcs = {s for s, _ in uv_inputs}
-                for u_id in uv_set_order:
-                    if u_id not in cur_uv_srcs:
-                        uv_sets[u_id].extend([(0.0, 0.0)] * vc)
-                for u_id, u_off in uv_inputs:
-                    u_vals, u_stride, _ = sources.get(u_id, ([], 2, ""))
-                    if u_stride <= 0:
-                        u_stride = 2
-                    for j in range(vc):
-                        base = (vstart + j) * num_inputs
-                        ui = p_ints[base + u_off] * u_stride
-                        if ui + 1 < len(u_vals):
-                            uv_sets[u_id].append((u_vals[ui], u_vals[ui + 1]))
-                        else:
-                            uv_sets[u_id].append((0.0, 0.0))
-
-                cur_col_names = {cn for cn, _, _ in col_inputs}
-                for cn in col_set_order:
-                    if cn not in cur_col_names:
-                        col_sets[cn].extend([(1.0, 1.0, 1.0, 1.0)] * vc)
-                for cn, c_src_id, c_off in col_inputs:
-                    c_vals, c_stride, _ = sources.get(c_src_id, ([], 3, ""))
-                    if c_stride <= 0:
-                        c_stride = 3
-                    for j in range(vc):
-                        base = (vstart + j) * num_inputs
-                        ci = p_ints[base + c_off] * c_stride
-                        if ci + 2 < len(c_vals):
-                            a = c_vals[ci + 3] if (c_stride >= 4 and ci + 3 < len(c_vals)) else 1.0
-                            col_sets[cn].append((c_vals[ci], c_vals[ci + 1], c_vals[ci + 2], a))
-                        else:
-                            col_sets[cn].append((1.0, 1.0, 1.0, 1.0))
-
-                face_vert_indices.append(fverts)
-                prim_face_count += 1
-
-                if fnorms and len(fnorms) == vc:
-                    is_flat = True
-                    n0 = fnorms[0]
-                    for nk in fnorms[1:]:
-                        dp = n0.dot(nk)
-                        if dp < 0.99999 or dp > 1.00001:
-                            is_flat = False
-                            break
-                    face_sharp.append(is_flat)
-                    for nv in fnorms:
-                        loop_normals.append((nv.x, nv.y, nv.z))
+            if (norm_off >= 0 or vert_normal_src_id) and norm_vals.size >= norm_stride:
+                n_src = norm_vals[:(norm_vals.size // norm_stride) * norm_stride].reshape(-1, norm_stride)[:, :3]
+                n_idx = prim_p[:, norm_off] if norm_off >= 0 else l_verts
+                p_norms = n_src[n_idx].astype(np.float64)
+                nlens = np.linalg.norm(p_norms, axis=1, keepdims=True)
+                nmask = nlens[:, 0] > 0.0
+                p_norms[nmask] /= nlens[nmask]
+                # Determine flat faces (all loop normals in face have dot product ~1.0 with loop 0)
+                if tag in ("triangles", "trifans", "tristrips") or bool((prim_vcounts == 3).all()):
+                    n3 = p_norms.reshape(prim_face_count, 3, 3)
+                    dp1 = (n3[:, 0] * n3[:, 1]).sum(axis=1)
+                    dp2 = (n3[:, 0] * n3[:, 2]).sum(axis=1)
+                    is_flat = (dp1 >= 0.99999) & (dp1 <= 1.00001) & (dp2 >= 0.99999) & (dp2 <= 1.00001)
                 else:
-                    face_sharp.append(True)
-                    has_all_loop_normals = False
+                    starts = np.cumsum(prim_vcounts) - prim_vcounts
+                    first_n = np.repeat(p_norms[starts], prim_vcounts, axis=0)
+                    dots = (p_norms * first_n).sum(axis=1)
+                    ok = (dots >= 0.99999) & (dots <= 1.00001)
+                    is_flat = np.logical_and.reduceat(ok, starts)
+                face_sharp_chunks.append(is_flat)
+                loop_norm_chunks.append(p_norms.astype(np.float32))
+            else:
+                face_sharp_chunks.append(np.ones(prim_face_count, dtype=bool))
+                has_all_loop_normals = False
 
-            if prim_face_count > 0:
-                mat_prims.setdefault(mat_sym, []).append((prim_start_face, prim_face_count))
+            # UVs (vectorized)
+            cur_uv_srcs = {s for s, _ in uv_inputs}
+            for u_id in uv_set_order:
+                if u_id not in cur_uv_srcs:
+                    uv_chunks[u_id].append(np.zeros((prim_loop_count, 2), dtype=np.float32))
+            for u_id, u_off in uv_inputs:
+                u_vals, u_stride, _ = sources.get(u_id, (np.empty(0, dtype=np.float32), 2, ""))
+                if u_stride <= 0:
+                    u_stride = 2
+                n_u = u_vals.size // u_stride
+                if n_u > 0 and u_stride >= 2:
+                    u_src = u_vals[:n_u * u_stride].reshape(n_u, u_stride)[:, :2]
+                    u_idx = np.clip(prim_p[:, u_off], 0, n_u - 1)
+                    uv_chunks[u_id].append(u_src[u_idx])
+                else:
+                    uv_chunks[u_id].append(np.zeros((prim_loop_count, 2), dtype=np.float32))
 
-        # Construct Blender Mesh
+            # Colors (vectorized)
+            cur_col_names = {cn for cn, _, _ in col_inputs}
+            for cn in col_set_order:
+                if cn not in cur_col_names:
+                    col_chunks[cn].append(np.ones((prim_loop_count, 4), dtype=np.float32))
+            for cn, c_src_id, c_off in col_inputs:
+                c_vals, c_stride, _ = sources.get(c_src_id, (np.empty(0, dtype=np.float32), 3, ""))
+                if c_stride <= 0:
+                    c_stride = 3
+                n_c = c_vals.size // c_stride
+                if n_c > 0 and c_stride >= 3:
+                    c_src = c_vals[:n_c * c_stride].reshape(n_c, c_stride)
+                    c_idx = np.clip(prim_p[:, c_off], 0, n_c - 1)
+                    if c_stride >= 4:
+                        col_chunks[cn].append(c_src[c_idx, :4])
+                    else:
+                        rgb = c_src[c_idx, :3]
+                        rgba = np.ones((prim_loop_count, 4), dtype=np.float32)
+                        rgba[:, :3] = rgb
+                        col_chunks[cn].append(rgba)
+                else:
+                    col_chunks[cn].append(np.ones((prim_loop_count, 4), dtype=np.float32))
+
+            total_faces += prim_face_count
+            total_loops += prim_loop_count
+
+        # Construct Blender Mesh with foreach_set (fast path when no loose edges)
         me = bpy.data.meshes.new(name=geom_name)
-        verts_co = [
-            (pos_vals[i * pos_stride], pos_vals[i * pos_stride + 1], pos_vals[i * pos_stride + 2] if pos_stride >= 3 else 0.0)
-            for i in range(num_verts)
-        ]
-        me.from_pydata(verts_co, loose_edges, face_vert_indices)
+        if num_verts > 0:
+            if pos_stride == 3:
+                pos_flat = pos_vals[:num_verts * 3]
+            else:
+                p_mat = np.zeros((num_verts, 3), dtype=np.float32)
+                cols_k = min(pos_stride, 3)
+                p_mat[:, :cols_k] = pos_vals[:num_verts * pos_stride].reshape(num_verts, pos_stride)[:, :cols_k]
+                pos_flat = p_mat.ravel()
+        else:
+            pos_flat = np.empty(0, dtype=np.float32)
 
-        # Smooth/flat face flags
-        if self.settings.sharp_edges_from_normals and has_all_loop_normals and len(loop_normals) == len(me.loops):
-            for p in me.polygons:
-                p.use_smooth = True
-        elif face_sharp and len(face_sharp) == len(me.polygons):
-            for pi, is_flat in enumerate(face_sharp):
-                me.polygons[pi].use_smooth = not is_flat
+        if not loose_edges and total_faces > 0:
+            all_vcounts = np.concatenate(vcount_chunks) if len(vcount_chunks) > 1 else vcount_chunks[0]
+            all_loop_verts = np.concatenate(loop_vert_chunks) if len(loop_vert_chunks) > 1 else loop_vert_chunks[0]
+            loop_starts = np.empty(total_faces, dtype=np.int32)
+            loop_starts[0] = 0
+            if total_faces > 1:
+                np.cumsum(all_vcounts[:-1], out=loop_starts[1:])
 
-        # UVs
+            me.vertices.add(num_verts)
+            me.vertices.foreach_set("co", pos_flat)
+            me.loops.add(total_loops)
+            me.loops.foreach_set("vertex_index", all_loop_verts)
+            me.polygons.add(total_faces)
+            me.polygons.foreach_set("loop_start", loop_starts)
+            me.polygons.foreach_set("loop_total", all_vcounts)
+            me.update(calc_edges=True)
+        else:
+            verts_co = pos_flat.reshape(num_verts, 3).tolist() if num_verts > 0 else []
+            face_vert_indices: list[list[int]] = []
+            if total_faces > 0:
+                all_vcounts = np.concatenate(vcount_chunks) if len(vcount_chunks) > 1 else vcount_chunks[0]
+                all_loop_verts = np.concatenate(loop_vert_chunks) if len(loop_vert_chunks) > 1 else loop_vert_chunks[0]
+                lv_list = all_loop_verts.tolist()
+                cur = 0
+                for vc in all_vcounts.tolist():
+                    face_vert_indices.append(lv_list[cur:cur + vc])
+                    cur += vc
+            me.from_pydata(verts_co, loose_edges, face_vert_indices)
+
+        # Smooth/flat face flags (foreach_set)
+        all_loop_normals = (
+            (np.vstack(loop_norm_chunks) if len(loop_norm_chunks) > 1 else loop_norm_chunks[0])
+            if (has_all_loop_normals and loop_norm_chunks)
+            else None
+        )
+        if total_faces > 0 and len(me.polygons) == total_faces:
+            if self.settings.sharp_edges_from_normals and all_loop_normals is not None and len(all_loop_normals) == len(me.loops):
+                me.polygons.foreach_set("use_smooth", np.ones(total_faces, dtype=bool))
+            elif face_sharp_chunks:
+                all_sharp = np.concatenate(face_sharp_chunks) if len(face_sharp_chunks) > 1 else face_sharp_chunks[0]
+                me.polygons.foreach_set("use_smooth", np.logical_not(all_sharp))
+
+        # UVs (foreach_set)
         for u_id in uv_set_order:
-            uv_list = uv_sets[u_id]
-            if len(uv_list) == len(me.loops):
+            chunks = uv_chunks[u_id]
+            uv_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+            if len(uv_arr) == len(me.loops):
                 uv_layer = me.uv_layers.new(name=u_id)
-                flat_uvs = [c for uv in uv_list for c in uv]
-                uv_layer.data.foreach_set("uv", flat_uvs)
+                uv_layer.data.foreach_set("uv", uv_arr.ravel())
 
-        # Byte Color Attributes
+        # Byte Color Attributes (foreach_set)
         for cn in col_set_order:
-            c_list = col_sets[cn]
-            if len(c_list) == len(me.loops):
+            chunks = col_chunks[cn]
+            c_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+            if len(c_arr) == len(me.loops):
                 cattr = me.color_attributes.new(name=cn, type="BYTE_COLOR", domain="CORNER")
-                for li, col in enumerate(c_list):
-                    cattr.data[li].color_srgb = col
+                cattr.data.foreach_set("color_srgb", c_arr.ravel())
 
         # Custom normals / Clean sharp edges from normals
-        if self.settings.sharp_edges_from_normals and has_all_loop_normals and len(loop_normals) == len(me.loops) and len(loop_normals) > 0:
-            self._apply_sharp_edges_from_normals(me, loop_normals, self.settings.sharp_angle_threshold)
-        elif self.settings.custom_normals and has_all_loop_normals and len(loop_normals) == len(me.loops) and len(loop_normals) > 0:
-            try:
-                me.normals_split_custom_set(loop_normals)
-            except Exception as e:
-                print(f"Collada import: Could not set custom normals on {geom_name}: {e}")
+        if all_loop_normals is not None and len(all_loop_normals) == len(me.loops) and len(all_loop_normals) > 0:
+            if self.settings.sharp_edges_from_normals:
+                self._apply_sharp_edges_from_normals(me, all_loop_normals, self.settings.sharp_angle_threshold)
+            elif self.settings.custom_normals:
+                try:
+                    me.normals_split_custom_set(all_loop_normals)
+                except Exception as e:
+                    print(f"Collada import: Could not set custom normals on {geom_name}: {e}")
 
         me.update()
         self.meshes_by_id[geom_id] = me
@@ -1324,6 +1405,11 @@ class DocumentImporter:
             return
         mat_prims = self.mesh_mat_prims.get(geom_id, {})
         mesh: Mesh = ob.data
+        import numpy as np
+
+        n_polys = len(mesh.polygons)
+        mat_idx_arr = np.zeros(n_polys, dtype=np.int32)
+        has_mat_assign = False
         for idx, im in enumerate(_find_children(tc, "instance_material")):
             sym = im.attrib.get("symbol", "")
             target_id = _uri_to_local_id(im.attrib.get("target"))
@@ -1335,9 +1421,12 @@ class DocumentImporter:
             ob.material_slots[idx].link = "OBJECT"
             ob.material_slots[idx].material = ma
             for start_f, count_f in mat_prims.get(sym, ()):
-                for fi in range(start_f, start_f + count_f):
-                    if fi < len(mesh.polygons):
-                        mesh.polygons[fi].material_index = idx
+                end_f = min(start_f + count_f, n_polys)
+                if start_f < end_f:
+                    mat_idx_arr[start_f:end_f] = idx
+                    has_mat_assign = True
+        if has_mat_assign and n_polys > 0:
+            mesh.polygons.foreach_set("material_index", mat_idx_arr)
 
     def _process_node(
         self, node: ET.Element, parent_node: ET.Element | None, parent_ob: Object | None

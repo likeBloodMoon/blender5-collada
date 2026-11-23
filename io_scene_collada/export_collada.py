@@ -23,8 +23,10 @@ from .xml_writer import (
     f32,
     fmt_bool,
     fmt_f32,
+    fmt_f32_array,
     fmt_float,
     fmt_int,
+    fmt_int_array,
 )
 from .collada_utils import (
     LIMITED_PRECISION,
@@ -795,46 +797,110 @@ class DocumentExporter:
             self._export_geometry_object(ob)
         self.sw.close_element()
 
-    def _create_normals(self, mesh: Mesh) -> tuple[list[tuple[float, float, float]], list[list[int]]]:
-        """Exact port of GeometryExporter::create_normals()."""
+    def _create_normals(
+        self,
+        mesh: Mesh,
+        loop_starts,
+        loop_totals,
+        use_smooth,
+        loop_vidx,
+    ):
+        """Vectorized exact port of GeometryExporter::create_normals()."""
+        import numpy as np
+
+        n_polys = len(loop_starts)
+        n_loops = len(loop_vidx)
+        if n_polys == 0:
+            return np.empty((0, 3), dtype=np.float32), np.empty((0,), dtype=np.int32)
+
+        has_custom = mesh.has_custom_normals
+        all_vert_normals = has_custom or bool(use_smooth.all())
+        all_flat = (not has_custom) and (not bool(use_smooth.any()))
+
+        # Fast path 1: all flat faces (no custom normals) -> 1 normal per polygon, no dedup
+        if all_flat:
+            poly_normals = np.empty(n_polys * 3, dtype=np.float32)
+            mesh.polygons.foreach_get("normal", poly_normals)
+            normals_arr = poly_normals.reshape(n_polys, 3)
+            loop_norm_idx = np.repeat(np.arange(n_polys, dtype=np.int32), loop_totals)
+            return normals_arr, loop_norm_idx
+
+        # Fast path 2: all custom normals or all smooth faces -> deduplicate in first-seen order
+        if all_vert_normals:
+            if has_custom:
+                raw_n = np.empty(n_loops * 3, dtype=np.float32)
+                mesh.corner_normals.foreach_get("vector", raw_n)
+                raw_n = raw_n.reshape(n_loops, 3)
+            else:
+                v_n = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+                mesh.vertices.foreach_get("normal", v_n)
+                raw_n = v_n.reshape(-1, 3)[loop_vidx]
+
+            # Normalize in float64 then cast to float32 (matches Vector.normalized() + f32())
+            raw64 = raw_n.astype(np.float64)
+            lens = np.linalg.norm(raw64, axis=1, keepdims=True)
+            mask = lens[:, 0] > 0.0
+            raw64[mask] /= lens[mask]
+            n32 = raw64.astype(np.float32)
+            # Normalize -0.0 to +0.0 so dedup keys match Python float dict keys
+            n32[n32 == 0.0] = 0.0
+
+            # Deduplicate preserving first-seen order (matches shared_normal_indices dict)
+            uniq, first_idx, inv = np.unique(n32, axis=0, return_index=True, return_inverse=True)
+            order = np.argsort(first_idx)
+            inv_map = np.empty_like(order)
+            inv_map[order] = np.arange(len(order), dtype=order.dtype)
+            normals_arr = uniq[order]
+            loop_norm_idx = inv_map[inv].astype(np.int32)
+            return normals_arr, loop_norm_idx
+
+        # Mixed flat + smooth faces: batch-fetch all arrays, single pass over polygons
+        poly_normals = np.empty(n_polys * 3, dtype=np.float32)
+        mesh.polygons.foreach_get("normal", poly_normals)
+        poly_normals = poly_normals.reshape(n_polys, 3)
+
+        v_n = np.empty(len(mesh.vertices) * 3, dtype=np.float32)
+        mesh.vertices.foreach_get("normal", v_n)
+        v_n64 = v_n.reshape(-1, 3).astype(np.float64)
+        vlens = np.linalg.norm(v_n64, axis=1, keepdims=True)
+        vmask = vlens[:, 0] > 0.0
+        v_n64[vmask] /= vlens[vmask]
+        v_n32 = v_n64.astype(np.float32)
+        v_n32[v_n32 == 0.0] = 0.0
+        v_n_list = v_n32.tolist()
+        p_n_list = poly_normals.tolist()
+        l_vidx_list = loop_vidx.tolist()
+        l_starts_list = loop_starts.tolist()
+        l_totals_list = loop_totals.tolist()
+        smooth_list = use_smooth.tolist()
+
         normals: list[tuple[float, float, float]] = []
-        polygons_normals: list[list[int]] = []
+        loop_norm_idx = np.empty(n_loops, dtype=np.int32)
         shared_normal_indices: dict[tuple[float, float, float], int] = {}
         last_normal_index = -1
 
-        has_custom = mesh.has_custom_normals
-        corner_normals = mesh.corner_normals if has_custom else None
-        verts = mesh.vertices
-        loops = mesh.loops
-
-        for poly in mesh.polygons:
-            use_vert_normals = has_custom or poly.use_smooth
-            if not use_vert_normals:
-                n = poly.normal
-                normals.append((f32(n.x), f32(n.y), f32(n.z)))
+        for pi in range(n_polys):
+            ls = l_starts_list[pi]
+            lt = l_totals_list[pi]
+            if not smooth_list[pi]:
+                pn = p_n_list[pi]
+                normals.append((pn[0], pn[1], pn[2]))
                 last_normal_index += 1
-
-            poly_indices: list[int] = []
-            for li in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                if use_vert_normals:
-                    if has_custom:
-                        vn = corner_normals[li].vector.normalized()
-                    else:
-                        vn = verts[loops[li].vertex_index].normal.normalized()
-                    nt = (f32(vn.x), f32(vn.y), f32(vn.z))
+                loop_norm_idx[ls:ls + lt] = last_normal_index
+            else:
+                for li in range(ls, ls + lt):
+                    vn = v_n_list[l_vidx_list[li]]
+                    nt = (vn[0], vn[1], vn[2])
                     idx = shared_normal_indices.get(nt)
                     if idx is not None:
-                        poly_indices.append(idx)
+                        loop_norm_idx[li] = idx
                     else:
                         last_normal_index += 1
                         shared_normal_indices[nt] = last_normal_index
                         normals.append(nt)
-                        poly_indices.append(last_normal_index)
-                else:
-                    poly_indices.append(last_normal_index)
-            polygons_normals.append(poly_indices)
+                        loop_norm_idx[li] = last_normal_index
 
-        return normals, polygons_normals
+        return np.asarray(normals, dtype=np.float32), loop_norm_idx
 
     def _write_mesh_xml(
         self,
@@ -844,7 +910,29 @@ class DocumentExporter:
         geom_name: str,
         include_loose_edges: bool = True,
     ) -> None:
-        normals, norind = self._create_normals(mesh)
+        import numpy as np
+
+        n_polys = len(mesh.polygons)
+        n_loops = len(mesh.loops)
+        vcount = len(mesh.vertices)
+
+        loop_starts = np.empty(n_polys, dtype=np.int32)
+        loop_totals = np.empty(n_polys, dtype=np.int32)
+        use_smooth = np.empty(n_polys, dtype=bool)
+        mat_indices = np.empty(n_polys, dtype=np.int32)
+        if n_polys > 0:
+            mesh.polygons.foreach_get("loop_start", loop_starts)
+            mesh.polygons.foreach_get("loop_total", loop_totals)
+            mesh.polygons.foreach_get("use_smooth", use_smooth)
+            mesh.polygons.foreach_get("material_index", mat_indices)
+
+        loop_vidx = np.empty(n_loops, dtype=np.int32)
+        if n_loops > 0:
+            mesh.loops.foreach_get("vertex_index", loop_vidx)
+
+        normals_arr, loop_norm_idx = self._create_normals(
+            mesh, loop_starts, loop_totals, use_smooth, loop_vidx
+        )
 
         # Byte color attributes on CORNER domain (matching CD_PROP_BYTE_COLOR)
         byte_color_attrs = [
@@ -857,77 +945,65 @@ class DocumentExporter:
         self.sw.open_element("geometry", [("id", geom_id), ("name", geom_name)])
         self.sw.open_element("mesh")
 
-        # 1. Positions source
-        pos_id = f"{geom_id}-positions"
-        pos_arr_id = f"{pos_id}-array"
-        vcount = len(mesh.vertices)
-        pos_vals: list[str] = []
         apply_glob = self.settings.apply_global_orientation
         gt = self.settings.global_transform
-        for v in mesh.vertices:
-            co = v.co
+        if apply_glob:
+            gt_rot = np.array(gt.to_3x3(), dtype=np.float64)
+            gt_trans = np.array(gt.translation, dtype=np.float64)
+
+        # 1. Positions source (foreach_get)
+        pos_id = f"{geom_id}-positions"
+        pos_arr_id = f"{pos_id}-array"
+        pos_arr = np.empty(vcount * 3, dtype=np.float32)
+        if vcount > 0:
+            mesh.vertices.foreach_get("co", pos_arr)
             if apply_glob:
-                co = bc_add_global_transform_vec(co, gt)
-            pos_vals.append(fmt_f32(co.x))
-            pos_vals.append(fmt_f32(co.y))
-            pos_vals.append(fmt_f32(co.z))
-        self._write_float_source(pos_id, pos_arr_id, vcount, 3, ("X", "Y", "Z"), pos_vals)
+                p64 = pos_arr.reshape(vcount, 3).astype(np.float64)
+                pos_arr = (p64 @ gt_rot.T + gt_trans).astype(np.float32).ravel()
+        self._write_float_source_raw(pos_id, pos_arr_id, vcount, 3, ("X", "Y", "Z"), fmt_f32_array(pos_arr))
 
         # 2. Normals source
         nor_id = f"{geom_id}-normals"
         nor_arr_id = f"{nor_id}-array"
-        nor_vals: list[str] = []
-        for nx, ny, nz in normals:
-            if apply_glob:
-                nv = bc_add_global_transform_vec(Vector((nx, ny, nz)), gt)
-                nx, ny, nz = nv.x, nv.y, nv.z
-            nor_vals.append(fmt_f32(nx))
-            nor_vals.append(fmt_f32(ny))
-            nor_vals.append(fmt_f32(nz))
-        self._write_float_source(nor_id, nor_arr_id, len(normals), 3, ("X", "Y", "Z"), nor_vals)
+        if apply_glob and len(normals_arr) > 0:
+            n64 = normals_arr.astype(np.float64)
+            normals_arr = (n64 @ gt_rot.T + gt_trans).astype(np.float32)
+        self._write_float_source_raw(
+            nor_id, nor_arr_id, len(normals_arr), 3, ("X", "Y", "Z"), fmt_f32_array(normals_arr)
+        )
 
-        # 3. UV sources
+        # 3. UV sources (foreach_get)
         active_uv_idx = 0
         if has_uvs:
             for i, uvl in enumerate(mesh.uv_layers):
                 if uvl.active:
                     active_uv_idx = i
                     break
-            totuv = len(mesh.loops)
             for i, uvl in enumerate(mesh.uv_layers):
                 if self.settings.active_uv_only and i != active_uv_idx:
                     continue
                 layer_id = f"{geom_id}-map" if self.settings.active_uv_only else f"{geom_id}-map-{i}"
-                uv_vals: list[str] = []
-                uv_data = uvl.data
-                for poly in mesh.polygons:
-                    for li in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                        uv = uv_data[li].uv
-                        uv_vals.append(fmt_f32(uv[0]))
-                        uv_vals.append(fmt_f32(uv[1]))
-                self._write_float_source(layer_id, f"{layer_id}-array", totuv, 2, ("S", "T"), uv_vals)
+                uv_arr = np.empty(n_loops * 2, dtype=np.float32)
+                if n_loops > 0:
+                    uvl.data.foreach_get("uv", uv_arr)
+                self._write_float_source_raw(
+                    layer_id, f"{layer_id}-array", n_loops, 2, ("S", "T"), fmt_f32_array(uv_arr)
+                )
 
-        # 4. Vertex color sources
+        # 4. Vertex color sources (foreach_get)
         if has_color:
-            totcorners = len(mesh.loops)
             for attr in byte_color_attrs:
                 layer_id = f"{geom_id}-colors-{attr.name}"
-                col_vals: list[str] = []
-                data = attr.data
-                for poly in mesh.polygons:
-                    for li in range(poly.loop_start, poly.loop_start + poly.loop_total):
-                        c = data[li].color_srgb
-                        col_vals.append(fmt_f32(c[0]))
-                        col_vals.append(fmt_f32(c[1]))
-                        col_vals.append(fmt_f32(c[2]))
-                        col_vals.append(fmt_f32(c[3]))
-                self._write_float_source(
+                col_arr = np.empty(n_loops * 4, dtype=np.float32)
+                if n_loops > 0:
+                    attr.data.foreach_get("color_srgb", col_arr)
+                self._write_float_source_raw(
                     layer_id,
                     f"{layer_id}-array",
-                    totcorners,
+                    n_loops,
                     4,
                     ("R", "G", "B", "A"),
-                    col_vals,
+                    fmt_f32_array(col_arr),
                     source_name=attr.name,
                 )
 
@@ -938,47 +1014,74 @@ class DocumentExporter:
         self.sw.close_element()
 
         # 6. Loose edges (<lines>)
-        if include_loose_edges:
-            loose_edges = [e for e in mesh.edges if e.is_loose]
-            if loose_edges:
-                self.sw.open_element("lines", [("count", fmt_int(len(loose_edges)))])
+        if include_loose_edges and len(mesh.edges) > 0:
+            n_edges = len(mesh.edges)
+            is_loose = np.empty(n_edges, dtype=bool)
+            mesh.edges.foreach_get("is_loose", is_loose)
+            if is_loose.any():
+                edge_verts = np.empty(n_edges * 2, dtype=np.int32)
+                mesh.edges.foreach_get("vertices", edge_verts)
+                # Match GeometryExporter.cpp:245-246 (edge[1] then edge[0])
+                loose_v = edge_verts.reshape(n_edges, 2)[is_loose][:, ::-1]
+                self.sw.open_element("lines", [("count", fmt_int(len(loose_v)))])
                 self.sw.write_element(
                     "input", None, [("semantic", "VERTEX"), ("source", f"#{verts_id}"), ("offset", "0")]
                 )
-                p_vals: list[str] = []
-                for e in loose_edges:
-                    # Match GeometryExporter.cpp:245-246 (edge[1] then edge[0])
-                    p_vals.append(fmt_int(e.vertices[1]))
-                    p_vals.append(fmt_int(e.vertices[0]))
                 self.sw.open_element("p")
-                self.sw.append_values(p_vals)
+                self.sw.append_text(fmt_int_array(loose_v))
                 self.sw.close_element()
                 self.sw.close_element()
 
         # 7. Primitive lists (<triangles> or <polylist>)
-        if len(mesh.polygons) > 0:
+        if n_polys > 0:
             mat_count = len(ob.material_slots)
+            loop_mat = np.repeat(mat_indices, loop_totals)
+            tex_indices = np.arange(n_loops, dtype=np.int32)
             if mat_count > 0:
                 for a in range(mat_count):
                     self._write_primitive_list(
-                        a, has_uvs, active_uv_idx, byte_color_attrs, ob, mesh, geom_id, norind
+                        a,
+                        has_uvs,
+                        active_uv_idx,
+                        byte_color_attrs,
+                        ob,
+                        mesh,
+                        geom_id,
+                        loop_totals,
+                        mat_indices,
+                        loop_mat,
+                        loop_vidx,
+                        loop_norm_idx,
+                        tex_indices,
                     )
             else:
                 self._write_primitive_list(
-                    0, has_uvs, active_uv_idx, byte_color_attrs, ob, mesh, geom_id, norind
+                    0,
+                    has_uvs,
+                    active_uv_idx,
+                    byte_color_attrs,
+                    ob,
+                    mesh,
+                    geom_id,
+                    loop_totals,
+                    mat_indices,
+                    loop_mat,
+                    loop_vidx,
+                    loop_norm_idx,
+                    tex_indices,
                 )
 
         self.sw.close_element()  # mesh
         self.sw.close_element()  # geometry
 
-    def _write_float_source(
+    def _write_float_source_raw(
         self,
         source_id: str,
         array_id: str,
         count: int,
         stride: int,
         params: tuple[str, ...],
-        values: list[str],
+        values_text: str,
         source_name: str | None = None,
         param_type: str = "float",
     ) -> None:
@@ -987,7 +1090,8 @@ class DocumentExporter:
             attrs.append(("name", encode_xml(source_name)))
         self.sw.open_element("source", attrs)
         self.sw.open_element("float_array", [("id", array_id), ("count", fmt_int(count * stride))])
-        self.sw.append_values(values)
+        if values_text:
+            self.sw.append_text(values_text)
         self.sw.close_element()
         self.sw.open_element("technique_common")
         self.sw.open_element(
@@ -1000,6 +1104,21 @@ class DocumentExporter:
         self.sw.close_element()
         self.sw.close_element()
 
+    def _write_float_source(
+        self,
+        source_id: str,
+        array_id: str,
+        count: int,
+        stride: int,
+        params: tuple[str, ...],
+        values: list[str],
+        source_name: str | None = None,
+        param_type: str = "float",
+    ) -> None:
+        self._write_float_source_raw(
+            source_id, array_id, count, stride, params, " ".join(values), source_name, param_type
+        )
+
     def _write_primitive_list(
         self,
         material_index: int,
@@ -1009,19 +1128,20 @@ class DocumentExporter:
         ob: Object,
         mesh: Mesh,
         geom_id: str,
-        norind: list[list[int]],
+        loop_totals,
+        mat_indices,
+        loop_mat,
+        loop_vidx,
+        loop_norm_idx,
+        tex_indices,
     ) -> None:
-        vcount_list: list[int] = []
-        is_triangulated = True
-        for poly in mesh.polygons:
-            if poly.material_index == material_index:
-                vc = poly.loop_total
-                vcount_list.append(vc)
-                if vc != 3:
-                    is_triangulated = False
+        import numpy as np
 
-        if not vcount_list:
+        poly_mask = mat_indices == material_index
+        if not poly_mask.any():
             return
+        sel_vcounts = loop_totals[poly_mask]
+        is_triangulated = bool((sel_vcounts == 3).all())
 
         ma = ob.material_slots[material_index].material if len(ob.material_slots) > material_index else None
         prim_tag = "triangles" if is_triangulated else "polylist"
@@ -1029,7 +1149,7 @@ class DocumentExporter:
         if ma is not None:
             mat_id = self.id_map.translate_id(get_material_id(self.id_map, ma))
             attrs.append(("material", mat_id))
-        attrs.append(("count", fmt_int(len(vcount_list))))
+        attrs.append(("count", fmt_int(len(sel_vcounts))))
 
         self.sw.open_element(prim_tag, attrs)
         self.sw.write_element(
@@ -1074,28 +1194,27 @@ class DocumentExporter:
 
         if not is_triangulated:
             self.sw.open_element("vcount")
-            self.sw.append_text(" ".join(fmt_int(vc) for vc in vcount_list) + " ")
+            self.sw.append_text(fmt_int_array(sel_vcounts) + " ")
             self.sw.close_element()
 
-        p_vals: list[str] = []
-        loops = mesh.loops
-        texindex = 0
-        for pi, poly in enumerate(mesh.polygons):
-            lcount = poly.loop_total
-            if poly.material_index == material_index:
-                n_indices = norind[pi]
-                lstart = poly.loop_start
-                for j in range(lcount):
-                    p_vals.append(fmt_int(loops[lstart + j].vertex_index))
-                    p_vals.append(fmt_int(n_indices[j]))
-                    if has_uvs:
-                        p_vals.append(fmt_int(texindex + j))
-                    if has_color:
-                        p_vals.append(fmt_int(texindex + j))
-            texindex += lcount
+        # Vectorized <p> assembly
+        if poly_mask.all():
+            cols = [loop_vidx, loop_norm_idx]
+            if has_uvs:
+                cols.append(tex_indices)
+            if has_color:
+                cols.append(tex_indices)
+        else:
+            lmask = loop_mat == material_index
+            cols = [loop_vidx[lmask], loop_norm_idx[lmask]]
+            if has_uvs:
+                cols.append(tex_indices[lmask])
+            if has_color:
+                cols.append(tex_indices[lmask])
+        p_arr = np.column_stack(cols)
 
         self.sw.open_element("p")
-        self.sw.append_values(p_vals)
+        self.sw.append_text(fmt_int_array(p_arr))
         self.sw.close_element()
         self.sw.close_element()
 
