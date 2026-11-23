@@ -1,0 +1,25 @@
+# Local Blender portable installations & reference source
+.tools/
+blender-4.5.1-src/
+
+# Built extension archives (attach to GitHub Releases instead)
+dist/
+
+# Generated test artifacts
+tests/_work/
+
+# Python caches
+__pycache__/
+*.py[cod]
+*$py.class
+.pytest_cache/
+
+# Blender backup files
+*.blend1
+*.blend2
+
+# OS / Editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
