@@ -39,11 +39,23 @@ BLENDER_53 = find_blender("5.", "BLENDER_5X")
 
 
 def normalize_dae_metadata(data: bytes) -> bytes:
-    """Normalize only build-version authoring_tool and current timestamps."""
+    """Normalize build-version authoring_tool, timestamps, and C++ pointer-ordered animation containers."""
     text = data.decode("utf-8")
     text = re.sub(r"<authoring_tool>.*?</authoring_tool>", "<authoring_tool>NORMALIZED</authoring_tool>", text)
     text = re.sub(r"<created>.*?</created>", "<created>NORMALIZED</created>", text)
     text = re.sub(r"<modified>.*?</modified>", "<modified>NORMALIZED</modified>", text)
+
+    # Blender 4.5.1's BCAnimationSampler iterates a pointer-keyed std::map<Object*, ...>,
+    # so top-level <animation id="action_container-..."> order varies by heap address across OSes.
+    def _sort_anim_containers(m: re.Match) -> str:
+        body = m.group(1)
+        blocks = re.findall(r'    <animation id="action_container-[^"]*".*?    </animation>\n', body, flags=re.DOTALL)
+        if len(blocks) >= 2 and "".join(blocks) == body:
+            blocks.sort(key=lambda b: re.search(r'id="(action_container-[^"]*)"', b).group(1))
+            return "<library_animations>\n" + "".join(blocks) + "  </library_animations>"
+        return m.group(0)
+
+    text = re.sub(r"<library_animations>\n(.*?)  </library_animations>", _sort_anim_containers, text, flags=re.DOTALL)
     return text.encode("utf-8")
 
 
