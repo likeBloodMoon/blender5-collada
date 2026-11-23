@@ -1,45 +1,32 @@
-# Blender Collada (DAE) Import/Export for Blender 5.0+
+# Collada (DAE) for Blender 5.0+
 
 [![Build & Parity Tests](https://github.com/likeBloodMoon/blender5-collada/actions/workflows/build.yml/badge.svg)](https://github.com/likeBloodMoon/blender5-collada/actions/workflows/build.yml)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPLv2%2B-blue.svg)](LICENSE)
 [![Blender 5.0+](https://img.shields.io/badge/Blender-5.0%2B-orange.svg)](https://www.blender.org)
 
-A drop-in **Blender 5.0+ Extension** that restores full **COLLADA 1.4.1 (`.dae`)** import and export support after its removal in Blender 5.0, ported directly from **Blender 4.5.1 LTS** with verified byte-for-byte export parity and deep per-element import parity.
+Blender 5.0 removed built-in COLLADA (`.dae`) support, which broke a lot of game modding and legacy engine pipelines (BeamNG.drive, Second Life / OpenSim, Torque3D, Amnesia, etc.).
 
-## Why This Exists
+This extension brings back the full Blender 4.5.1 COLLADA importer and exporter for **Blender 5.0+** in pure Python — no external wheels or dependencies, and using the exact same `wm.collada_import` / `wm.collada_export` operators so existing scripts and workflows keep working.
 
-Blender 5.0 dropped built-in COLLADA (`.dae`) support, breaking pipelines for many video games, modding communities, and legacy 3D engines (e.g., BeamNG.drive, Second Life / OpenSim, Amnesia/HPL, Torque3D, Source/GoldSrc tools, Godot/WebGL workflows, etc.).
+---
 
-This extension implements the complete Blender 4.5.1 COLLADA importer and exporter in pure Python with zero external dependencies, updated for Blender 5.0+ APIs (layered Actions / Slots / Channelbags, `Mesh.corner_normals`, `bpy.types.FileHandler`, and the Blender Extension Manifest format).
+## Install
 
-## Features
+1. Grab the latest `collada_io-*.zip` from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases).
+2. Drag and drop the `.zip` onto Blender, **or** go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…** and pick the `.zip`.
 
-- **Drop-in Operator Compatibility**: Registers the original `bpy.ops.wm.collada_import` and `bpy.ops.wm.collada_export` operators with all Blender 4.5.1 properties, defaults, and tabbed UI — existing scripts and pipelines work without modification.
-- **Drag-and-Drop & Archive Support**: Registers `IO_FH_collada` (`bpy.types.FileHandler`) for `.dae`, `.zae`, and `.kmz` files — drag-and-drop directly into Blender, with automatic `manifest.xml` resolution and texture packing for `.zae`/`.kmz`/`.zip` archives.
-- **Meshes & Geometry**: Polylists, triangulated meshes (`SHORT_EDGE` / `EAR_CLIP`), `<polygons>` (including `<ph>`), `<trifans>`, `<tristrips>`, n-gons, loose edges, custom split normals, multi-UV maps (`active_uv_only`), byte vertex colors, modifier application, and geometry instancing.
-- **Clean Sharp Edges from Normals**: Optional **Mark Sharp from Normals** import mode converts COLLADA normals directly into clean `sharp_edge` markings on smooth faces, preventing flat triangles from hiding sharp creases and eliminating false sharp-edge noise.
-- **Materials & Textures**: Principled BSDF import/export, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, emission, IOR, alpha/transparency, diffuse/emission/normal textures, smart cross-platform texture path fallback (`textures/`, `images/`, `maps/`, basename lookup), and texture copy export (`use_texture_copies`).
-- **Cameras & Lights**: Perspective & orthographic cameras; Point, Sun, Spot, and Area lights with full Blender `<extra>` profile DNA preservation.
-- **Armatures, Skinning & Morphing**: Skeleton hierarchies, vertex weights, `<bind_shape_matrix>`, `Name_array` and `IDREF_array` joints, bone collections, shape keys (`<morph>`), OpenSim / Second Life compatibility (`open_sim`, `deform_bones_only`), and armature import flags (`auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info`).
-- **Animations**: Object and pose-bone animations (matrix sampled, decomposed sampled, keyframe curves with smooth tangents, plus third-party Maya/DCC `sid` transform resolution), fully ported to Blender 5.0+'s layered Action / Slot / Channelbag system.
-- **Coordinate Systems & Units**: `Z_UP` / `Y_UP` / `X_UP` axis conversion, global orientation export, and `import_units` scaling.
-
-## Installation
-
-### Option 1: Install from Release `.zip` (Recommended)
-1. Download the latest `collada_io-*.zip` from the **Releases** page.
-2. Open Blender 5.0+.
-3. Go to **Edit → Preferences → Get Extensions** → click the top-right dropdown (`⌄`) → **Install from Disk…** and select `collada_io-*.zip` (or simply drag-and-drop the `.zip` onto the Blender window).
-
-### Option 2: Install via Blender CLI
+CLI install:
 ```bash
 blender --command extension install-file -r user_default -e collada_io-1.1.0.zip
 ```
 
+---
+
 ## Usage
 
-- **UI**: **File → Import → Collada (Default) (.dae)** and **File → Export → Collada (Default) (.dae)**, or drag-and-drop a `.dae` file into Blender.
-- **Python API** (identical to Blender 4.5.1):
+- **Menus**: **File → Import → Collada (Default) (.dae, .zae, .kmz)** and **File → Export → Collada (Default) (.dae)**
+- **Drag & Drop**: Drop `.dae`, `.zae`, or `.kmz` files straight into the viewport.
+- **Python**:
   ```python
   import bpy
 
@@ -47,28 +34,44 @@ blender --command extension install-file -r user_default -e collada_io-1.1.0.zip
   bpy.ops.wm.collada_export(filepath="/path/to/output.dae", triangulate=True)
   ```
 
-## Parity Verification
+### Tip: Clean Sharp Edges on Import
 
-This port is verified directly against **Blender 4.5.1 LTS** across **52 automated checks** (`tests/run_parity_tests.py` and `tests/run_deep_verification.py`):
+Blender's old Collada importer often leaves meshes with missing sharp edges (where a flat triangle sits next to a smooth face) and random cyan edges from float rounding noise.
 
-| Test Suite | Coverage | Result |
-| --- | --- | --- |
-| **Export Byte-Parity** | 16 scenes/flag combos (primitives, multi-UV, vertex colors, modifiers, cameras, lights, materials, hierarchies, global orientation, armatures, skinning, shape keys, OpenSim, matrix/decomposed/curve animations) | **16 / 16 PASS** (exact XML structure, max float32 Δ ≤ `1e-5`) |
-| **Import Scene Parity** | 9 full-scene imports compared against Blender 4.5.1 | **9 / 9 PASS** |
-| **Deep Per-Element Import Parity** | Every vertex, corner normal, loop UV, color attribute, skin weight, shape key delta, BSDF socket/texture, light/camera param, bone matrix, and multi-frame animation | **9 / 9 PASS** |
-| **Cross-Version Round-Trip** | `5.3 export → 4.5.1 import` & `4.5.1 → 5.3 → 5.3` vs `4.5.1 → 4.5.1 → 4.5.1` | **10 / 10 PASS** |
-| **Import Flag Matrix** | `custom_normals=False`, `auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info` | **5 / 5 PASS** |
-| **Third-Party `.dae` Stress Tests** | Non-Blender `Y_UP`, centimeter units (`import_units`), n-gon `<polylist>`, `<phong>`, non-identity `<bind_shape_matrix>` + `IDREF_array` | **3 / 3 PASS** |
+If you're importing game meshes (like car bodies) and want clean, editable sharp edges, turn on **Mark Sharp from Normals** under **Import Data Options** and adjust **Sharp Threshold** (default `1.0°`).
+
+---
+
+## What's Supported
+
+- **Geometry**: `<triangles>`, `<polylist>`, `<polygons>` (including `<ph>`), `<trifans>`, `<tristrips>`, `<lines>`, n-gons, custom split normals, multiple UV maps, byte vertex colors, modifiers, and instancing.
+- **Materials & Textures**: Principled BSDF, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, texture copying on export, and automatic fallback lookup for relative/subfolder textures (`textures/`, `images/`, `maps/`) on import.
+- **Rigs & Morphs**: Armatures, skinning (`<skin>`, vertex weights, `<bind_shape_matrix>`, `Name_array` and `IDREF_array`), bone collections, shape keys (`<morph>`), OpenSim export, and armature import options (`auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info`).
+- **Animation**: Object and pose-bone animations (sampled matrices, decomposed transforms, and keyframe curves) using Blender 5.0+'s layered Action / Slot / Channelbag API.
+- **Cameras & Lights**: Perspective/ortho cameras and Point, Sun, Spot, and Area lights with Blender `<extra>` profile data.
+- **Archives**: Direct import of `.zae`, `.kmz`, and `.zip` archives with `manifest.xml` lookup and automatic texture packing.
+- **Performance**: Mesh export and import use `foreach_get` / `foreach_set` with NumPy (~4.2 s export / ~7.0 s import on a 500k-triangle mesh).
+
+---
+
+## Parity Testing
+
+Every push and PR is tested in CI against **Blender 4.5.1 LTS** across 55 automated checks:
+
+- **Export byte-parity** (`tests/run_parity_tests.py`): 16 export configs checked for identical XML structure and float32 precision (`max Δ ≤ 1e-5`).
+- **Deep import & round-trip** (`tests/run_deep_verification.py`): per-vertex/normal/UV/weight/keyframe comparisons, `5.3 → 4.5.1` cross-version imports, `import → re-export` round-trips, import flag matrix, and third-party `Y_UP` / `.zae` / `<tristrips>` fixtures.
+
+---
 
 ## Building from Source
-
-Requires Blender 5.0+:
 
 ```bash
 blender --command extension validate io_scene_collada
 blender --command extension build --source-dir io_scene_collada --output-dir dist
 ```
 
+See [CONTRIBUTING.md](CONTRIBUTING.md) for dev setup and [CHANGELOG.md](CHANGELOG.md) for release notes.
+
 ## License
 
-Licensed under **GPL-2.0-or-later**, matching Blender 4.5.1 LTS. See [LICENSE](LICENSE) for details and [CHANGELOG.md](CHANGELOG.md) for version history.
+GPL-2.0-or-later — see [LICENSE](LICENSE). Based on Blender 4.5.1 LTS Collada I/O.
