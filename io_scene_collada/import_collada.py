@@ -536,6 +536,53 @@ class DocumentImporter:
     # <library_images>
     # ------------------------------------------------------------------
 
+    def _resolve_archive_image(self, raw_uri: str) -> tuple[str, zipfile.ZipInfo] | None:
+        """Resolve an <init_from> URI strictly against entries inside the open archive."""
+        raw = urllib.parse.unquote(raw_uri.strip())
+        if raw.lower().startswith("file:///"):
+            raw = raw[8:]
+        elif raw.lower().startswith("file://"):
+            raw = raw[7:]
+        raw = raw.replace("\\", "/")
+        bname = raw.rsplit("/", 1)[-1]
+        dae_dir = self._archive_dae_dir
+
+        def _try(path_str: str) -> tuple[str, zipfile.ZipInfo] | None:
+            norm = _norm_archive_path(path_str)
+            if not norm:
+                return None
+            if norm in self._archive_entries:
+                return (norm, self._archive_entries[norm])
+            return self._archive_entries_ci.get(norm.lower())
+
+        # 1. Exact path relative to root .dae's folder, then archive root
+        candidates: list[str] = []
+        if dae_dir:
+            candidates.append(f"{dae_dir}/{raw}")
+        candidates.append(raw)
+
+        # 2. Basename next to .dae and standard texture subfolders
+        if bname:
+            if dae_dir:
+                candidates.append(f"{dae_dir}/{bname}")
+            candidates.append(bname)
+            for sub in ("textures", "Textures", "images", "Images", "maps"):
+                if dae_dir:
+                    candidates.append(f"{dae_dir}/{sub}/{bname}")
+                candidates.append(f"{sub}/{bname}")
+
+        for cand in candidates:
+            hit = _try(cand)
+            if hit is not None:
+                return hit
+
+        # 3. Basename anywhere in the archive (deterministic sorted order)
+        if bname:
+            matches = self._archive_by_basename.get(bname.lower())
+            if matches:
+                return matches[0]
+        return None
+
     def _resolve_image_path(self, raw_uri: str) -> str | None:
         native = _uri_to_native_path(raw_uri)
         # Normalize embedded backslashes so Windows-authored DAEs resolve on Linux/macOS
