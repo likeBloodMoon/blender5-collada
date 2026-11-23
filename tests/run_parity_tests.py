@@ -22,15 +22,20 @@ TEST_WORK = os.path.join(ROOT, "tests", "_work")
 os.makedirs(TEST_WORK, exist_ok=True)
 
 
-def find_blender(prefix: str) -> str:
-    matches = glob.glob(os.path.join(TOOLS, f"blender-{prefix}*", "blender.exe"))
-    if not matches:
-        raise RuntimeError(f"Could not find Blender {prefix} in {TOOLS}")
-    return matches[0]
+def find_blender(prefix: str, env_var: str) -> str:
+    env_path = os.environ.get(env_var)
+    if env_path and os.path.exists(env_path):
+        return env_path
+    exe_names = ("blender.exe", "blender") if os.name == "nt" else ("blender", "blender.exe")
+    for exe in exe_names:
+        matches = glob.glob(os.path.join(TOOLS, f"blender-{prefix}*", exe))
+        if matches:
+            return matches[0]
+    raise RuntimeError(f"Could not find Blender {prefix} in {TOOLS} (or via {env_var})")
 
 
-BLENDER_45 = find_blender("4.5")
-BLENDER_53 = find_blender("5.3")
+BLENDER_45 = find_blender("4.5", "BLENDER_45")
+BLENDER_53 = find_blender("5.", "BLENDER_5X")
 
 
 def normalize_dae_metadata(data: bytes) -> bytes:

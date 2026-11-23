@@ -1,5 +1,9 @@
 # Blender Collada (DAE) Import/Export for Blender 5.0+
 
+[![Build & Parity Tests](https://github.com/likeBloodMoon/blender5-collada/actions/workflows/build.yml/badge.svg)](https://github.com/likeBloodMoon/blender5-collada/actions/workflows/build.yml)
+[![License: GPL v2+](https://img.shields.io/badge/License-GPLv2%2B-blue.svg)](LICENSE)
+[![Blender 5.0+](https://img.shields.io/badge/Blender-5.0%2B-orange.svg)](https://www.blender.org)
+
 A drop-in **Blender 5.0+ Extension** that restores full **COLLADA 1.4.1 (`.dae`)** import and export support after its removal in Blender 5.0, ported directly from **Blender 4.5.1 LTS** with verified byte-for-byte export parity and deep per-element import parity.
 
 ## Why This Exists

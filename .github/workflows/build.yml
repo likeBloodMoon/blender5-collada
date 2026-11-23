@@ -1,4 +1,4 @@
-name: Package Blender Extension
+name: Build & Parity Tests
 
 on:
   push:
@@ -6,34 +6,64 @@ on:
     tags: ["v*"]
   pull_request:
     branches: [main]
+  workflow_dispatch:
+
+env:
+  BLENDER_45_VER: "4.5.1"
+  BLENDER_5X_VER: "5.3.0"
 
 jobs:
-  package:
+  test-and-package:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Verify Python syntax
-        run: python3 -m py_compile io_scene_collada/*.py
-
-      - name: Build extension zip
+      - name: Install headless Blender runtime libraries
         run: |
-          mkdir -p dist
-          VERSION=$(grep '^version' io_scene_collada/blender_manifest.toml | sed -E 's/.*"([^"]+)".*/\1/')
-          (cd io_scene_collada && zip -r "../dist/collada_io-${VERSION}.zip" . -x "*__pycache__*" "*.pyc")
-          ls -lh dist/
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libgl1 libxkbcommon0 libsm6 xz-utils
 
-      - name: Upload artifact
+      - name: Cache Blender 4.5.1 and 5.3.0
+        id: cache-blender
+        uses: actions/cache@v4
+        with:
+          path: .tools
+          key: blender-linux-${{ env.BLENDER_45_VER }}-${{ env.BLENDER_5X_VER }}
+
+      - name: Download Blender 4.5.1 LTS and Blender 5.3.0
+        if: steps.cache-blender.outputs.cache-hit != 'true'
+        run: |
+          mkdir -p .tools
+          curl -fsSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_45_VER}-linux-x64.tar.xz" | tar -xJ -C .tools
+          curl -fsSL "https://download.blender.org/release/Blender5.3/blender-${BLENDER_5X_VER}-linux-x64.tar.xz" | tar -xJ -C .tools
+
+      - name: Configure portable Blender 5.3.0 and install extension
+        run: |
+          mkdir -p ".tools/blender-${BLENDER_5X_VER}-linux-x64/portable" dist
+          BLENDER_5X=".tools/blender-${BLENDER_5X_VER}-linux-x64/blender"
+          "$BLENDER_5X" --command extension validate io_scene_collada
+          "$BLENDER_5X" --command extension build --source-dir io_scene_collada --output-dir dist
+          ZIP_FILE=$(ls dist/collada_io-*.zip | head -n 1)
+          "$BLENDER_5X" --command extension install-file -r user_default -e "$ZIP_FILE"
+
+      - name: Run Core Export & Import Byte-Parity Suite (25 checks)
+        run: python3 tests/run_parity_tests.py
+
+      - name: Run Deep Verification Suite (27 checks)
+        run: python3 tests/run_deep_verification.py
+
+      - name: Upload built extension artifact
         uses: actions/upload-artifact@v4
         with:
           name: collada_io-extension
-          path: dist/*.zip
+          path: dist/collada_io-*.zip
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
         uses: softprops/action-gh-release@v2
         with:
-          files: dist/*.zip
+          files: dist/collada_io-*.zip
         permissions:
           contents: write
