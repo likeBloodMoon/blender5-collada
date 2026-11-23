@@ -589,27 +589,6 @@ class DocumentImporter:
         norm = native.replace("\\", os.sep)
         bname = os.path.basename(norm)
 
-        if self._archive_root is not None:
-            # Confine archive texture lookups strictly inside the extracted temp directory
-            rel_candidates = [
-                os.path.join(self.dae_dir, native),
-                os.path.join(self.dae_dir, norm),
-                os.path.join(self.dae_dir, bname),
-                os.path.join(self.dae_dir, "textures", bname),
-                os.path.join(self.dae_dir, "Textures", bname),
-                os.path.join(self.dae_dir, "images", bname),
-                os.path.join(self.dae_dir, "Images", bname),
-                os.path.join(self.dae_dir, "maps", bname),
-            ]
-            prefix = self._archive_root + os.sep
-            for cand in rel_candidates:
-                if not cand:
-                    continue
-                real = os.path.realpath(cand)
-                if real.startswith(prefix) and os.path.isfile(real):
-                    return real
-            return None
-
         candidates = [
             os.path.join(self.dae_dir, native),
             os.path.join(self.dae_dir, norm),
@@ -627,6 +606,14 @@ class DocumentImporter:
                 return cand
         return None
 
+    def _load_archive_image(self, raw_ref: str):
+        hit = self._resolve_archive_image(raw_ref)
+        if hit is None:
+            bname = raw_ref.replace("\\", "/").rsplit("/", 1)[-1]
+            self.warnings.append(f"Texture not found in archive: {bname or raw_ref}")
+            return None
+        return hit
+
     def _read_library_images(self, lib: ET.Element) -> None:
         for img_elem in _find_children(lib, "image"):
             img_id = img_elem.attrib.get("id", "")
@@ -634,22 +621,18 @@ class DocumentImporter:
             if init_from is None or not init_from.text:
                 continue
             raw_ref = init_from.text.strip()
+            if self._archive_zf is not None:
+                ima = self._load_archive_image(raw_ref)
+                if ima is not None and not isinstance(ima, tuple):
+                    self.images_by_id[img_id] = ima
+                continue
+
             workpath = self._resolve_image_path(raw_ref)
             if workpath is None:
                 self.warnings.append(f"Missing texture: {os.path.basename(_uri_to_native_path(raw_ref)) or raw_ref}")
                 continue
             try:
-                is_archive = self._archive_root is not None
-                ima = bpy.data.images.load(workpath, check_existing=not is_archive)
-                if is_archive:
-                    try:
-                        ima.pack()
-                    except Exception as e:
-                        self.warnings.append(f"Could not pack archive image {ima.name}: {e}")
-                        if ima.name in bpy.data.images:
-                            bpy.data.images.remove(ima)
-                        continue
-                    self._loaded_images_from_archive.append(ima)
+                ima = bpy.data.images.load(workpath, check_existing=True)
                 self.images_by_id[img_id] = ima
             except Exception as e:
                 self.warnings.append(f"Cannot load image {os.path.basename(workpath)}: {e}")
