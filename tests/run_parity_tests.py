@@ -536,9 +536,13 @@ def main() -> int:
     print(f"Blender 5.3.0: {BLENDER_53}")
 
     # Step 1: Generate shared .blend test files in Blender 4.5.1
+    reuse_blends = os.environ.get("REUSE_BLENDS", "0") == "1"
     blend_files: dict[str, str] = {}
     for name, gen_code in SCENE_GENERATORS.items():
         bpath = os.path.join(TEST_WORK, f"{name}.blend")
+        if reuse_blends and os.path.exists(bpath):
+            blend_files[name] = bpath
+            continue
         res = run_blender(BLENDER_45, None, gen_code.format(blend=bpath))
         if res.returncode != 0 or not os.path.exists(bpath):
             print(f"[FAIL] Generating {name}.blend:\n{res.stdout}\n{res.stderr}")

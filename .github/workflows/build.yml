@@ -136,6 +136,7 @@ jobs:
       - name: Verify byte-identical output with COLLADA_NATIVE=0 fallback
         env:
           COLLADA_NATIVE: "0"
+          REUSE_BLENDS: "1"
         run: |
           python3 tests/run_parity_tests.py
           python3 -c "
