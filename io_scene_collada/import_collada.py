@@ -10,7 +10,6 @@ import io
 import math
 import os
 import re
-import tempfile
 import urllib.parse
 import xml.etree.ElementTree as ET
 import zipfile
@@ -248,8 +247,6 @@ class DocumentImporter:
         self.object_by_geom_id: dict[str, Object] = {}
         self.imported_mesh_objects: list[Object] = []
         self.root_objects: list[Object] = []
-        self._archive_root: str | None = None
-        self._loaded_images_from_archive: list = []
         self._archive_zf: zipfile.ZipFile | None = None
         self._archive_basename: str = ""
         self._archive_dae_dir: str = ""
@@ -268,42 +265,6 @@ class DocumentImporter:
         self.joint_arm_by_id: dict[str, Object] = {}
         self.joint_bone_name_by_id: dict[str, str] = {}
         self.joint_parent_elem_by_id: dict[str, ET.Element | None] = {}
-
-    def _extract_archive_dae(self, archive_path: str, tmpdir: str) -> str | None:
-        """Safely extract a .zae / .kmz / .zip archive and return the primary .dae path."""
-        base_real = os.path.realpath(tmpdir)
-        extracted_daes: list[str] = []
-        manifest_path: str | None = None
-
-        with zipfile.ZipFile(archive_path, "r") as zf:
-            for info in zf.infolist():
-                if info.is_dir():
-                    continue
-                target = os.path.realpath(os.path.join(tmpdir, info.filename))
-                if not (target == base_real or target.startswith(base_real + os.sep)):
-                    continue
-                os.makedirs(os.path.dirname(target), exist_ok=True)
-                with zf.open(info, "r") as src, open(target, "wb") as dst:
-                    dst.write(src.read())
-                low = info.filename.lower()
-                if low == "manifest.xml" or low.endswith("/manifest.xml"):
-                    manifest_path = target
-                elif low.endswith(".dae"):
-                    extracted_daes.append(target)
-
-        if manifest_path is not None:
-            try:
-                mroot = ET.parse(manifest_path).getroot()
-                dae_root_el = _find_child(mroot, "dae_root")
-                if dae_root_el is not None and dae_root_el.text:
-                    rel = _uri_to_native_path(dae_root_el.text.strip())
-                    cand = os.path.realpath(os.path.join(os.path.dirname(manifest_path), rel))
-                    if cand.startswith(base_real + os.sep) and os.path.isfile(cand):
-                        return cand
-            except Exception as e:
-                self.warnings.append(f"Could not parse archive manifest.xml: {e}")
-
-        return extracted_daes[0] if extracted_daes else None
 
     def _find_archive_root_dae(self, zf: zipfile.ZipFile) -> tuple[str, zipfile.ZipInfo] | None:
         """Select root .dae inside an open ZipFile: manifest.xml <dae_root> first, else sorted .dae."""
@@ -428,9 +389,9 @@ class DocumentImporter:
                 self._archive_by_basename = {}
                 self._archive_images_by_entry = {}
                 self._archive_dae_dir = ""
-        return self._import_dae_file(self.settings.filepath, pack_images=False)
+        return self._import_dae_file(self.settings.filepath)
 
-    def _import_dae_file(self, dae_path: str, pack_images: bool = False) -> bool:
+    def _import_dae_file(self, dae_path: str) -> bool:
         try:
             tree = ET.parse(dae_path)
         except Exception as e:
