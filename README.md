@@ -12,13 +12,21 @@ This extension brings back the full Blender 4.5.1 COLLADA importer and exporter 
 
 ## Install
 
-1. Grab the latest `collada_io-*.zip` from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases).
+1. Grab the zip for your OS from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases) (e.g., `collada_io-1.3.0-windows_x64.zip`), or `collada_io-1.3.0-pure-python.zip` if you prefer no compiled binary.
 2. Drag and drop the `.zip` onto Blender, **or** go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…** and pick the `.zip`.
 
 CLI install:
 ```bash
-blender --command extension install-file -r user_default -e collada_io-1.3.0-windows-x64.zip
+blender --command extension install-file -r user_default -e collada_io-1.3.0-windows_x64.zip
 ```
+
+### About the optional native binary (`fastfmt.dll` / `libfastfmt.so` / `libfastfmt.dylib`)
+
+The platform-specific release zips include a small, optional C++17 helper library (`io_scene_collada/_native/fastfmt.dll` on Windows) that speeds up formatting and parsing large mesh number arrays (`<float_array>` and `<p>`).
+
+- **100% open source & auditable**: Built directly from the ~125-line [`native/fastfmt.cpp`](native/fastfmt.cpp) in this repo — it only converts float/int arrays to and from text in memory (no file I/O, no networking, no system calls).
+- **Built transparently by GitHub Actions**: Every release binary is compiled on GitHub's CI runners directly from this repository (see the **Actions** tab for full build logs).
+- **Completely optional**: Don't want a `.dll` at all? Download **`collada_io-*-pure-python.zip`** instead — it contains only `.py` files and produces byte-identical output. You can also force the pure-Python path at any time by setting `COLLADA_NATIVE=0`.
 
 ---
 
