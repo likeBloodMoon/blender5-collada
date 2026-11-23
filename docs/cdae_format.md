@@ -33,7 +33,7 @@ The decompressed body is a **flat sequential stream of MsgPack values** (unpacke
 - **`Box3F`**: Either a 6-element MsgPack array `[minX, minY, minZ, maxX, maxY, maxZ]` **or** a 24-byte MsgPack `bin` (`<6f`) [Dump:300-317].
 - **`pack_vector` (`read_vector`)**: Three consecutive MsgPack objects [Dump:373-388]:
   1. `size` (MsgPack int): number of elements.
-  2. `elemSize` (MsgPack int): byte size of each element.
+  2. `elemSize` (MsgPack int): byte size of each element. **The reader must always use `elemSize` from the stream and fail with a clear error if `elemSize` does not match the expected contract size (or if `len(data) != size * elemSize`).**
   3. `data` (MsgPack `bin`): raw little-endian byte buffer of length `size * elemSize`.
 - **`TSIntegerSet`**: A single MsgPack object — either a `bin` buffer or a `list` of `uint32` bit-words (`MAX_TS_SET_DWORDS = 64`, 2048 bits max) [Dump:393-401], [T3D `tsIntegerSet.h:37-49`].
 
@@ -114,6 +114,9 @@ The decompressed body is a **flat sequential stream of MsgPack values** (unpacke
     - `boneIndex` (`elemSize=4`, `<i`)
     - `weight` (`elemSize=4`, `<f`)
     - `nodeIndex` (`elemSize=4`, `<i`, maps `boneIndex -> shape node index`)
+- **Child mesh data sharing (`parentMesh >= 0`)** [T3D `tsMesh.cpp:2446-2492`], [Dump:811-836]:
+  - When `parentMesh >= 0`, `TSMesh::assemble()` resolves empty vertex streams (`verts`, `tverts`, `tverts2`, `colors`, `norms`, `encodedNorms`) from `meshes[parentMesh]` via `getSharedData32`/`getSharedData8` (transitively along the parent chain, guarding against invalid indices or cycles).
+  - For `SkinMesh` (`meshType == 1`) with `parentMesh >= 0`, `initialVerts`, `initialNorms`, `vertexIndex`, `boneIndex`, `weight`, and `nodeIndex` are omitted from the child stream and inherited from `meshes[parentMesh]`; `initialTransforms` is still stored on the child mesh.
 
 ### 3.5 Sequences [Dump:846-872]
 - `tot_sequences` (MsgPack `uint32`), followed by `tot_sequences` records of 15 scalars (`nameIndex`, `flags`, `numKeyframes`, `duration`, `priority`, `firstGroundFrame`, `numGroundFrames`, `baseRotation`, `baseTranslation`, `baseScale`, `baseObjectState`, `baseDecalState`, `firstTrigger`, `numTriggers`, `toolBegin`) + 6 `TSIntegerSet` objects (`rotationMatters`, `translationMatters`, `scaleMatters`, `visMatters`, `frameMatters`, `matFrameMatters`).
@@ -168,6 +171,11 @@ Each `TSDrawPrimitive` is 12 bytes (`<3i`: `start`, `numElements`, `matIndex`) [
 ### 5.6 Detail Levels (LODs) & Collision Meshes
 - Each `TSShape::Detail` has `nameIndex`, `subShapeNum`, `objectDetailNum`, and `size` (pixel size; higher `size` = higher detail; negative `size` = collision / LOS detail levels, e.g., `collision-1`, `colmesh-1`, `Colbox-1`) [T3D `colladaShapeLoader.cpp:287-320`, `tsShape.h:284-293`].
 - For a given `Detail` (`subShapeNum >= 0`, `objectDetailNum >= 0`), the objects belonging to `subShapeNum` are `objects[subShapeFirstObject[s] .. subShapeFirstObject[s] + subShapeNumObjects[s]]`, and each object's mesh at that detail level is `meshes[obj.startMeshIndex + detail.objectDetailNum]` (when `objectDetailNum < obj.numMeshes` and the mesh is not `NullMesh`).
+
+### 5.7 GPU Vertex Splitting & Merge-by-Distance
+- When Torque3D converts a `.dae` into a `TSMesh`, `ColladaAppMesh::getPrimitives()` builds a GPU-style `VertTupleMap` keyed on unique `(position, normal, uv0, uv1, color)` tuples [T3D `colladaAppMesh.cpp:505, 553-625`].
+- As a result, vertices along hard edges, UV seams, and vertex-color discontinuities are duplicated in `verts[]` (and faces on opposite sides of a seam do not share vertex indices).
+- On import, per-corner (`CORNER` / loop) UVs, vertex colors, and normals must be extracted from the unmerged indices **before** merging vertices by position (within each mesh only), so UV/color seams survive the merge and `sharp_edges_from_normals` can detect shared hard edges.
 
 ---
 
