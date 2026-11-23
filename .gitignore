@@ -7,8 +7,10 @@ blender-4.5.1-src/
 dist/
 io_scene_collada/_native/
 
-# Generated test artifacts
+# Generated test artifacts & local BeamNG test fixtures (never commit game files)
 tests/_work/
+tests/_local_cdae/
+tools/_external/
 
 # Python caches
 __pycache__/
