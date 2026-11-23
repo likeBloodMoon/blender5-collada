@@ -945,6 +945,9 @@ class DocumentImporter:
         if pos_stride <= 0:
             pos_stride = 3
         num_verts = pos_vals.size // pos_stride
+        if pos_vals.size > 0 and not np.isfinite(pos_vals).all():
+            pos_vals = np.where(np.isfinite(pos_vals), pos_vals, np.float32(0.0))
+            self.warnings.append(f"Geometry '{geom_name}': replaced non-finite vertex positions with 0.0")
 
         # Collect per-primitive vectorized chunks
         vcount_chunks: list[np.ndarray] = []
@@ -960,6 +963,7 @@ class DocumentImporter:
         mat_prims: dict[str, list[tuple[int, int]]] = {}  # material_symbol -> [(start_face, count)]
         total_faces = 0
         total_loops = 0
+        dropped_faces_total = 0
 
         def extract_vcolname(src_id: str, src_name: str) -> str:
             if src_name and src_name != src_id:
@@ -1025,9 +1029,13 @@ class DocumentImporter:
                     if p_arr is None:
                         continue
                     cnt = p_arr.size // (2 * num_inputs)
-                    if cnt > 0:
+                    if cnt > 0 and num_verts > 0:
                         p2 = p_arr[:cnt * 2 * num_inputs].reshape(cnt, 2, num_inputs)
-                        loose_edges.extend(zip(p2[:, 0, vert_off].tolist(), p2[:, 1, vert_off].tolist()))
+                        e0 = p2[:, 0, vert_off]
+                        e1 = p2[:, 1, vert_off]
+                        e_ok = (e0 >= 0) & (e0 < num_verts) & (e1 >= 0) & (e1 < num_verts) & (e0 != e1)
+                        if e_ok.any():
+                            loose_edges.extend(zip(e0[e_ok].tolist(), e1[e_ok].tolist()))
                 continue
 
             # Parse primitive into (prim_vcounts, prim_p[n_loops, num_inputs])
@@ -1148,6 +1156,49 @@ class DocumentImporter:
             if prim_vcounts is None or prim_p is None or prim_vcounts.size == 0:
                 continue
 
+            # Vectorized bounds check: drop only faces with out-of-range VERTEX/NORMAL/TEXCOORD/COLOR indices
+            norm_vals, norm_stride, _ = sources.get(norm_src_id, (np.empty(0, dtype=np.float32), 3, ""))
+            if norm_stride <= 0:
+                norm_stride = 3
+            n_norm_elems = norm_vals.size // norm_stride
+            has_norm_src = (norm_off >= 0 or bool(vert_normal_src_id)) and n_norm_elems > 0
+
+            v_col = prim_p[:, vert_off]
+            loop_ok = (v_col >= 0) & (v_col < num_verts)
+            if has_norm_src:
+                n_col = prim_p[:, norm_off] if norm_off >= 0 else v_col
+                loop_ok &= (n_col >= 0) & (n_col < n_norm_elems)
+            for u_id, u_off in uv_inputs:
+                u_vals_chk, u_stride_chk, _ = sources.get(u_id, (np.empty(0, dtype=np.float32), 2, ""))
+                if u_stride_chk <= 0:
+                    u_stride_chk = 2
+                n_u_chk = u_vals_chk.size // u_stride_chk
+                if n_u_chk > 0:
+                    u_col = prim_p[:, u_off]
+                    loop_ok &= (u_col >= 0) & (u_col < n_u_chk)
+            for _cn, c_src_id, c_off in col_inputs:
+                c_vals_chk, c_stride_chk, _ = sources.get(c_src_id, (np.empty(0, dtype=np.float32), 3, ""))
+                if c_stride_chk <= 0:
+                    c_stride_chk = 3
+                n_c_chk = c_vals_chk.size // c_stride_chk
+                if n_c_chk > 0:
+                    c_col = prim_p[:, c_off]
+                    loop_ok &= (c_col >= 0) & (c_col < n_c_chk)
+
+            if not bool(loop_ok.all()):
+                if tag in ("triangles", "trifans", "tristrips") or bool((prim_vcounts == 3).all()):
+                    face_ok = loop_ok.reshape(-1, 3).all(axis=1)
+                else:
+                    starts_chk = np.cumsum(prim_vcounts) - prim_vcounts
+                    face_ok = np.logical_and.reduceat(loop_ok, starts_chk)
+                dropped = int((~face_ok).sum())
+                dropped_faces_total += dropped
+                if not bool(face_ok.any()):
+                    continue
+                loop_keep = np.repeat(face_ok, prim_vcounts)
+                prim_vcounts = prim_vcounts[face_ok]
+                prim_p = prim_p[loop_keep]
+
             prim_face_count = int(prim_vcounts.size)
             prim_loop_count = int(prim_p.shape[0])
             mat_sym = child.attrib.get("material", "")
@@ -1158,13 +1209,12 @@ class DocumentImporter:
             loop_vert_chunks.append(l_verts)
 
             # Normals (vectorized)
-            norm_vals, norm_stride, _ = sources.get(norm_src_id, (np.empty(0, dtype=np.float32), 3, ""))
-            if norm_stride <= 0:
-                norm_stride = 3
-            if (norm_off >= 0 or vert_normal_src_id) and norm_vals.size >= norm_stride:
-                n_src = norm_vals[:(norm_vals.size // norm_stride) * norm_stride].reshape(-1, norm_stride)[:, :3]
+            if has_norm_src:
+                n_src = norm_vals[:n_norm_elems * norm_stride].reshape(n_norm_elems, norm_stride)[:, :3]
                 n_idx = prim_p[:, norm_off] if norm_off >= 0 else l_verts
                 p_norms = n_src[n_idx].astype(np.float64)
+                if not np.isfinite(p_norms).all():
+                    p_norms = np.where(np.isfinite(p_norms), p_norms, 0.0)
                 nlens = np.linalg.norm(p_norms, axis=1, keepdims=True)
                 nmask = nlens[:, 0] > 0.0
                 p_norms[nmask] /= nlens[nmask]
@@ -1228,6 +1278,11 @@ class DocumentImporter:
 
             total_faces += prim_face_count
             total_loops += prim_loop_count
+
+        if dropped_faces_total > 0:
+            self.warnings.append(
+                f"Geometry '{geom_name}': dropped {dropped_faces_total} face(s) with out-of-range indices"
+            )
 
         # Construct Blender Mesh with foreach_set (fast path when no loose edges)
         me = bpy.data.meshes.new(name=geom_name)
