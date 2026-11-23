@@ -400,6 +400,34 @@ me.update()
 
 bpy.ops.wm.save_as_mainfile(filepath=r"{blend}")
 """,
+    "08_ngon7_and_bevel_mirror": """
+import bpy, math
+
+bpy.ops.wm.read_factory_settings(use_empty=True)
+
+# 7-gon face mesh
+me7 = bpy.data.meshes.new("Heptagon")
+verts7 = [(math.cos(2 * math.pi * i / 7), math.sin(2 * math.pi * i / 7), 0.0) for i in range(7)]
+me7.from_pydata(verts7, [], [list(range(7))])
+me7.update()
+ob7 = bpy.data.objects.new("Heptagon", me7)
+bpy.context.scene.collection.objects.link(ob7)
+
+# Beveled + Mirrored cube (offset in X so mirror is clean)
+bpy.ops.mesh.primitive_cube_add(size=1.0, location=(1.0, 0.0, 0.0))
+bm_ob = bpy.context.active_object
+bm_ob.name = "BevelMirrorCube"
+# Clear UVs so 4.5.1 vs 5.3 Bevel UV projection difference doesn't mask triangulation parity
+while bm_ob.data.uv_layers:
+    bm_ob.data.uv_layers.remove(bm_ob.data.uv_layers[0])
+bev = bm_ob.modifiers.new("Bevel", "BEVEL")
+bev.width = 0.1
+bev.segments = 2
+mir = bm_ob.modifiers.new("Mirror", "MIRROR")
+mir.use_axis = (True, False, False)
+
+bpy.ops.wm.save_as_mainfile(filepath=r"{blend}")
+""",
 }
 
 
@@ -422,6 +450,7 @@ EXPORT_TEST_CASES: list[tuple[str, str, dict]] = [
     ("06_anim_curves_keys", "06_animations", {"include_animations": True, "export_animation_type_selection": "keys", "keep_smooth_curves": True}),
     ("07_sharp_autosmooth_polylist", "07_sharp_autosmooth", {"triangulate": False}),
     ("07_sharp_autosmooth_triangulated", "07_sharp_autosmooth", {"triangulate": True}),
+    ("08_ngon7_bevel_mirror_tri", "08_ngon7_and_bevel_mirror", {"apply_modifiers": True, "triangulate": True}),
 ]
 
 
