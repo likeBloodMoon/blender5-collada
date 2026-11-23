@@ -38,6 +38,8 @@ class ImportSettings:
     filepath: str = ""
     import_units: bool = False
     custom_normals: bool = True
+    sharp_edges_from_normals: bool = False
+    sharp_angle_threshold: float = math.radians(1.0)
     find_chains: bool = False
     auto_connect: bool = False
     fix_orientation: bool = False
@@ -1072,7 +1074,10 @@ class DocumentImporter:
         me.from_pydata(verts_co, loose_edges, face_vert_indices)
 
         # Smooth/flat face flags
-        if face_sharp and len(face_sharp) == len(me.polygons):
+        if self.settings.sharp_edges_from_normals and has_all_loop_normals and len(loop_normals) == len(me.loops):
+            for p in me.polygons:
+                p.use_smooth = True
+        elif face_sharp and len(face_sharp) == len(me.polygons):
             for pi, is_flat in enumerate(face_sharp):
                 me.polygons[pi].use_smooth = not is_flat
 
@@ -1092,8 +1097,10 @@ class DocumentImporter:
                 for li, col in enumerate(c_list):
                     cattr.data[li].color_srgb = col
 
-        # Custom normals
-        if self.settings.custom_normals and has_all_loop_normals and len(loop_normals) == len(me.loops) and len(loop_normals) > 0:
+        # Custom normals / Clean sharp edges from normals
+        if self.settings.sharp_edges_from_normals and has_all_loop_normals and len(loop_normals) == len(me.loops) and len(loop_normals) > 0:
+            self._apply_sharp_edges_from_normals(me, loop_normals, self.settings.sharp_angle_threshold)
+        elif self.settings.custom_normals and has_all_loop_normals and len(loop_normals) == len(me.loops) and len(loop_normals) > 0:
             try:
                 me.normals_split_custom_set(loop_normals)
             except Exception as e:
@@ -1102,6 +1109,47 @@ class DocumentImporter:
         me.update()
         self.meshes_by_id[geom_id] = me
         self.mesh_mat_prims[geom_id] = mat_prims
+
+    @staticmethod
+    def _apply_sharp_edges_from_normals(
+        me: Mesh, loop_normals: list[tuple[float, float, float]], threshold_rad: float
+    ) -> None:
+        """Mark sharp_edge directly from COLLADA loop normal discontinuities across each edge."""
+        edge_face_normals: dict[tuple[int, int], list[tuple[Vector, Vector]]] = {}
+        loops = me.loops
+        for poly in me.polygons:
+            lstart = poly.loop_start
+            ltot = poly.loop_total
+            for k in range(ltot):
+                l0 = lstart + k
+                l1 = lstart + ((k + 1) % ltot)
+                v0 = loops[l0].vertex_index
+                v1 = loops[l1].vertex_index
+                n0 = Vector(loop_normals[l0])
+                n1 = Vector(loop_normals[l1])
+                if v0 < v1:
+                    edge_face_normals.setdefault((v0, v1), []).append((n0, n1))
+                else:
+                    edge_face_normals.setdefault((v1, v0), []).append((n1, n0))
+
+        sharp_flags: list[bool] = []
+        for edge in me.edges:
+            pairs = edge_face_normals.get(edge.key)
+            is_sharp = False
+            if pairs and len(pairs) >= 2:
+                n_a0, n_a1 = pairs[0]
+                for n_b0, n_b1 in pairs[1:]:
+                    ang0 = n_a0.angle(n_b0, 0.0) if (n_a0.length_squared > 0 and n_b0.length_squared > 0) else 0.0
+                    ang1 = n_a1.angle(n_b1, 0.0) if (n_a1.length_squared > 0 and n_b1.length_squared > 0) else 0.0
+                    if (ang0 + ang1) * 0.5 > threshold_rad:
+                        is_sharp = True
+                        break
+            sharp_flags.append(is_sharp)
+
+        se = me.attributes.get("sharp_edge")
+        if se is None:
+            se = me.attributes.new(name="sharp_edge", type="BOOLEAN", domain="EDGE")
+        se.data.foreach_set("value", sharp_flags)
 
     # ------------------------------------------------------------------
     # <library_controllers>

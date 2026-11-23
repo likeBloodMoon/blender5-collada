@@ -11,11 +11,13 @@ for drop-in compatibility.
 
 from __future__ import annotations
 
+import math
 import os
 import bpy
 from bpy.props import (
     BoolProperty,
     EnumProperty,
+    FloatProperty,
     IntProperty,
     StringProperty,
 )
@@ -428,6 +430,24 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         default=True,
     )
 
+    sharp_edges_from_normals: BoolProperty(
+        name="Mark Sharp from Normals",
+        description=(
+            "Convert COLLADA normals into clean Sharp Edge markings with smooth faces "
+            "(prevents flat-face triangles from hiding sharp edges and eliminates false sharp edges)"
+        ),
+        default=False,
+    )
+
+    sharp_angle_threshold: FloatProperty(
+        name="Sharp Threshold",
+        description="Minimum normal angle discontinuity across an edge to mark it sharp",
+        default=math.radians(1.0),
+        min=0.0,
+        max=math.pi,
+        subtype="ANGLE",
+    )
+
     fix_orientation: BoolProperty(
         name="Fix Leaf Bones",
         description="Fix Orientation of Leaf Bones (Collada does only support Joints)",
@@ -468,6 +488,9 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         box.label(text="Import Data Options", icon="MESH_DATA")
         box.prop(self, "import_units")
         box.prop(self, "custom_normals")
+        box.prop(self, "sharp_edges_from_normals")
+        if self.sharp_edges_from_normals:
+            box.prop(self, "sharp_angle_threshold")
 
         box = layout.box()
         box.label(text="Armature Options", icon="ARMATURE_DATA")
@@ -489,6 +512,8 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
             filepath=self.filepath,
             import_units=self.import_units,
             custom_normals=self.custom_normals,
+            sharp_edges_from_normals=self.sharp_edges_from_normals,
+            sharp_angle_threshold=self.sharp_angle_threshold,
             find_chains=self.find_chains,
             auto_connect=self.auto_connect,
             fix_orientation=self.fix_orientation,

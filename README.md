@@ -17,6 +17,7 @@ This extension implements the complete Blender 4.5.1 COLLADA importer and export
 - **Drop-in Operator Compatibility**: Registers the original `bpy.ops.wm.collada_import` and `bpy.ops.wm.collada_export` operators with all Blender 4.5.1 properties, defaults, and tabbed UI — existing scripts and pipelines work without modification.
 - **Drag-and-Drop & Archive Support**: Registers `IO_FH_collada` (`bpy.types.FileHandler`) for `.dae`, `.zae`, and `.kmz` files — drag-and-drop directly into Blender, with automatic `manifest.xml` resolution and texture packing for `.zae`/`.kmz`/`.zip` archives.
 - **Meshes & Geometry**: Polylists, triangulated meshes (`SHORT_EDGE` / `EAR_CLIP`), `<polygons>` (including `<ph>`), `<trifans>`, `<tristrips>`, n-gons, loose edges, custom split normals, multi-UV maps (`active_uv_only`), byte vertex colors, modifier application, and geometry instancing.
+- **Clean Sharp Edges from Normals**: Optional **Mark Sharp from Normals** import mode converts COLLADA normals directly into clean `sharp_edge` markings on smooth faces, preventing flat triangles from hiding sharp creases and eliminating false sharp-edge noise.
 - **Materials & Textures**: Principled BSDF import/export, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, emission, IOR, alpha/transparency, diffuse/emission/normal textures, smart cross-platform texture path fallback (`textures/`, `images/`, `maps/`, basename lookup), and texture copy export (`use_texture_copies`).
 - **Cameras & Lights**: Perspective & orthographic cameras; Point, Sun, Spot, and Area lights with full Blender `<extra>` profile DNA preservation.
 - **Armatures, Skinning & Morphing**: Skeleton hierarchies, vertex weights, `<bind_shape_matrix>`, `Name_array` and `IDREF_array` joints, bone collections, shape keys (`<morph>`), OpenSim / Second Life compatibility (`open_sim`, `deform_bones_only`), and armature import flags (`auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info`).
@@ -32,7 +33,7 @@ This extension implements the complete Blender 4.5.1 COLLADA importer and export
 
 ### Option 2: Install via Blender CLI
 ```bash
-blender --command extension install-file -r user_default -e collada_io-4.5.1.zip
+blender --command extension install-file -r user_default -e collada_io-1.0.0.zip
 ```
 
 ## Usage

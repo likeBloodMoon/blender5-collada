@@ -24,7 +24,7 @@ Contributions, bug reports, and real-world `.dae` test cases are welcome!
    ```
 2. Install into your Blender 5.x environment:
    ```bash
-   blender --command extension install-file -r user_default -e dist/collada_io-4.5.1.zip
+   blender --command extension install-file -r user_default -e dist/collada_io-1.0.0.zip
    ```
 3. Run parity tests (requires portable Blender 4.5.1 and 5.x in `.tools/`):
    ```bash

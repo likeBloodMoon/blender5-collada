@@ -714,6 +714,66 @@ def main() -> int:
         print(f"[FAIL] pro_tristrips_and_dcc_sid_anim\n{r_pro.stderr[-400:]}")
         record(False)
 
+    # 5C. Mark Sharp from Normals (flat-to-smooth crease caught, noisy smooth seam ignored)
+    sharp_dae = os.path.join(DEEP_WORK, "ext_sharp_normals.dae")
+    with open(sharp_dae, "w", encoding="utf-8") as f:
+        f.write("""<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><unit name="meter" meter="1"/><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="Panel-mesh" name="Panel">
+      <mesh>
+        <source id="Panel-pos">
+          <float_array id="Panel-pos-arr" count="24">0 0 0 1 0 0 1 1 0 0 1 0 2 0 0 2 1 0 3 0 0 3 1 0</float_array>
+          <technique_common><accessor source="#Panel-pos-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <source id="Panel-norm">
+          <float_array id="Panel-norm-arr" count="15">0 0 1  0.5 0 0.866025  0.501 0 0.865447  0.707107 0 0.707107  0.7075 0 0.7067</float_array>
+          <technique_common><accessor source="#Panel-norm-arr" count="5" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="Panel-verts"><input semantic="POSITION" source="#Panel-pos"/></vertices>
+        <polylist count="3">
+          <input semantic="VERTEX" source="#Panel-verts" offset="0"/>
+          <input semantic="NORMAL" source="#Panel-norm" offset="1"/>
+          <vcount>4 4 4 </vcount>
+          <p>0 0 1 0 2 0 3 0  1 1 4 3 5 3 2 1  4 4 6 4 7 4 5 4</p>
+        </polylist>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="PanelObj" name="PanelObj" type="NODE"><instance_geometry url="#Panel-mesh"/></node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>""")
+
+    sharp_check = f"""
+import bpy, json
+for ob in list(bpy.data.objects): bpy.data.objects.remove(ob, do_unlink=True)
+bpy.ops.wm.collada_import(filepath=r"{sharp_dae}", sharp_edges_from_normals=True)
+me = bpy.data.objects["PanelObj"].data
+se = me.attributes["sharp_edge"]
+sharp_keys = sorted([list(e.key) for i, e in enumerate(me.edges) if se.data[i].value])
+all_smooth = all(p.use_smooth for p in me.polygons)
+print("SHARP_RESULT:", json.dumps({{"sharp": sharp_keys, "all_smooth": all_smooth}}))
+"""
+    r_sh = run_blender(BLENDER_53, None, sharp_check)
+    m_sh = next((l for l in r_sh.stdout.splitlines() if l.startswith("SHARP_RESULT:")), "")
+    if r_sh.returncode == 0 and m_sh:
+        res_sh = json.loads(m_sh.split("SHARP_RESULT:", 1)[1].strip())
+        # Edge (1, 2) is flat-to-smooth 30 deg crease -> MUST be sharp; Edge (4, 5) is 0.05 deg float noise -> MUST NOT be sharp
+        if res_sh["sharp"] == [[1, 2]] and res_sh["all_smooth"]:
+            print("[PASS] pro_sharp_edges_from_normals (flat-to-smooth crease marked sharp, float-noise seam clean)")
+            record(True)
+        else:
+            print(f"[FAIL] pro_sharp_edges_from_normals: {res_sh}")
+            record(False)
+    else:
+        print(f"[FAIL] pro_sharp_edges_from_normals\n{r_sh.stderr[-400:]}")
+        record(False)
+
     print(f"\nDEEP VERIFICATION SUMMARY: {total_pass}/{total_pass + total_fail} PASS")
     return 0 if total_fail == 0 else 1
 
