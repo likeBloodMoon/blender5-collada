@@ -3,8 +3,9 @@
 .venv*/
 blender-4.5.1-src/
 
-# Built extension archives (attach to GitHub Releases instead)
+# Built extension archives & native binaries (built in CI)
 dist/
+io_scene_collada/_native/
 
 # Generated test artifacts
 tests/_work/

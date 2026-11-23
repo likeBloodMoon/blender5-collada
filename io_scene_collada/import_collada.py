@@ -18,6 +18,7 @@ from typing import TYPE_CHECKING
 import bpy
 from mathutils import Matrix, Vector
 
+from ._native_loader import native_parse_f32, native_parse_i32
 from .collada_utils import (
     create_fcurve_on_channelbag,
     dae_flat_to_matrix,
@@ -63,6 +64,28 @@ def _find_child(elem: ET.Element, name: str) -> ET.Element | None:
 
 def _find_children(elem: ET.Element, name: str) -> list[ET.Element]:
     return [ch for ch in elem if _strip_ns(ch.tag) == name]
+
+
+def _parse_f32_np(text: str | None):
+    import numpy as np
+
+    if not text:
+        return np.empty(0, dtype=np.float32)
+    res = native_parse_f32(text)
+    if res is not None:
+        return res
+    return np.fromstring(text, sep=" ", dtype=np.float32)
+
+
+def _parse_i32_np(text: str | None):
+    import numpy as np
+
+    if not text:
+        return np.empty(0, dtype=np.int32)
+    res = native_parse_i32(text)
+    if res is not None:
+        return res
+    return np.fromstring(text, sep=" ", dtype=np.int32)
 
 
 def _parse_floats(text: str | None) -> list[float]:
@@ -860,11 +883,7 @@ class DocumentImporter:
             sid = src.attrib.get("id", "")
             sname = src.attrib.get("name") or sid
             fa = _find_child(src, "float_array")
-            vals = (
-                np.fromstring(fa.text, sep=" ", dtype=np.float32)
-                if (fa is not None and fa.text)
-                else np.empty(0, dtype=np.float32)
-            )
+            vals = _parse_f32_np(fa.text) if fa is not None else np.empty(0, dtype=np.float32)
             stride = 3
             tc = _find_child(src, "technique_common")
             if tc is not None:
@@ -965,7 +984,7 @@ class DocumentImporter:
             if tag == "lines":
                 p_el = _find_child(child, "p")
                 if p_el is not None and p_el.text:
-                    p_arr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                    p_arr = _parse_i32_np(p_el.text)
                     cnt = p_arr.size // (2 * num_inputs)
                     if cnt > 0:
                         p2 = p_arr[:cnt * 2 * num_inputs].reshape(cnt, 2, num_inputs)
@@ -979,7 +998,7 @@ class DocumentImporter:
             if tag == "triangles":
                 p_el = _find_child(child, "p")
                 if p_el is not None and p_el.text:
-                    p_raw = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                    p_raw = _parse_i32_np(p_el.text)
                     tri_count = p_raw.size // (3 * num_inputs)
                     if tri_count > 0:
                         prim_p = p_raw[:tri_count * 3 * num_inputs].reshape(tri_count * 3, num_inputs)
@@ -988,8 +1007,8 @@ class DocumentImporter:
                 vc_el = _find_child(child, "vcount")
                 p_el = _find_child(child, "p")
                 if vc_el is not None and vc_el.text and p_el is not None and p_el.text:
-                    vc_raw = np.fromstring(vc_el.text, sep=" ", dtype=np.int32)
-                    p_raw = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                    vc_raw = _parse_i32_np(vc_el.text)
+                    p_raw = _parse_i32_np(p_el.text)
                     n_tuples = p_raw.size // num_inputs
                     p_2d = p_raw[:n_tuples * num_inputs].reshape(n_tuples, num_inputs)
                     if vc_raw.size > 0 and bool((vc_raw >= 3).all()):
@@ -1019,7 +1038,7 @@ class DocumentImporter:
                         p_elems.append(pe)
                 for p_el in p_elems:
                     if p_el.text:
-                        pr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                        pr = _parse_i32_np(p_el.text)
                         vc = pr.size // num_inputs
                         if vc >= 3:
                             vc_list.append(vc)
@@ -1032,7 +1051,7 @@ class DocumentImporter:
                 tri_total = 0
                 for p_el in _find_children(child, "p"):
                     if p_el.text:
-                        pr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                        pr = _parse_i32_np(p_el.text)
                         vc = pr.size // num_inputs
                         if vc >= 3:
                             p2 = pr[:vc * num_inputs].reshape(vc, num_inputs)
@@ -1050,7 +1069,7 @@ class DocumentImporter:
                 tri_total = 0
                 for p_el in _find_children(child, "p"):
                     if p_el.text:
-                        pr = np.fromstring(p_el.text, sep=" ", dtype=np.int32)
+                        pr = _parse_i32_np(p_el.text)
                         vc = pr.size // num_inputs
                         if vc >= 3:
                             p2 = pr[:vc * num_inputs].reshape(vc, num_inputs)
