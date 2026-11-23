@@ -34,6 +34,10 @@ if TYPE_CHECKING:
 
 
 MINIMUM_BONE_LENGTH = 0.000001
+_MAX_ZIP_ENTRY_BYTES = 1 * 1024 * 1024 * 1024       # 1 GiB
+_MAX_ZIP_TOTAL_BYTES = 4 * 1024 * 1024 * 1024       # 4 GiB
+_ZIP_RATIO_THRESHOLD_BYTES = 50 * 1024 * 1024       # 50 MB
+_MAX_ZIP_RATIO = 200.0
 
 
 @dataclass
@@ -331,7 +335,27 @@ class DocumentImporter:
         return dae_entries[0] if dae_entries else None
 
     def _read_zip_entry(self, zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
-        return zf.read(info)
+        file_size = info.file_size
+        if file_size > _MAX_ZIP_ENTRY_BYTES:
+            raise ValueError(
+                f"Archive entry '{info.filename}' exceeds 1 GiB uncompressed limit ({file_size} bytes)"
+            )
+        if self._archive_bytes_read + file_size > _MAX_ZIP_TOTAL_BYTES:
+            raise ValueError(
+                f"Archive total uncompressed size exceeds 4 GiB limit at '{info.filename}'"
+            )
+        if file_size > _ZIP_RATIO_THRESHOLD_BYTES:
+            ratio = file_size / max(info.compress_size, 1)
+            if ratio > _MAX_ZIP_RATIO:
+                raise ValueError(
+                    f"Archive entry '{info.filename}' exceeds compression ratio limit "
+                    f"({ratio:.1f}x > {_MAX_ZIP_RATIO:.0f}x for {file_size} bytes)"
+                )
+        data = zf.read(info)
+        if len(data) > _MAX_ZIP_ENTRY_BYTES or self._archive_bytes_read + len(data) > _MAX_ZIP_TOTAL_BYTES:
+            raise ValueError(f"Archive entry '{info.filename}' exceeded uncompressed size limit during read")
+        self._archive_bytes_read += len(data)
+        return data
 
     def _build_archive_index(self, zf: zipfile.ZipFile) -> None:
         self._archive_entries = {}
