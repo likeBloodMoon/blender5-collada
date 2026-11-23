@@ -1378,21 +1378,31 @@ class DocumentImporter:
             # UVs (foreach_set)
             for u_id in uv_set_order:
                 chunks = uv_chunks[u_id]
+                if not chunks:
+                    continue
                 uv_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
                 if len(uv_arr) == cur_n_loops:
+                    if not np.isfinite(uv_arr).all():
+                        uv_arr = np.where(np.isfinite(uv_arr), uv_arr, np.float32(0.0))
                     uv_layer = me.uv_layers.new(name=u_id)
                     uv_layer.data.foreach_set("uv", uv_arr.ravel())
 
             # Byte Color Attributes (foreach_set)
             for cn in col_set_order:
                 chunks = col_chunks[cn]
+                if not chunks:
+                    continue
                 c_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
                 if len(c_arr) == cur_n_loops:
+                    if not np.isfinite(c_arr).all():
+                        c_arr = np.where(np.isfinite(c_arr), c_arr, np.float32(0.0))
                     cattr = me.color_attributes.new(name=cn, type="BYTE_COLOR", domain="CORNER")
                     cattr.data.foreach_set("color_srgb", c_arr.ravel())
 
             # Custom normals / Clean sharp edges from normals
             if all_loop_normals is not None and len(all_loop_normals) == cur_n_loops and len(all_loop_normals) > 0:
+                if not np.isfinite(all_loop_normals).all():
+                    all_loop_normals = np.where(np.isfinite(all_loop_normals), all_loop_normals, np.float32(0.0))
                 if self.settings.sharp_edges_from_normals:
                     self._apply_sharp_edges_from_normals(me, all_loop_normals, self.settings.sharp_angle_threshold)
                 elif self.settings.custom_normals:
