@@ -7,6 +7,7 @@ Tests:
 """
 from __future__ import annotations
 
+import importlib.util
 import os
 import sys
 import time
@@ -14,16 +15,36 @@ import time
 import numpy as np
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, ROOT)
 
-from io_scene_collada._native_loader import (
-    get_native_lib,
-    native_fmt_f32_array,
-    native_fmt_i32_array,
-    native_parse_f32,
-    native_parse_i32,
-)
-from io_scene_collada.xml_writer import _fmt_f32_sanitized
+
+def _load_mod(name: str, path: str):
+    spec = importlib.util.spec_from_file_location(name, path)
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[name] = mod
+    spec.loader.exec_module(mod)
+    return mod
+
+
+_nl = _load_mod("_native_loader", os.path.join(ROOT, "io_scene_collada", "_native_loader.py"))
+get_native_lib = _nl.get_native_lib
+native_fmt_f32_array = _nl.native_fmt_f32_array
+native_fmt_i32_array = _nl.native_fmt_i32_array
+native_parse_f32 = _nl.native_parse_f32
+native_parse_i32 = _nl.native_parse_i32
+
+
+def _fmt_f32_sanitized(v: float) -> str:
+    if v == 0.0:
+        return "0"
+    av = -v if v < 0.0 else v
+    if av < 1e-4 or av >= 1e7:
+        s = f"{v:.6g}"
+        if "e-0" in s:
+            return s.replace("e-0", "e-")
+        if "e+0" in s:
+            return s.replace("e+0", "e+")
+        return s
+    return f"{v:.7g}"
 
 
 def py_fmt_f32_array(arr: np.ndarray) -> str:
