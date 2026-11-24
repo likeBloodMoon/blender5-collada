@@ -309,7 +309,8 @@ def _make_split_cube_mesh() -> dict:
             uvs.append((u, 1.0 - v))       # Torque3D flipped V
             uv2s.append((u * 0.5, 1.0 - v * 0.5))
             cols.append((255 if fi % 2 == 0 else 0, 128, 64, 255))
-        indices.extend([base, base + 1, base + 2, base, base + 2, base + 3])
+        # Torque3D CW front-face winding (reversed from Blender CCW)
+        indices.extend([base + 2, base + 1, base, base + 3, base + 2, base])
     # Split across 2 materials (first 3 faces mat 0, last 3 faces mat 1)
     prims = [
         (0, 18, 0x20000000 | 0),
@@ -343,6 +344,7 @@ sys.path.insert(0, repo_root)
 
 import bpy
 import bmesh
+from mathutils import Vector
 import io_scene_collada
 from io_scene_collada.cdae.importer import CdaeImporter, CdaeImportSettings
 
@@ -363,6 +365,12 @@ for ob in bpy.data.objects:
         bm.from_mesh(me)
         bm.free()
         still_invalid = bool(me.validate(verbose=False, clean_customdata=False))
+        outward_ok = True
+        if ob.name == "CubeObj":
+            for poly in me.polygons:
+                if poly.normal.dot(poly.center - Vector((0.5, 0.5, 0.5))) <= 0.0:
+                    outward_ok = False
+                    break
         sharp_attr = me.attributes.get("sharp_edge")
         n_sharp = 0
         if sharp_attr is not None:
@@ -383,6 +391,7 @@ for ob in bpy.data.objects:
             "vertex_groups": vgroups,
             "modifiers": mods,
             "still_invalid": still_invalid,
+            "outward_ok": outward_ok,
         })
 
 result = {
@@ -449,6 +458,7 @@ def main() -> int:
         assert len(r1["meshes"]) == 1
         m1 = r1["meshes"][0]
         assert m1["verts"] == 8 and m1["polys"] == 12, m1
+        assert m1["outward_ok"], f"CubeObj face winding is inside-out: {m1}"
         assert m1["sharp_edges"] == 12, f"Expected 12 sharp edges on merged cube, got {m1}"
         assert m1["uv_layers"] == ["UVMap", "UVMap.001"], m1
         assert m1["color_attrs"] == ["Color"], m1

@@ -65,7 +65,58 @@ def _quat16_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
     return math.degrees(2.0 * math.acos(dot))
 
 
-def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4) -> dict:
+def _match_mesh_normals(ma, mb, max_tris: int = 2000) -> list[float]:
+    """Compare corner normals (degrees) between original and re-exported CDAE meshes."""
+    if len(ma.indices) < 3 or len(mb.indices) < 3 or len(ma.norms) == 0 or len(mb.norms) == 0:
+        return []
+    ta = ma.indices[: (len(ma.indices) // 3) * 3].reshape(-1, 3)
+    tb = mb.indices[: (len(mb.indices) // 3) * 3].reshape(-1, 3)
+    if len(ta) > max_tris:
+        ta = ta[:max_tris]
+    if len(tb) > max_tris:
+        tb = tb[:max_tris]
+    pa = ma.verts[ta]  # (F, 3, 3)
+    pb = mb.verts[tb]
+    na = ma.norms[ta]
+    nb = mb.norms[tb]
+
+    tol = 1e-3
+    ca = np.round(pa.mean(axis=1) / tol).astype(np.int64)
+    cb = np.round(pb.mean(axis=1) / tol).astype(np.int64)
+    buckets: dict[tuple[int, int, int], list[int]] = {}
+    for bi, key in enumerate(map(tuple, cb.tolist())):
+        buckets.setdefault(key, []).append(bi)
+
+    angs: list[float] = []
+    used_b: set[int] = set()
+    for ai, key in enumerate(map(tuple, ca.tolist())):
+        cands = buckets.get(key)
+        if not cands:
+            continue
+        p0 = pa[ai]
+        n0 = na[ai]
+        best = None
+        best_score = -4.0
+        for bi in cands:
+            if bi in used_b:
+                continue
+            p1 = pb[bi]
+            dmat = np.linalg.norm(p0[:, None, :] - p1[None, :, :], axis=2)
+            perm = dmat.argmin(axis=1)
+            if len(set(perm.tolist())) == 3 and dmat[0, perm[0]] < 2e-3 and dmat[1, perm[1]] < 2e-3 and dmat[2, perm[2]] < 2e-3:
+                score = float(np.sum(n0 * nb[bi][perm]))
+                if score > best_score:
+                    best_score = score
+                    best = (bi, perm)
+        if best is not None:
+            bi, perm = best
+            used_b.add(bi)
+            dots = np.clip(np.sum(n0 * nb[bi][perm], axis=1), -1.0, 1.0)
+            angs.extend(np.degrees(np.arccos(dots)).tolist())
+    return angs
+
+
+def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4, check_normals: bool = False) -> dict:
     reader = _load_reader()
     sa = reader.read_cdae_file(orig_path)
     sb = reader.read_cdae_file(exp_path)
@@ -165,7 +216,12 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4) 
         "color_present_mismatch": 0,
         "tan_present_mismatch": 0,
         "max_tan_norm_err": 0.0,
+        "norm_deg_med": float("nan"),
+        "norm_deg_p99": float("nan"),
+        "norm_deg_max": float("nan"),
+        "norm_corners_compared": 0,
     }
+    all_norm_angs: list[float] = []
 
     for nm in common_objs:
         ma, mb = ma_map[nm], mb_map[nm]
@@ -214,6 +270,15 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4) 
                 mesh_stats["max_tan_norm_err"] = max(
                     mesh_stats["max_tan_norm_err"], float(np.abs(tlens[nz] - 1.0).max())
                 )
+        if check_normals:
+            all_norm_angs.extend(_match_mesh_normals(ma, mb))
+
+    if all_norm_angs:
+        arr_n = np.array(all_norm_angs, dtype=np.float64)
+        mesh_stats["norm_deg_med"] = float(np.median(arr_n))
+        mesh_stats["norm_deg_p99"] = float(np.percentile(arr_n, 99))
+        mesh_stats["norm_deg_max"] = float(arr_n.max())
+        mesh_stats["norm_corners_compared"] = len(all_norm_angs)
 
     # 6. Materials
     mats_a = {m.name for m in sa.materials}
@@ -249,7 +314,7 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4) 
     }
 
 
-def run_oracle() -> int:
+def run_oracle(all_modes: bool = False) -> int:
     import bpy
 
     sys.path.insert(0, REPO_ROOT)
@@ -257,69 +322,84 @@ def run_oracle() -> int:
     from io_scene_collada.cdae.importer import CdaeImporter, CdaeImportSettings
 
     local_dir = os.environ.get("CDAE_LOCAL_DIR") or os.path.join(REPO_ROOT, "tests", "_local_cdae")
-    files = sorted(f for f in os.listdir(local_dir) if f.lower().endswith(".cdae"))
+    # StandardMesh real vehicles (skip SkinMesh files which are out of scope for Phase 2 export)
+    files = sorted(
+        f for f in os.listdir(local_dir)
+        if f.lower().endswith(".cdae") and f.lower() in ("wigeon_bigwing.cdae", "wigeon.cdae", "midtruck.cdae")
+    )
+    if not files:
+        files = sorted(f for f in os.listdir(local_dir) if f.lower().endswith(".cdae"))
     if not files:
         print(f"No .cdae files found in {local_dir}")
         return 1
 
+    modes = (
+        [
+            ("unmerged_exact", dict(merge_by_distance=False, sharp_edges_from_normals=False, fast_exact_normals=True)),
+            ("default_sharp", dict(merge_by_distance=True, sharp_edges_from_normals=True, fast_exact_normals=False)),
+            ("merged_exact", dict(merge_by_distance=True, sharp_edges_from_normals=False, fast_exact_normals=True)),
+        ]
+        if all_modes
+        else [("unmerged_exact", dict(merge_by_distance=False, sharp_edges_from_normals=False, fast_exact_normals=True))]
+    )
+
     workdir = tempfile.mkdtemp(prefix="cdae_oracle_")
     try:
-        for fn in files:
-            orig_path = os.path.join(local_dir, fn)
-            exp_path = os.path.join(workdir, f"reexported_{fn}")
+        for mode_name, imp_kwargs in modes:
+            print("\n" + "#" * 88)
+            print(f"ORACLE MODE: {mode_name} ({imp_kwargs})")
+            print("#" * 88)
+            for fn in files:
+                orig_path = os.path.join(local_dir, fn)
+                exp_path = os.path.join(workdir, f"reexported_{mode_name}_{fn}")
 
-            bpy.ops.wm.read_factory_settings(use_empty=True)
-            t0 = time.perf_counter()
-            imp = CdaeImporter(
-                bpy.context,
-                CdaeImportSettings(
-                    filepath=orig_path,
-                    lod_mode="HIGHEST",
-                    merge_by_distance=False,
-                    sharp_edges_from_normals=False,
-                ),
-            )
-            ok_in = imp.import_document()
-            t_in = time.perf_counter() - t0
-            assert ok_in, f"Import failed on {fn}: {imp.errors}"
+                bpy.ops.wm.read_factory_settings(use_empty=True)
+                t0 = time.perf_counter()
+                imp = CdaeImporter(
+                    bpy.context,
+                    CdaeImportSettings(filepath=orig_path, lod_mode="HIGHEST", **imp_kwargs),
+                )
+                ok_in = imp.import_document()
+                t_in = time.perf_counter() - t0
+                assert ok_in, f"Import failed on {fn}: {imp.errors}"
 
-            t0 = time.perf_counter()
-            exp = CdaeExporter(
-                bpy.context,
-                CdaeExportSettings(
-                    filepath=exp_path,
-                    use_selection=False,
-                    apply_modifiers=False,
-                    compress=False,
-                ),
-            )
-            ok_out = exp.export_document()
-            t_out = time.perf_counter() - t0
-            assert ok_out, f"Export failed on {fn}: {exp.errors}"
+                t0 = time.perf_counter()
+                exp = CdaeExporter(
+                    bpy.context,
+                    CdaeExportSettings(
+                        filepath=exp_path,
+                        use_selection=False,
+                        apply_modifiers=False,
+                        compress=False,
+                    ),
+                )
+                ok_out = exp.export_document()
+                t_out = time.perf_counter() - t0
+                assert ok_out, f"Export failed on {fn}: {exp.errors}"
 
-            rep = compare_cdae_files(orig_path, exp_path)
-            print("=" * 88)
-            print(f"ORACLE: {fn} (import={t_in:.2f}s, export={t_out:.2f}s)")
-            print(f"  Sizes:       orig={rep['orig_bytes']:,} B -> exp={rep['exp_bytes']:,} B (uncompressed)")
-            print(f"  Header:      diffs={rep['header_diffs']}")
-            print(f"  Scalars:     center={rep['scalar_diffs']['center']:.6f}, bounds={rep['scalar_diffs']['bounds']:.6f}, "
-                  f"radius={rep['scalar_diffs']['radius']:.6f}, tube={rep['scalar_diffs']['tube_radius']:.6f}")
-            print(f"  19 Vectors:  diffs={rep['vector_diffs']}")
-            print(f"  Nodes:       orig={rep['nodes']['orig']}, exp={rep['nodes']['exp']}, common={rep['nodes']['common']}, "
-                  f"parent_diff={rep['nodes']['parent_mismatches']}, max_T={rep['nodes']['max_trans_diff']:.6f}, "
-                  f"max_R={rep['nodes']['max_rot_diff_deg']:.4f}°")
-            print(f"  Names match: {rep['names_set_match']}")
-            ms = rep["meshes"]
-            print(f"  Meshes:      common={ms['common']}, exact_tris={ms['exact_tri_count']}/{ms['common']}, "
-                  f"exact_verts={ms['exact_vert_count']}/{ms['common']}, exact_prims={ms['exact_prim_count']}/{ms['common']}, "
-                  f"flag_diffs={ms['flag_mismatches']}")
-            print(f"  Mesh Geom:   max_bounds={ms['max_bounds_diff']:.6f}, max_center={ms['max_center_diff']:.6f}, "
-                  f"max_radius={ms['max_radius_diff']:.6f}")
-            print(f"  Mesh Attrs:  uv0_miss={ms['uv0_present_mismatch']} (max_bb={ms['max_uv0_bbox_diff']:.6f}), "
-                  f"uv1_miss={ms['uv1_present_mismatch']} (max_bb={ms['max_uv1_bbox_diff']:.6f}), "
-                  f"col_miss={ms['color_present_mismatch']}, tan_miss={ms['tan_present_mismatch']} (max_len_err={ms['max_tan_norm_err']:.5f})")
-            print(f"  Materials:   orig={rep['materials']['orig']}, exp={rep['materials']['exp']}, "
-                  f"only_orig={rep['materials']['only_orig']}, only_exp={rep['materials']['only_exp']}")
+                rep = compare_cdae_files(orig_path, exp_path, check_normals=True)
+                ms = rep["meshes"]
+                print("=" * 88)
+                print(f"ORACLE [{mode_name}]: {fn} (import={t_in:.2f}s, export={t_out:.2f}s)")
+                print(f"  Sizes:       orig={rep['orig_bytes']:,} B -> exp={rep['exp_bytes']:,} B")
+                print(f"  Scalars:     center={rep['scalar_diffs']['center']:.6f}, bounds={rep['scalar_diffs']['bounds']:.6f}, "
+                      f"radius={rep['scalar_diffs']['radius']:.6f}, tube={rep['scalar_diffs']['tube_radius']:.6f}")
+                print(f"  19 Vectors:  diffs={rep['vector_diffs']}")
+                print(f"  Nodes:       orig={rep['nodes']['orig']}, exp={rep['nodes']['exp']}, "
+                      f"parent_diff={rep['nodes']['parent_mismatches']}, max_T={rep['nodes']['max_trans_diff']:.6f}, "
+                      f"max_R={rep['nodes']['max_rot_diff_deg']:.4f}°")
+                print(f"  Meshes:      common={ms['common']}, exact_tris={ms['exact_tri_count']}/{ms['common']}, "
+                      f"exact_verts={ms['exact_vert_count']}/{ms['common']}, exact_prims={ms['exact_prim_count']}/{ms['common']}, "
+                      f"flag_diffs={ms['flag_mismatches']}")
+                print(f"  Mesh Geom:   max_bounds={ms['max_bounds_diff']:.6f}, max_center={ms['max_center_diff']:.6f}, "
+                      f"max_radius={ms['max_radius_diff']:.6f}")
+                print(f"  Mesh Attrs:  uv0_miss={ms['uv0_present_mismatch']} (max_bb={ms['max_uv0_bbox_diff']:.6f}), "
+                      f"uv1_miss={ms['uv1_present_mismatch']} (max_bb={ms['max_uv1_bbox_diff']:.6f}), "
+                      f"col_miss={ms['color_present_mismatch']}, tan_miss={ms['tan_present_mismatch']} (max_len_err={ms['max_tan_norm_err']:.5f})")
+                print(f"  Normals deg: med={ms['norm_deg_med']:.4f}°, p99={ms['norm_deg_p99']:.4f}°, "
+                      f"max={ms['norm_deg_max']:.4f}° ({ms['norm_corners_compared']} corners)")
+                print(f"  Materials:   orig={rep['materials']['orig']}, exp={rep['materials']['exp']}, "
+                      f"only_orig={rep['materials']['only_orig']}, only_exp={rep['materials']['only_exp']}")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
@@ -331,8 +411,10 @@ def main() -> int:
         argv = argv[argv.index("--") + 1 :]
     else:
         argv = argv[1:]
+    if "--oracle-modes" in argv:
+        return run_oracle(all_modes=True)
     if "--oracle" in argv:
-        return run_oracle()
+        return run_oracle(all_modes=False)
     if len(argv) != 2:
         print("Usage: compare_cdae.py <orig.cdae> <exported.cdae>  OR  compare_cdae.py --oracle")
         return 1
