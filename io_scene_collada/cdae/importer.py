@@ -42,6 +42,7 @@ class CdaeImportSettings:
     merge_distance: float = 1e-5
     sharp_edges_from_normals: bool = True
     sharp_angle_threshold: float = math.radians(1.0)
+    fast_exact_normals: bool = False
 
 
 def _quat16_to_blender(q16: np.ndarray) -> Quaternion:
@@ -171,6 +172,9 @@ def _primitives_to_triangles(
         return np.empty((0, 3), dtype=np.int32), np.empty(0, dtype=np.int32)
     all_tris = np.vstack(tri_chunks) if len(tri_chunks) > 1 else tri_chunks[0]
     all_mats = np.concatenate(mat_chunks) if len(mat_chunks) > 1 else mat_chunks[0]
+    # Torque3D / BeamNG stores front faces in CW winding (colladaAppMesh.cpp:609-614);
+    # flip to Blender's CCW front-face winding.
+    all_tris = np.ascontiguousarray(all_tris[:, ::-1])
     return all_tris, all_mats
 
 
@@ -758,6 +762,18 @@ class CdaeImporter:
                     DocumentImporter._apply_sharp_edges_from_normals(
                         me, norm_loops, self.settings.sharp_angle_threshold
                     )
+                elif self.settings.fast_exact_normals:
+                    try:
+                        cn = me.attributes.get("custom_normal")
+                        if cn is not None and (cn.data_type != "FLOAT_VECTOR" or cn.domain != "CORNER"):
+                            me.attributes.remove(cn)
+                            cn = None
+                        if cn is None:
+                            cn = me.attributes.new(name="custom_normal", type="FLOAT_VECTOR", domain="CORNER")
+                        cn.data.foreach_set("vector", norm_loops.ravel())
+                    except Exception as exc:
+                        self.warnings.append(f"Fast exact normals failed on '{mesh_name}', falling back: {exc}")
+                        me.normals_split_custom_set(norm_loops.tolist())
                 else:
                     try:
                         me.normals_split_custom_set(norm_loops.tolist())

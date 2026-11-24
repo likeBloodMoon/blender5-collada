@@ -201,29 +201,35 @@ def _build_gpu_mesh_data(
     c_uv1 = uv1_loops[tri_loops] if uv1_loops is not None else None
     c_col = col_loops[tri_loops] if col_loops is not None else None
 
-    # Vectorized GPU vertex deduplication by quantized (vert_idx, normal, uv0, uv1, color)
-    n_corners = n_tris * 3
-    key_fields = [
-        ("v", "<i4"),
-        ("nx", "<i4"), ("ny", "<i4"), ("nz", "<i4"),
-        ("u0", "<i4"), ("v0", "<i4"),
-    ]
-    if c_uv1 is not None:
-        key_fields.extend([("u1", "<i4"), ("v1", "<i4")])
-    if c_col is not None:
-        key_fields.append(("col", "<u4"))
+    # Exact float32 bit-level GPU vertex deduplication on (pos, normal, uv0, uv1, color),
+    # matching Torque3D's ColladaAppMesh VertTupleMap equality (canonicalize -0.0 -> +0.0).
+    def _canon_f32(arr: np.ndarray) -> np.ndarray:
+        out = np.ascontiguousarray(arr, dtype="<f4")
+        if (out == 0.0).any():
+            out = out.copy()
+            out[out == 0.0] = 0.0
+        return out
 
-    keys = np.empty(n_corners, dtype=np.dtype(key_fields))
-    keys["v"] = tri_verts
-    qn = np.round(c_norm * 1e4).astype(np.int32)
-    keys["nx"], keys["ny"], keys["nz"] = qn[:, 0], qn[:, 1], qn[:, 2]
-    qu0 = np.round(c_uv0 * 1e5).astype(np.int32)
-    keys["u0"], keys["v0"] = qu0[:, 0], qu0[:, 1]
-    if c_uv1 is not None:
-        qu1 = np.round(c_uv1 * 1e5).astype(np.int32)
-        keys["u1"], keys["v1"] = qu1[:, 0], qu1[:, 1]
-    if c_col is not None:
-        keys["col"] = c_col.view("<u4").ravel()
+    n_corners = n_tris * 3
+    p_c = _canon_f32(c_pos)
+    n_c = _canon_f32(c_norm)
+    u0_c = _canon_f32(c_uv0)
+    u1_c = _canon_f32(c_uv1) if c_uv1 is not None else None
+    col_c = np.ascontiguousarray(c_col, dtype="<u1") if c_col is not None else None
+
+    key_parts = [
+        p_c.view(np.uint8).reshape(n_corners, 12),
+        n_c.view(np.uint8).reshape(n_corners, 12),
+        u0_c.view(np.uint8).reshape(n_corners, 8),
+    ]
+    if u1_c is not None:
+        key_parts.append(u1_c.view(np.uint8).reshape(n_corners, 8))
+    if col_c is not None:
+        key_parts.append(col_c.reshape(n_corners, 4))
+
+    key_bytes = np.ascontiguousarray(np.hstack(key_parts))
+    row_width = key_bytes.shape[1]
+    keys = key_bytes.view(np.dtype((np.void, row_width))).ravel()
 
     _, uniq_idx, inverse = np.unique(keys, return_index=True, return_inverse=True)
     # Preserve original appearance order for deterministic output
@@ -240,8 +246,9 @@ def _build_gpu_mesh_data(
     gpu_uv1 = np.ascontiguousarray(c_uv1[keep_corners], dtype="<f4") if c_uv1 is not None else np.empty((0, 2), dtype="<f4")
     gpu_col = np.ascontiguousarray(c_col[keep_corners], dtype="<u1") if c_col is not None else np.empty((0, 4), dtype="<u1")
 
-    # Group triangles by material slot into TSDrawPrimitives
-    tri_gpu = corner_to_gpu.reshape(n_tris, 3)
+    # Group triangles by material slot into TSDrawPrimitives.
+    # Flip Blender CCW front-face winding to Torque3D / BeamNG CW winding (colladaAppMesh.cpp:609-614).
+    tri_gpu = np.ascontiguousarray(corner_to_gpu.reshape(n_tris, 3)[:, ::-1])
     unique_slots = np.unique(tri_mat_slots)
     prim_rows: list[tuple[int, int, int]] = []
     idx_chunks: list[np.ndarray] = []

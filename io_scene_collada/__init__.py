@@ -617,6 +617,11 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         max=math.pi,
         subtype="ANGLE",
     )
+    fast_exact_normals: BoolProperty(
+        name="Fast Exact Normals",
+        description="Write exact float32 custom_normal attribute directly when Mark Sharp from Normals is off",
+        default=False,
+    )
 
     def draw(self, context):
         layout = self.layout
@@ -640,6 +645,9 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         sub2 = col.column()
         sub2.enabled = self.sharp_edges_from_normals
         sub2.prop(self, "sharp_angle_threshold")
+        sub3 = col.column()
+        sub3.enabled = not self.sharp_edges_from_normals
+        sub3.prop(self, "fast_exact_normals")
 
     def execute(self, context):
         if not self.filepath or not os.path.exists(self.filepath):
@@ -654,6 +662,7 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
             merge_distance=self.merge_distance,
             sharp_edges_from_normals=self.sharp_edges_from_normals,
             sharp_angle_threshold=self.sharp_angle_threshold,
+            fast_exact_normals=self.fast_exact_normals,
         )
         importer = CdaeImporter(context, settings)
         ok = importer.import_document()
