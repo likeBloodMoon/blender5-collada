@@ -648,7 +648,14 @@ class CdaeImporter:
 
         # Merge vertices by position within this mesh (required for sharp_edges_from_normals on GPU-split meshes)
         if self.settings.merge_by_distance and self.settings.merge_distance > 0.0:
+            n_before_merge = len(tris)
             verts, tris, kept, old_to_new = _merge_verts_by_distance(verts, tris, self.settings.merge_distance)
+            n_degen = n_before_merge - len(tris)
+            if n_degen > 0:
+                self.warnings.append(
+                    f"Mesh '{mesh_name}': {n_degen} degenerate faces smaller than "
+                    f"{self.settings.merge_distance:g} removed"
+                )
             if not kept.all():
                 tri_mats = tri_mats[kept]
                 kept_loops = np.repeat(kept, 3)
