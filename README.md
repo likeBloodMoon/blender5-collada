@@ -12,12 +12,13 @@ This extension brings back the full Blender 4.5.1 COLLADA importer and exporter 
 
 ## Install
 
-1. Grab the zip for your OS from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases) (e.g., `collada_io-1.3.0-windows_x64.zip`), or `collada_io-1.3.0-pure-python.zip` if you prefer no compiled binary.
+1. Grab the zip for your OS from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases) (e.g., `collada_io-1.4.0-windows_x64.zip`), or `collada_io-1.4.0-pure-python.zip` if you prefer no compiled binary.
 2. Drag and drop the `.zip` onto Blender, **or** go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…** and pick the `.zip`.
+3. **Updating over an existing version**: restart Blender after installing a new `.zip` so cached Python submodules reload cleanly.
 
 CLI install:
 ```bash
-blender --command extension install-file -r user_default -e collada_io-1.3.0-windows_x64.zip
+blender --command extension install-file -r user_default -e collada_io-1.4.0-windows_x64.zip
 ```
 
 ### About the optional native binary (`fastfmt.dll` / `libfastfmt.so` / `libfastfmt.dylib`)

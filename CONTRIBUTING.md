@@ -22,9 +22,9 @@ Contributions, bug reports, and real-world `.dae` test cases are welcome!
    blender --command extension validate io_scene_collada
    blender --command extension build --source-dir io_scene_collada --output-dir dist
    ```
-2. Install into your Blender 5.x environment:
+2. Install into your Blender 5.x environment (restart Blender after installing a new `.zip` over an existing version so Python reloads all submodules):
    ```bash
-   blender --command extension install-file -r user_default -e dist/collada_io-1.3.0.zip
+   blender --command extension install-file -r user_default -e dist/collada_io-1.4.0.zip
    ```
 3. Run parity tests (requires portable Blender 4.5.1 and 5.x in `.tools/`):
    ```bash
