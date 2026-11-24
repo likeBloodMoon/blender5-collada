@@ -70,6 +70,25 @@ Automatic sharp-edge reconstruction on a vehicle fender imported from `.dae` (lo
 
 ---
 
+## BeamNG `.cdae` (v31)
+
+In addition to `.dae`, the extension includes native **BeamNG Cached Collada (`.cdae`)** support (format **version 31 only**; legacy v26 and other versions are rejected with a clear error):
+
+- **Import** (`import_scene.beamng_cdae` — **File → Import → BeamNG Cached Collada (.cdae)**, plus drag-and-drop):
+  - Pure-Python bounds-checked MsgPack reader (`io_scene_collada/cdae/msgpack_lite.py`), optional Zstandard decompression (uses Blender's bundled `zstandard` at runtime, reporting a clear error if unavailable), strict `elemSize` validation, and `me.validate()` mesh safety.
+  - Supports `StandardMesh` and `SkinMesh` (armature + vertex groups + Armature modifier), node hierarchies (`Quat16`), `Triangles` / `Strip` / `Fan` primitives, `UV0` / `UV1` (V-flipped), sRGB `ColorI` vertex colors, explicit or encoded normals, material name preservation (`main.materials.json`), LOD selection (**Highest detail only** or **All detail levels** into per-detail collections), and optional collision meshes.
+  - Defaults to **Merge by Distance** + **Mark Sharp from Normals** (welding GPU-split vertices while preserving double-sided and layered/overlay faces, UV seams, and corner colors). Animation sequences are skipped with an info notice.
+- **Export [Experimental]** (`export_scene.beamng_cdae` — **File → Export → BeamNG Cached Collada (.cdae) [Experimental]**):
+  - Currently scoped to **`StandardMesh` only** (skinned export waits on in-game verification) and labeled `[Experimental]` until in-game loading is confirmed across all test cases (see [`docs/cdae_manual_test.md`](docs/cdae_manual_test.md)).
+  - Note: BeamNG.drive normally regenerates `.cdae` files automatically from `.dae` on first load, so `.dae` remains the recommended production export format for BeamNG mods.
+- **Verification**:
+  - **Tested against all 6,319 v31 `.cdae` files shipped with BeamNG.drive `0.40.6.0`** (`172` archives scanned read-only in `16.0 s`: `6,319 / 6,319` v31 files parsed cleanly with 0 errors; `39 / 39` animated files import cleanly; `2` legacy v26 files rejected cleanly).
+  - **Paired `.dae` vs `.cdae` verification** (`wigeon_bigwing`, `wigeon`, `midtruck` — `396` objects): `0.000000 m` location error, `max 0.0396°` `Quat16` rotation error, `0.000000` median UV0/UV1 error, `≤ 1/255` sRGB vertex color diff, `100.00%` per-face material match.
+  - **Export round-trip oracle** (`import → export → compare_cdae.py` on `wigeon_bigwing`, `wigeon`, `midtruck`): `0.000000` diff on all shape scalars, all 19 shape vectors, and all `396/396` mesh bounds/centers/radii/UVs/materials; normal deltas `0.0000°` median / `0.0280°` p99 (`fast_exact_normals`) and `0.0000°–0.0280°` median (`default_sharp`).
+  - Real game files are never committed to the repository; CI runs synthetic unit, round-trip, and fuzz tests only. See [`docs/cdae_format.md`](docs/cdae_format.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+
+---
+
 ## Parity Testing
 
 Every push and PR is tested in CI against **Blender 4.5.1 LTS** (on both **Blender 5.0.1** and **5.3.0**) across 61 automated checks:

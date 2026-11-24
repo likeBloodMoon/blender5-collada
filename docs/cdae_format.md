@@ -143,8 +143,11 @@ Each `TSDrawPrimitive` is 12 bytes (`<3i`: `start`, `numElements`, `matIndex`) [
 
 ## 5. Coordinate System, Quaternions, UVs, Colors & Normals
 
-### 5.1 Coordinate System & Units
+### 5.1 Coordinate System, Units & Front-Face Winding
 - Torque3D / BeamNG uses a **right-handed Z-up** coordinate system in meters, matching Blender directly (no axis swap needed for positions or normals) [T3D `colladaShapeLoader.cpp`].
+- **Triangle front-face winding (CW vs CCW)** [T3D `colladaAppMesh.cpp:609-614`], [Real `wigeon_bigwing.cdae`]: Torque3D/BeamNG stores front-facing triangles in **clockwise (CW)** order, opposite to Blender/COLLADA's **counter-clockwise (CCW)** order (`dot(cross(v1-v0, v2-v0), stored_norm) == -1.0` in raw `.cdae`).
+  - **CDAE → Blender**: reverse each triangle `(i0, i1, i2) -> (i2, i1, i0)`.
+  - **Blender → CDAE**: reverse each triangle `(i0, i1, i2) -> (i2, i1, i0)`.
 
 ### 5.2 `Quat16` & Quaternion Sign Convention
 - `Quat16` stores 4 signed 16-bit integers `int16 x, y, z, w` (`<4h`, 8 bytes) scaled by `MAX_VAL = 0x7fff = 32767` [T3D `tsTransform.h:33-37`]:
@@ -188,17 +191,17 @@ Each `TSDrawPrimitive` is 12 bytes (`<3i`: `start`, `numElements`, `matIndex`) [
 
 ## 7. Real BeamNG File Verification Status
 
-### Verified Against Paired Real BeamNG `.dae` / `.cdae` Files (`tests/_local_cdae/`, git-ignored)
-Verified against 3 confirmed true pairs: `wigeon_bigwing` (`9` objs, `1,660` tris), `wigeon` (`108` objs, `83,937` tris), and `midtruck` (`279` objs, `282,940` tris, Zstd-compressed):
-1. **Outer container & Zstd compression** (`midtruck.cdae`, `wigeon.cdae`, `wigeon_bigwing.cdae`): `version=31 (exporter=124)`, MsgPack header map with `compression` (`True` on `midtruck`, `False` on `wigeon`/`wigeon_bigwing`) and on-disk `bodysize`; `Point3F` and `Box3F` encoded as MsgPack `list`s; every `pack_vector` `elemSize` matches §3.2/§3.4 exactly.
-2. **`encodedNorms` vs `norms`** (`midtruck.cdae`, `wigeon.cdae`, `wigeon_bigwing.cdae`): `0/396` meshes populate `encodedNorms`; all `396/396` store explicit `<3f` `norms` and `<4f` `tangents`.
-3. **`Quat16` conjugate sign rule** (`wigeon` 10 rotated nodes, `midtruck` 17 rotated nodes): `Quaternion((w, -x, -y, -z)).normalized()` matches `.dae` world rotations to `max 0.0396°` (`0.0000°` on `wigeon_steering_wheel` `101.43°`, `wigeon_pedal_gas` `140.60°`, `midtruck_shifter_tcase` `90.00°`), whereas non-conjugate fails by up to `180.0°`. Max world location error `0.000000 m`.
-4. **UV V-axis flip (`1.0 - v`)** (`wigeon_bigwing`, `wigeon`, `midtruck`): UV0 & UV1 match `.dae` with median `0.000000` error (`UV1 max 0.000015`) with `1.0 - v` flip vs `0.51–359.7` error without flip.
-5. **Vertex color space (`ColorI` sRGB bytes)** (`wigeon.wigeon_wiper`, `midtruck` 12 body objects): BeamNG stores **sRGB uint8 bytes** directly in `mesh.colors`, matching Blender `BYTE_COLOR` `color_srgb` (`wigeon_wiper`: `0.00000` max diff vs `0.09163` linear; `midtruck`: `0.00000` median / `0.00392 = 1/255` max diff vs `0.27827` linear).
-6. **Per-face material assignment & normals** (`wigeon_bigwing`, `wigeon`, `midtruck`): `100.00%` per-face material name match across `179,148` matched triangles; normal angle median `0.0027°`, p99 `≤ 0.028°`.
+### Verified Against Real BeamNG.drive `0.40.6.0` Files (`tests/_local_cdae/`, git-ignored)
+1. **Full install corpus scan** (`tests/scan_beamng_install.py` across `172` zips): **`6,319 / 6,319` v31 `.cdae` files parsed with 0 errors** in `16.0 s` (`2` legacy v26 files in `autotest.zip` rejected cleanly). Across all `6,319` real v31 files: `4` `SkinMesh` files, `39` animated (`sequences > 0`) files (all `39/39` import cleanly in Blender), `0` `SortedMesh`, `0` `parentMesh >= 0`, and `0` `encodedNorms > 0`.
+2. **Outer container, Zstd compression & CW winding** (`midtruck.cdae`, `wigeon.cdae`, `wigeon_bigwing.cdae`): `version=31 (exporter=124)`, MsgPack header map with `compression` (`True` on `midtruck`, `False` on `wigeon`/`wigeon_bigwing`) and on-disk `bodysize`; `Point3F` and `Box3F` encoded as MsgPack `list`s; every `pack_vector` `elemSize` matches §3.2/§3.4 exactly; triangle indices are CW (`dot(cross(v1-v0, v2-v0), norm) == -1.0`).
+3. **`encodedNorms` vs `norms`** (`6,319` v31 files): `0` files populate `encodedNorms`; all meshes store explicit `<3f` `norms` and `<4f` `tangents`.
+4. **`Quat16` conjugate sign rule** (`wigeon` 10 rotated nodes, `midtruck` 17 rotated nodes): `Quaternion((w, -x, -y, -z)).normalized()` matches `.dae` world rotations to `max 0.0396°` (`0.0000°` on `wigeon_steering_wheel` `101.43°`, `wigeon_pedal_gas` `140.60°`, `midtruck_shifter_tcase` `90.00°`), whereas non-conjugate fails by up to `180.0°`. Max world location error `0.000000 m`.
+5. **UV V-axis flip (`1.0 - v`)** (`wigeon_bigwing`, `wigeon`, `midtruck`): UV0 & UV1 match `.dae` with median `0.000000` error (`UV1 max 0.000015`) with `1.0 - v` flip vs `0.51–359.7` error without flip.
+6. **Vertex color space (`ColorI` sRGB bytes)** (`wigeon.wigeon_wiper`, `midtruck` 12 body objects): BeamNG stores **sRGB uint8 bytes** directly in `mesh.colors`, matching Blender `BYTE_COLOR` `color_srgb` (`wigeon_wiper`: `0.00000` max diff vs `0.09163` linear; `midtruck`: `0.00000` median / `0.00392 = 1/255` max diff vs `0.27827` linear).
+7. **Per-face material assignment & normals** (`wigeon_bigwing`, `wigeon`, `midtruck`): `100.00%` per-face material name match across `179,148` matched triangles; normal angle median `0.0027°`, p99 `≤ 0.028°`.
+8. **`SkinMesh` (`meshType=1`) & `initialTransforms` matrix order** (`scarecrow.cdae`, `snowman.cdae`, `flag_usa_anim.cdae`): **`initialTransforms` is ROW-MAJOR** (`scarecrow.cdae`: row-major `max||M_bone @ invBind - I|| = 0.000163` & `LBS err = 0.000014` vs column-major `5.05` & `5.32`; `flag_usa_anim.cdae`: row-major `0.013` vs column-major `4.00`; `snowman.cdae` carries a uniform `0.36` inverse bind scale). Weight sums per vertex are `1.000000` (`0` out-of-range bone/node/vertex indices across `5,081` skinned vertices); Blender depsgraph rest-pose evaluation matches `initialVerts` to `≤ 1e-6`.
+9. **`TSIntegerSet` encoding** (`scarecrow.cdae`, `snowman.cdae`, `flag_usa_anim.cdae`): stored as a MsgPack `list` of `uint32` bitmask words (e.g. `list(len=2)`).
 
 ### Still Open (Unverified Against Real Files)
-1. **`SkinMesh` (`meshType=1`) & `initialTransforms` row-major vs column-major order**: `0` skinned meshes in the 3 local files.
-2. **`parentMesh >= 0` child-mesh data sharing**: `0` child meshes with `parentMesh >= 0` in the 3 local files (verified against Torque3D MIT source & synthetic test only).
-3. **`TSIntegerSet` encoding in real animated `.cdae` files**: `0` sequences in the 3 local files.
-4. **BeamNG cache write location**: where BeamNG writes generated `.cdae` files from a custom `.dae` (to be confirmed during Phase 2.3).
+1. **`parentMesh >= 0` child-mesh data sharing**: `0` occurrences across all `6,319` BeamNG `0.40.6.0` v31 files (verified against Torque3D MIT source & synthetic test only).
+2. **In-game loading of exported `.cdae` & BeamNG cache write location**: to be verified manually in BeamNG World Editor using `docs/cdae_manual_test.md`.
