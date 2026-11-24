@@ -749,8 +749,14 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         )
         exporter = CdaeExporter(context, settings)
         ok = exporter.export_document()
-        for warn in exporter.warnings[:5]:
+        max_warnings = 5
+        for warn in exporter.warnings[:max_warnings]:
             self.report({"WARNING"}, warn)
+        if len(exporter.warnings) > max_warnings:
+            self.report(
+                {"WARNING"},
+                f"... and {len(exporter.warnings) - max_warnings} more warning(s)",
+            )
         if ok:
             return {"FINISHED"}
         if exporter.errors:

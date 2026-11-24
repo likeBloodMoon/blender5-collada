@@ -95,6 +95,8 @@ def _build_gpu_mesh_data(
     scale_mat: Matrix | None,
     global_mat_indices: dict[str, int],
     material_list: list[str],
+    warnings: list[str] | None = None,
+    mesh_name: str = "",
 ) -> dict | None:
     """Extract triangulated GPU-split vertex buffers, tangents, and TSDrawPrimitives from a Blender Mesh."""
     n_polys = len(me.polygons)
@@ -167,8 +169,13 @@ def _build_gpu_mesh_data(
             tangents_loops[:, :3] = t_vec.reshape(n_loops, 3)
             tangents_loops[:, 3] = t_sign
             me.free_tangents()
-        except Exception:
-            pass
+        except Exception as exc:
+            if warnings is not None:
+                label = mesh_name or me.name
+                warnings.append(
+                    f"Mesh '{label}': tangent calculation failed ({exc}); "
+                    f"wrote fallback tangents (normal maps may look wrong)"
+                )
 
     if has_uv1:
         uv1_raw = np.empty(n_loops * 2, dtype=np.float32)
@@ -408,7 +415,14 @@ class CdaeExporter:
                 triangulate=needs_tri,
             )
             try:
-                mdata = _build_gpu_mesh_data(me_copy, node_scales[ni], global_mat_indices, material_list)
+                mdata = _build_gpu_mesh_data(
+                    me_copy,
+                    node_scales[ni],
+                    global_mat_indices,
+                    material_list,
+                    warnings=self.warnings,
+                    mesh_name=ob.name,
+                )
             finally:
                 if should_remove:
                     bpy.data.meshes.remove(me_copy)

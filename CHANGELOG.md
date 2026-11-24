@@ -4,6 +4,17 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.2] - 2026-11-24
+
+- Fixed: active collection linking for `.dae` and `.cdae` imports, exact KD-tree vertex merging, skinned `.cdae` bind-pose bones with roll, explicit tangent/mesh-type diagnostics, and `.cdae` export warning summary
+
+### Details
+- **Active collection linking** (`import_collada.py`, `cdae/importer.py`): both `.dae` and `.cdae` importers now link newly created objects (meshes, armatures, empties, and `All detail levels` LOD sub-collections) into the active Outliner collection (`context.view_layer.active_layer_collection.collection`) instead of always linking to the root Scene Collection.
+- **Skinned `.cdae` bind pose & bone roll** (`cdae/importer.py`): `_build_armature()` now builds skinned edit bones from each `SkinMesh`'s row-major `initialTransforms` inverse bind matrices (`inv_bind.inverted()`) with `Bone.AxisRollFromMatrix()` roll, falling back to default node transforms only for unskinned nodes.
+- **Exact KD-tree vertex merge** (`cdae/importer.py`): replaced grid-rounding quantization in `_merge_verts_by_distance()` with exact float32 deduplication followed by `mathutils.kdtree.KDTree` Euclidean radius clustering + union-find, preventing close vertices on opposite sides of a grid line from failing to merge.
+- **Unsupported `.cdae` mesh types rejected clearly** (`cdae/reader.py`): mesh types other than `StandardMesh (0)`, `SkinMesh (1)`, and `NullMesh (4)` (such as `SortedMesh (3)`, `DecalMesh (2)`, or `BillboardMesh (5)`) now raise a clear `CdaeError` instead of being read as `StandardMesh` and desynchronizing the stream.
+- **Explicit tangent failure warnings & export warning cap** (`cdae/exporter.py`, `__init__.py`): `calc_tangents()` failures during `.cdae` export now append a warning instead of being silently swallowed, and `export_scene.beamng_cdae` reports `"... and N more warning(s)"` when more than 5 warnings occur (matching the import operators).
+
 ## [1.4.1] - 2026-11-24
 
 - Performance: vectorized sharp-edge detection from normals with NumPy (`4×–5.7×` faster `.cdae` and `.dae` imports on large meshes)
@@ -113,6 +124,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.4.2]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.0...v1.3.1

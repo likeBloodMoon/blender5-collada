@@ -402,6 +402,15 @@ result = {
     "infos": list(importer.infos),
     "collections": sorted(c.name for c in bpy.data.collections),
     "armatures": [ob.name for ob in bpy.data.objects if ob.type == "ARMATURE"],
+    "bones": {
+        b.name: {
+            "head": [float(x) for x in b.head_local],
+            "mat3": [[float(v) for v in row] for row in b.matrix_local.to_3x3()],
+        }
+        for ob in bpy.data.objects
+        if ob.type == "ARMATURE"
+        for b in ob.data.bones
+    },
     "empties": [
         {"name": ob.name, "display_size": float(ob.empty_display_size)}
         for ob in bpy.data.objects
@@ -801,14 +810,25 @@ def main() -> int:
             assert r_dir["ok"] and len(r_dir["empties"]) == 0 and len(r_dir["meshes"]) == 1, (lm, r_dir)
         print("  PASS parentMesh_sharing_strip_fan_lod_collision")
 
-        # Case 3: SkinMesh + skipped sequence info
+        # Case 3: SkinMesh with non-identity row-major initialTransforms bind pose + roll + skipped sequence info
+        # Bone 1 bind pose = 90 deg rotation around Y + translation (0.5, 1.5, 0.25), distinct from default_translations
+        bind1 = np.array(
+            [
+                [0.0, 0.0, 1.0, 0.5],
+                [0.0, 1.0, 0.0, 1.5],
+                [-1.0, 0.0, 0.0, 0.25],
+                [0.0, 0.0, 0.0, 1.0],
+            ],
+            dtype=np.float32,
+        )
+        inv_bind1 = np.linalg.inv(bind1).astype(np.float32)
         skin_m = {
             "type": 1,
             "verts": quad_v,
             "norms": np.tile([0.0, 0.0, 1.0], (4, 1)).astype(np.float32),
             "primitives": [(0, 6, 0x20000000 | 0)],
             "indices": np.array([0, 1, 3, 0, 3, 2], dtype=np.uint32),
-            "initial_transforms": np.array([np.eye(4, dtype=np.float32), np.eye(4, dtype=np.float32)]),
+            "initial_transforms": np.array([np.eye(4, dtype=np.float32), inv_bind1]),
             "vertex_index": np.array([0, 1, 2, 3], dtype=np.int32),
             "bone_index": np.array([0, 0, 1, 1], dtype=np.int32),
             "weight": np.array([1.0, 1.0, 1.0, 1.0], dtype=np.float32),
@@ -832,7 +852,41 @@ def main() -> int:
         assert r3["meshes"][0]["modifiers"] == ["ARMATURE"], r3["meshes"]
         assert set(r3["meshes"][0]["vertex_groups"]) == {"BoneRoot", "BoneTip"}, r3["meshes"]
         assert any("2 animation sequence" in inf for inf in r3["infos"]), r3["infos"]
-        print("  PASS skin_mesh_armature_and_sequence_info")
+        # Verify BoneTip uses initialTransforms bind pose translation & roll (not default_translations)
+        btip = r3["bones"]["BoneTip"]
+        assert np.allclose(btip["head"], [0.5, 1.5, 0.25], atol=1e-4), btip
+        assert np.allclose(btip["mat3"], bind1[:3, :3], atol=1e-4), btip
+        print("  PASS skin_mesh_armature_bind_pose_and_sequence_info")
+
+        # Case 3b: KD-tree merge across grid boundary (0.000004 vs 0.000006 -> dist 2e-6 <= 1e-5, straddles 0.000005)
+        gb_verts = np.array(
+            [
+                [0.000004, 0.0, 0.0], [1.0, 0.0, 0.0], [0.000004, 1.0, 0.0],
+                [0.000006, 0.0, 0.0], [0.000006, 1.0, 0.0], [-1.0, 0.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        gb_norms = np.tile([0.0, 0.0, 1.0], (6, 1)).astype(np.float32)
+        gb_mesh = {
+            "type": 0,
+            "verts": gb_verts,
+            "norms": gb_norms,
+            "primitives": [(0, 6, 0x20000000 | 0)],
+            "indices": np.array([0, 2, 1, 3, 5, 4], dtype=np.uint32),
+        }
+        c_gb = os.path.join(workdir, "grid_boundary_merge.cdae")
+        with open(c_gb, "wb") as f:
+            f.write(build_synthetic_cdae(
+                names=["GridObj", "detail2"],
+                nodes=[(0, -1, -1, -1, -1)],
+                objects=[(0, 1, 0, 0, -1, -1)],
+                details=[(1, 0, 0, 2.0, -1.0, -1.0, 2, 0, 0, 0, 0, 0.0, 0)],
+                meshes=[gb_mesh],
+                materials=["mat_a"],
+            ))
+        r_gb = _run_import(runner, worker_path, c_gb, {"normals_mode": "EXACT", "merge_distance": 1e-5})
+        assert r_gb["ok"] and r_gb["meshes"][0]["verts"] == 4 and r_gb["meshes"][0]["polys"] == 2, r_gb
+        print("  PASS kdtree_merge_across_grid_boundary")
 
         # Case 4b: Double-sided quad (opposite winding kept unwelded) + exact-duplicate triangle (dropped)
         # Front quad: 2 tris (0,1,2) & (0,2,3); back quad: 2 tris (4,6,5) & (4,7,6) at identical positions;
@@ -947,6 +1001,72 @@ def main() -> int:
         r5 = _run_import(runner, worker_path, c5)
         assert not r5["ok"] and any("elemSize" in e for e in r5["errors"]), r5
         print("  PASS strict_elemsize_mismatch_rejected")
+
+        # Case 5b: Unsupported mesh type (SortedMesh = 3) -> clear error (never silently read as StandardMesh)
+        sorted_m = dict(_make_split_cube_mesh())
+        sorted_m["type"] = 3
+        c5b = os.path.join(workdir, "sorted_mesh_type3.cdae")
+        with open(c5b, "wb") as f:
+            f.write(build_synthetic_cdae(meshes=[sorted_m]))
+        r5b = _run_import(runner, worker_path, c5b)
+        assert not r5b["ok"] and any("SortedMesh" in e and "3" in e for e in r5b["errors"]), r5b
+        print("  PASS unsupported_mesh_type_rejected")
+
+        # Case 5c: Active collection linking for both .dae and .cdae (HIGHEST and ALL modes)
+        coll_worker = os.path.join(workdir, "_active_coll_worker.py")
+        with open(coll_worker, "w", encoding="utf-8") as f:
+            f.write(r'''
+import os, sys
+argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
+repo_root, cdae_single, cdae_multi, workdir = argv[0], argv[1], argv[2], argv[3]
+sys.path.insert(0, repo_root)
+import bpy, io_scene_collada
+io_scene_collada.register()
+
+def _setup_active_car():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    car = bpy.data.collections.new("Car")
+    bpy.context.scene.collection.children.link(car)
+    lc = bpy.context.view_layer.layer_collection.children["Car"]
+    bpy.context.view_layer.active_layer_collection = lc
+    return car
+
+# 1. Export a tiny .dae then import into active collection "Car"
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add()
+dae_fp = os.path.join(workdir, "coll_test.dae")
+assert bpy.ops.wm.collada_export(filepath=dae_fp) == {"FINISHED"}
+
+car = _setup_active_car()
+assert bpy.ops.wm.collada_import(filepath=dae_fp) == {"FINISHED"}
+assert len(bpy.context.scene.collection.objects) == 0, list(bpy.context.scene.collection.objects)
+assert len(car.objects) == 1, list(car.objects)
+
+# 2. Import single-LOD .cdae (HIGHEST) into active collection "Car"
+car = _setup_active_car()
+assert bpy.ops.import_scene.beamng_cdae(filepath=cdae_single, lod_mode="HIGHEST") == {"FINISHED"}
+assert len(bpy.context.scene.collection.objects) == 0, list(bpy.context.scene.collection.objects)
+assert len(car.objects) == 1, list(car.objects)
+
+# 3. Import multi-LOD .cdae (ALL + collision) into active collection "Car"
+car = _setup_active_car()
+assert bpy.ops.import_scene.beamng_cdae(filepath=cdae_multi, lod_mode="ALL", import_collision=True) == {"FINISHED"}
+assert len(bpy.context.scene.collection.objects) == 0, list(bpy.context.scene.collection.objects)
+assert [c.name for c in bpy.context.scene.collection.children] == ["Car"]
+assert set(c.name for c in car.children) == {"detail100", "detail50", "collision-1"}
+assert len(car.objects) == 1  # parent Empty linked inside Car, not Scene Collection
+print("ACTIVE_COLL_OK")
+''')
+        cmd_ac = (
+            [runner[0], coll_worker, REPO_ROOT, c2_single, c2, workdir]
+            if runner[0] == sys.executable
+            else [*runner, coll_worker, "--", REPO_ROOT, c2_single, c2, workdir]
+        )
+        proc_ac = subprocess.run(cmd_ac, capture_output=True, text=True, timeout=60)
+        assert proc_ac.returncode == 0 and "ACTIVE_COLL_OK" in proc_ac.stdout and "Traceback" not in proc_ac.stderr, (
+            f"Active collection test failed:\n{proc_ac.stdout}\n{proc_ac.stderr}"
+        )
+        print("  PASS active_collection_dae_and_cdae")
 
         # Case 6: Subprocess fuzz test (50 corrupted mutations)
         seed_bytes = open(c1, "rb").read()

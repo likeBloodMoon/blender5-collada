@@ -227,6 +227,8 @@ class DocumentImporter:
         self.context = context
         self.scene: Scene = context.scene
         self.view_layer = context.view_layer
+        alc = context.view_layer.active_layer_collection
+        self.target_collection = alc.collection if alc is not None else context.scene.collection
         self.settings = settings
         self.dae_dir = os.path.dirname(os.path.abspath(settings.filepath))
 
@@ -1885,7 +1887,7 @@ class DocumentImporter:
 
     def _add_object_to_scene(self, name: str, data) -> Object:
         ob = bpy.data.objects.new(name=name, object_data=data)
-        self.scene.collection.objects.link(ob)
+        self.target_collection.objects.link(ob)
         ob.select_set(True)
         self.view_layer.objects.active = ob
         return ob

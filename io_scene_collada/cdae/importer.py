@@ -13,6 +13,7 @@ from dataclasses import dataclass
 import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion, Vector
+from mathutils.kdtree import KDTree
 
 from ..import_collada import DocumentImporter
 from .normal_table import U8_TO_NORMAL_TABLE
@@ -193,22 +194,79 @@ def _merge_verts_by_distance(
     tris: np.ndarray,
     tol: float,
 ) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray]:
-    """Merge duplicate positions within a single mesh using quantized coordinates.
+    """Merge duplicate positions within Euclidean distance <= tol using exact dedup + KD-tree.
 
     Returns (merged_verts, remapped_tris, kept_tri_mask, old_to_new_vert_idx).
     """
-    if len(verts) == 0 or tol <= 0.0:
-        old_to_new = np.arange(len(verts), dtype=np.int32)
+    n = len(verts)
+    if n == 0 or tol <= 0.0:
+        old_to_new = np.arange(n, dtype=np.int32)
         return verts, tris, np.ones(len(tris), dtype=bool), old_to_new
 
-    quant = np.round(verts.astype(np.float64) / tol).astype(np.int64)
-    _, unique_idx, inverse = np.unique(quant, axis=0, return_index=True, return_inverse=True)
-    # Preserve deterministic vertex order
+    # Stage 1: Exact float32 dedup collapses identical GPU-split seam vertices in C
+    v_f32 = np.ascontiguousarray(verts, dtype="<f4")
+    if (v_f32 == 0.0).any():
+        v_f32 = v_f32.copy()
+        v_f32[v_f32 == 0.0] = 0.0
+    v_keys = v_f32.view(np.dtype((np.void, 12))).ravel()
+    _, unique_idx, inv_exact = np.unique(v_keys, return_index=True, return_inverse=True)
     order = np.argsort(unique_idx)
     inv_order = np.empty_like(order)
     inv_order[order] = np.arange(len(order))
-    merged_verts = verts[unique_idx[order]]
-    old_to_new = inv_order[inverse].astype(np.int32)
+    u_verts = verts[unique_idx[order]]
+    stage1_map = inv_order[inv_exact].astype(np.int32)
+    n_u = len(u_verts)
+
+    # Stage 2: Exact Euclidean <= tol clustering via KDTree (no grid-boundary misses)
+    if n_u > 1:
+        kd = KDTree(n_u)
+        u_list = u_verts.tolist()
+        for i, co in enumerate(u_list):
+            kd.insert(co, i)
+        kd.balance()
+
+        parent = list(range(n_u))
+
+        def _find(x: int) -> int:
+            while parent[x] != x:
+                parent[x] = parent[parent[x]]
+                x = parent[x]
+            return x
+
+        for i, co in enumerate(u_list):
+            hits = kd.find_range(co, tol)
+            if len(hits) > 1:
+                ri = _find(i)
+                for _hco, j, _dist in hits:
+                    rj = _find(j)
+                    if rj != ri:
+                        if ri < rj:
+                            parent[rj] = ri
+                        else:
+                            parent[ri] = rj
+                            ri = rj
+
+        root_to_new: dict[int, int] = {}
+        keep_u: list[int] = []
+        u_to_new = np.empty(n_u, dtype=np.int32)
+        for i in range(n_u):
+            r = _find(i)
+            nid = root_to_new.get(r)
+            if nid is None:
+                nid = len(keep_u)
+                root_to_new[r] = nid
+                keep_u.append(r)
+            u_to_new[i] = nid
+
+        if len(keep_u) < n_u:
+            merged_verts = u_verts[np.asarray(keep_u, dtype=np.int32)]
+            old_to_new = u_to_new[stage1_map]
+        else:
+            merged_verts = u_verts
+            old_to_new = stage1_map
+    else:
+        merged_verts = u_verts
+        old_to_new = stage1_map
 
     remapped = old_to_new[tris]
     kept = (remapped[:, 0] != remapped[:, 1]) & (remapped[:, 0] != remapped[:, 2]) & (remapped[:, 1] != remapped[:, 2])
@@ -347,6 +405,8 @@ class CdaeImporter:
         self.context = context
         self.scene = context.scene
         self.view_layer = context.view_layer
+        alc = context.view_layer.active_layer_collection
+        self.target_collection = alc.collection if alc is not None else context.scene.collection
         self.settings = settings
         self.errors: list[str] = []
         self.warnings: list[str] = []
@@ -429,15 +489,15 @@ class CdaeImporter:
 
                 if self.settings.lod_mode == "ALL":
                     target_coll = bpy.data.collections.new(det_name)
-                    self.scene.collection.children.link(target_coll)
+                    self.target_collection.children.link(target_coll)
                 else:
-                    target_coll = self.scene.collection
+                    target_coll = self.target_collection
 
                 for obj_i in range(first_obj, min(first_obj + num_objs, len(shape.objects))):
                     import_jobs.append((obj_i, obj_det, target_coll))
         else:
             for obj_i in range(len(shape.objects)):
-                import_jobs.append((obj_i, 0, self.scene.collection))
+                import_jobs.append((obj_i, 0, self.target_collection))
 
         # Count how many valid non-skin jobs attach to each node and track mesh extents
         node_job_counts: dict[int, int] = {}
@@ -494,7 +554,7 @@ class CdaeImporter:
             node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
             ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
             ob_empty.empty_display_size = _empty_display_size(i)
-            self.scene.collection.objects.link(ob_empty)
+            self.target_collection.objects.link(ob_empty)
             ob_empty.matrix_basis = local_mats[i]
             ob_empty.select_set(True)
             node_objects[i] = ob_empty
@@ -528,7 +588,7 @@ class CdaeImporter:
                 node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
                 ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
                 ob_empty.empty_display_size = _empty_display_size(i)
-                self.scene.collection.objects.link(ob_empty)
+                self.target_collection.objects.link(ob_empty)
                 ob_empty.matrix_basis = local_mats[i]
                 ob_empty.select_set(True)
                 node_objects[i] = ob_empty
@@ -820,22 +880,42 @@ class CdaeImporter:
     def _build_armature(self, shape: CdaeShape, world_mats: list[Matrix | None]):
         arm_data = bpy.data.armatures.new(name="Armature")
         ob_arm = bpy.data.objects.new(name="Armature", object_data=arm_data)
-        self.scene.collection.objects.link(ob_arm)
+        self.target_collection.objects.link(ob_arm)
         self.view_layer.objects.active = ob_arm
         ob_arm.select_set(True)
 
+        # Build world bind-pose matrices from SkinMesh initialTransforms (row-major inverse bind matrices)
+        n_nodes = len(shape.nodes)
+        node_bind_mats: dict[int, Matrix] = {}
+        for c_mesh in shape.meshes:
+            if c_mesh.mesh_type != MESH_TYPE_SKIN:
+                continue
+            n_xforms = len(c_mesh.initial_transforms)
+            for bi, ni in enumerate(c_mesh.node_index.tolist()):
+                if 0 <= ni < n_nodes and bi < n_xforms and ni not in node_bind_mats:
+                    raw_m = c_mesh.initial_transforms[bi]
+                    if np.isfinite(raw_m).all():
+                        inv_bind = Matrix(raw_m.tolist())
+                        if abs(inv_bind.determinant()) > 1e-10:
+                            node_bind_mats[ni] = inv_bind.inverted()
+
         bpy.ops.object.mode_set(mode="EDIT")
         edit_bones: list = []
-        n_nodes = len(shape.nodes)
         for i in range(n_nodes):
             bname = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Bone_{i}")
             eb = arm_data.edit_bones.new(bname)
-            wm = world_mats[i] or Matrix.Identity(4)
-            head = wm.translation.copy()
+            mat = node_bind_mats.get(i) or world_mats[i] or Matrix.Identity(4)
+            head = mat.translation.copy()
+            try:
+                rot3 = mat.to_3x3().normalized()
+                axis, roll = bpy.types.Bone.AxisRollFromMatrix(rot3)
+            except Exception:
+                axis, roll = Vector((0.0, 1.0, 0.0)), 0.0
+            if axis.length < 1e-4:
+                axis = Vector((0.0, 1.0, 0.0))
             eb.head = head
-            eb.tail = head + (wm.to_3x3() @ Vector((0.0, 0.2, 0.0)))
-            if (eb.tail - eb.head).length < 1e-4:
-                eb.tail = head + Vector((0.0, 0.2, 0.0))
+            eb.tail = head + axis.normalized() * 0.2
+            eb.roll = roll
             edit_bones.append(eb)
 
         for i in range(n_nodes):

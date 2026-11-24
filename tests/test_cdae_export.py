@@ -218,6 +218,25 @@ if zstd_available():
     print("  PASS export_compressed_zstd")
 else:
     print("  SKIP export_compressed_zstd (zstandard not installed)")
+
+# Test 4: Tangent calculation failure records a warning (not silently swallowed)
+from io_scene_collada.cdae.exporter import _build_gpu_mesh_data
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add(size=1.0)
+me_orig = bpy.context.active_object.data
+
+class _FailingTangentMeshProxy:
+    def __init__(self, inner):
+        self._inner = inner
+    def __getattr__(self, item):
+        return getattr(self._inner, item)
+    def calc_tangents(self, uvmap=""):
+        raise RuntimeError("mock degenerate UV tangent failure")
+
+tan_warnings = []
+_build_gpu_mesh_data(_FailingTangentMeshProxy(me_orig), None, {}, [], warnings=tan_warnings, mesh_name="BrokenTanMesh")
+assert len(tan_warnings) == 1 and "tangent calculation failed" in tan_warnings[0] and "BrokenTanMesh" in tan_warnings[0], tan_warnings
+print("  PASS tangent_failure_warning_reported")
 '''
 
 

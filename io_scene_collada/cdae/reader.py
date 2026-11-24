@@ -486,12 +486,27 @@ def _parse_body(
     if total_meshes > s.mp.remaining:
         raise CdaeError(f"meshes.size ({total_meshes}) exceeds remaining stream bytes ({s.mp.remaining})")
 
+    _MESH_TYPE_NAMES = {
+        0: "StandardMesh",
+        1: "SkinMesh",
+        2: "DecalMesh",
+        3: "SortedMesh",
+        4: "NullMesh",
+        5: "BillboardMesh",
+    }
+
     meshes: list[CdaeMesh] = []
     for mesh_i in range(total_meshes):
         mesh_type = s.read_uint(f"mesh[{mesh_i}].type")
         if mesh_type == MESH_TYPE_NULL:
             meshes.append(CdaeMesh(index=mesh_i, mesh_type=mesh_type))
             continue
+        if mesh_type not in (MESH_TYPE_STANDARD, MESH_TYPE_SKIN):
+            tname = _MESH_TYPE_NAMES.get(mesh_type, f"Unknown({mesh_type})")
+            raise CdaeError(
+                f"Mesh {mesh_i}: unsupported .cdae mesh type {mesh_type} ({tname}); "
+                f"only StandardMesh (0), SkinMesh (1), and NullMesh (4) are supported"
+            )
 
         num_frames = s.read_int(f"mesh[{mesh_i}].numFrames")
         num_mat_frames = s.read_int(f"mesh[{mesh_i}].numMatFrames")
