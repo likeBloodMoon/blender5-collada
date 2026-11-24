@@ -139,6 +139,9 @@ for me in bpy.data.meshes:
         "still_invalid": still_invalid,
         "verts": verts,
         "polys": polys,
+        "uv_layers": [u.name for u in me.uv_layers],
+        "color_attrs": [c.name for c in me.color_attributes],
+        "has_custom_normals": bool(me.has_custom_normals),
     })
 
 result = {
@@ -311,6 +314,50 @@ def build_cases() -> dict[str, tuple[str, dict]]:
             _make_dae(p_text="0 1 2  0 0 2"),
             {"expect_verts": 4, "expect_polys": 1, "expect_warning": True},
         ),
+        "duplicate_triangle_preserves_attrs": (
+            _make_dae(
+                extra_sources=full_sources,
+                extra_inputs=full_inputs,
+                prim_count=3,
+                # Tri 0 (0,1,2), Tri 1 exact duplicate (0,1,2), Tri 2 valid (0,2,3)
+                p_text=(
+                    "0 0 0 0  1 0 1 1  2 0 2 0  "
+                    "0 0 0 0  1 0 1 1  2 0 2 0  "
+                    "0 0 0 0  2 0 2 0  3 0 3 1"
+                ),
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "1 duplicate",
+                "expect_uvs": True,
+                "expect_colors": True,
+                "expect_custom_normals": True,
+            },
+        ),
+        "degenerate_triangle_preserves_attrs": (
+            _make_dae(
+                extra_sources=full_sources,
+                extra_inputs=full_inputs,
+                prim_count=3,
+                # Tri 0 valid (0,1,2), Tri 1 degenerate (0,0,2), Tri 2 valid (0,2,3)
+                p_text=(
+                    "0 0 0 0  1 0 1 1  2 0 2 0  "
+                    "0 0 0 0  0 0 0 0  2 0 2 0  "
+                    "0 0 0 0  2 0 2 0  3 0 3 1"
+                ),
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "1 degenerate",
+                "expect_uvs": True,
+                "expect_colors": True,
+                "expect_custom_normals": True,
+            },
+        ),
         "polylist_mixed_vcount_0_1_2": (
             _make_dae(
                 extra_sources=full_sources,
@@ -416,6 +463,21 @@ def main() -> int:
                         if got_p != exp["expect_polys"]:
                             raise AssertionError(
                                 f"{name} (native={native}): expected {exp['expect_polys']} polys, got {got_p}"
+                            )
+                    if exp.get("expect_uvs"):
+                        if not res["meshes"] or not res["meshes"][0]["uv_layers"]:
+                            raise AssertionError(
+                                f"{name} (native={native}): UVs were lost! warnings={res['warnings']}"
+                            )
+                    if exp.get("expect_colors"):
+                        if not res["meshes"] or not res["meshes"][0]["color_attrs"]:
+                            raise AssertionError(
+                                f"{name} (native={native}): vertex colors were lost! warnings={res['warnings']}"
+                            )
+                    if exp.get("expect_custom_normals"):
+                        if not res["meshes"] or not res["meshes"][0]["has_custom_normals"]:
+                            raise AssertionError(
+                                f"{name} (native={native}): custom normals were lost! warnings={res['warnings']}"
                             )
                 except Exception as exc:
                     failures.append(f"FAIL {name} (native={native}): {exc}")

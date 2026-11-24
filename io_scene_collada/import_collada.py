@@ -22,6 +22,11 @@ import numpy as np
 from mathutils import Matrix, Vector
 
 from ._native_loader import native_parse_f32, native_parse_i32
+from .beamng_materials import (
+    alt_image_refs,
+    lookup_material_color_maps,
+    parse_beamng_materials_json,
+)
 from .collada_utils import (
     create_fcurve_on_channelbag,
     dae_flat_to_matrix,
@@ -49,6 +54,7 @@ class ImportSettings:
     fast_exact_normals: bool = False
     sharp_edges_from_normals: bool = False
     sharp_angle_threshold: float = math.radians(1.0)
+    archive_mode: str = "ALL"  # "ALL" (all .dae into collections) or "MAIN" (single main .dae)
     find_chains: bool = False
     auto_connect: bool = False
     fix_orientation: bool = False
@@ -232,6 +238,22 @@ class DocumentImporter:
         self.settings = settings
         self.dae_dir = os.path.dirname(os.path.abspath(settings.filepath))
 
+        self._archive_zf: zipfile.ZipFile | None = None
+        self._archive_basename: str = ""
+        self._archive_dae_dir: str = ""
+        self._archive_entries: dict[str, zipfile.ZipInfo] = {}
+        self._archive_entries_ci: dict[str, tuple[str, zipfile.ZipInfo]] = {}
+        self._archive_by_basename: dict[str, list[tuple[str, zipfile.ZipInfo]]] = {}
+        self._archive_images_by_entry: dict[str, object] = {}
+        self._archive_bytes_read: int = 0
+        self._beamng_mat_maps: dict[str, list[str]] = {}
+        self.errors: list[str] = []
+        self.warnings: list[str] = []
+
+        self._reset_dae_state()
+
+    def _reset_dae_state(self) -> None:
+        """Reset per-DAE parsing and scene instantiation state (preserves archive caches)."""
         # Asset info
         self.up_axis: str = "Z_UP"
         self.unit_name: str = "meter"
@@ -245,7 +267,7 @@ class DocumentImporter:
         self.cameras_by_id: dict[str, bpy.types.Camera] = {}
         self.lights_by_id: dict[str, bpy.types.Light] = {}
         self.meshes_by_id: dict[str, Mesh] = {}
-        self.mesh_mat_prims: dict[str, dict[str, list[tuple[int, int]]]] = {}
+        self.mesh_mat_prims: dict[str, dict[str, np.ndarray]] = {}
         self.skins_by_id: dict[str, _SkinData] = {}
         self.morphs_by_id: dict[str, _MorphData] = {}
         self.lib_nodes_by_id: dict[str, ET.Element] = {}
@@ -257,16 +279,6 @@ class DocumentImporter:
         self.object_by_geom_id: dict[str, Object] = {}
         self.imported_mesh_objects: list[Object] = []
         self.root_objects: list[Object] = []
-        self._archive_zf: zipfile.ZipFile | None = None
-        self._archive_basename: str = ""
-        self._archive_dae_dir: str = ""
-        self._archive_entries: dict[str, zipfile.ZipInfo] = {}
-        self._archive_entries_ci: dict[str, tuple[str, zipfile.ZipInfo]] = {}
-        self._archive_by_basename: dict[str, list[tuple[str, zipfile.ZipInfo]]] = {}
-        self._archive_images_by_entry: dict[str, object] = {}
-        self._archive_bytes_read: int = 0
-        self.errors: list[str] = []
-        self.warnings: list[str] = []
 
         # Armature tracking
         self.root_joint_nodes: list[tuple[ET.Element, Object]] = []  # (joint_elem, ob_arm)
@@ -276,11 +288,26 @@ class DocumentImporter:
         self.joint_bone_name_by_id: dict[str, str] = {}
         self.joint_parent_elem_by_id: dict[str, ET.Element | None] = {}
 
-    def _find_archive_root_dae(self, zf: zipfile.ZipFile) -> tuple[str, zipfile.ZipInfo] | None:
-        """Select root .dae inside an open ZipFile: manifest.xml <dae_root> first, else sorted .dae."""
+    @staticmethod
+    def _is_ignored_archive_entry(norm_name: str) -> bool:
+        parts = norm_name.split("/")
+        if any(p == "__MACOSX" for p in parts):
+            return True
+        return parts[-1].startswith("._")
+
+    def _find_archive_daes(self, zf: zipfile.ZipFile) -> tuple[list[tuple[str, zipfile.ZipInfo]], bool]:
+        """Discover .dae entries inside an open ZipFile.
+
+        Returns (entries, from_manifest):
+        - If manifest.xml specifies a valid <dae_root>, returns ([root], True).
+        - Otherwise returns all .dae entries ranked so the one matching the archive
+          name (and shallowest path) comes first, with deterministic alphabetical tie-breaking.
+        """
         manifest_entries: list[tuple[str, zipfile.ZipInfo]] = []
         dae_entries: list[tuple[str, zipfile.ZipInfo]] = []
         for norm_name, info in sorted(self._archive_entries.items()):
+            if self._is_ignored_archive_entry(norm_name):
+                continue
             low = norm_name.lower()
             if low == "manifest.xml" or low.endswith("/manifest.xml"):
                 manifest_entries.append((norm_name, info))
@@ -297,13 +324,66 @@ class DocumentImporter:
                     m_dir = m_norm.rsplit("/", 1)[0] if "/" in m_norm else ""
                     found = self._lookup_archive_path(m_dir, rel)
                     if found is not None:
-                        return found
+                        return [found], True
             except ValueError:
                 raise
             except Exception as e:
                 self.warnings.append(f"Could not parse archive manifest.xml: {e}")
 
-        return dae_entries[0] if dae_entries else None
+        zip_stem = os.path.splitext(self._archive_basename)[0].lower()
+
+        def _rank(item: tuple[str, zipfile.ZipInfo]) -> tuple[int, int, str]:
+            norm_name = item[0]
+            bname = norm_name.rsplit("/", 1)[-1]
+            stem = os.path.splitext(bname)[0].lower()
+            exact_match = 0 if (zip_stem and stem == zip_stem) else 1
+            depth = norm_name.count("/")
+            return (exact_match, depth, norm_name.lower())
+
+        dae_entries.sort(key=_rank)
+        return dae_entries, False
+
+    def _merge_beamng_mat_maps(self, parsed: dict[str, list[str]]) -> None:
+        for k, maps in parsed.items():
+            cur = self._beamng_mat_maps.setdefault(k, [])
+            for m in maps:
+                if m not in cur:
+                    cur.append(m)
+
+    def _load_archive_materials_json(self, zf: zipfile.ZipFile) -> None:
+        mat_entries: list[tuple[str, zipfile.ZipInfo]] = []
+        for norm_name, info in self._archive_entries.items():
+            if self._is_ignored_archive_entry(norm_name):
+                continue
+            bname = norm_name.rsplit("/", 1)[-1].lower()
+            if bname == "main.materials.json":
+                mat_entries.append((norm_name, info))
+        # Shallowest (closest to vehicle root) first, then alphabetical
+        mat_entries.sort(key=lambda item: (item[0].count("/"), item[0].lower()))
+        for norm_name, info in mat_entries:
+            try:
+                raw = self._read_zip_entry(zf, info)
+                parsed = parse_beamng_materials_json(raw.decode("utf-8", errors="replace"))
+                self._merge_beamng_mat_maps(parsed)
+            except Exception as e:
+                self.warnings.append(f"Could not parse '{norm_name}': {e}")
+
+    def _load_disk_materials_json(self, base_dir: str) -> None:
+        if not base_dir:
+            return
+        candidates = [os.path.join(base_dir, "main.materials.json")]
+        parent = os.path.dirname(base_dir)
+        if parent and parent != base_dir:
+            candidates.append(os.path.join(parent, "main.materials.json"))
+        for path in candidates:
+            if not os.path.isfile(path):
+                continue
+            try:
+                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                    parsed = parse_beamng_materials_json(f.read())
+                self._merge_beamng_mat_maps(parsed)
+            except Exception as e:
+                self.warnings.append(f"Could not parse '{os.path.basename(path)}': {e}")
 
     def _read_zip_entry(self, zf: zipfile.ZipFile, info: zipfile.ZipInfo) -> bytes:
         file_size = info.file_size
@@ -370,38 +450,90 @@ class DocumentImporter:
             self._archive_basename = os.path.basename(self.settings.filepath)
             self._archive_images_by_entry = {}
             self._archive_bytes_read = 0
+            self._beamng_mat_maps = {}
+            base_collection = self.target_collection
             try:
                 with zipfile.ZipFile(self.settings.filepath, "r") as zf:
                     self._archive_zf = zf
                     self._build_archive_index(zf)
-                    root_entry = self._find_archive_root_dae(zf)
-                    if root_entry is None:
+                    dae_entries, from_manifest = self._find_archive_daes(zf)
+                    if not dae_entries:
                         self.errors.append(
                             f"No .dae file found inside archive: {self._archive_basename}"
                         )
                         return False
-                    dae_norm, dae_info = root_entry
-                    self._archive_dae_dir = dae_norm.rsplit("/", 1)[0] if "/" in dae_norm else ""
-                    dae_bytes = self._read_zip_entry(zf, dae_info)
-                    try:
-                        tree = ET.parse(io.BytesIO(dae_bytes))
-                    except Exception as e:
-                        self.errors.append(f"Failed to parse XML: {e}")
-                        return False
-                    return self._import_dae_tree(tree)
+                    self._load_archive_materials_json(zf)
+
+                    if from_manifest or len(dae_entries) == 1 or self.settings.archive_mode == "MAIN":
+                        if not from_manifest and len(dae_entries) > 1:
+                            skipped = [n for n, _ in dae_entries[1:]]
+                            preview = ", ".join(skipped[:4])
+                            if len(skipped) > 4:
+                                preview += f", ... (+{len(skipped) - 4} more)"
+                            self.warnings.append(
+                                f"Archive '{self._archive_basename}' contains {len(dae_entries)} .dae files; "
+                                f"imported '{dae_entries[0][0]}' and skipped {len(skipped)} other(s) ({preview}). "
+                                f"Set Archive Models to 'All models (collections)' to import all"
+                            )
+                        dae_norm, dae_info = dae_entries[0]
+                        self._archive_dae_dir = dae_norm.rsplit("/", 1)[0] if "/" in dae_norm else ""
+                        dae_bytes = self._read_zip_entry(zf, dae_info)
+                        try:
+                            tree = ET.parse(io.BytesIO(dae_bytes))
+                        except Exception as e:
+                            self.errors.append(f"Failed to parse XML: {e}")
+                            return False
+                        return self._import_dae_tree(tree)
+
+                    # Multi-DAE import ("ALL"): import every .dae into its own sub-collection
+                    for ob in self.view_layer.objects:
+                        ob.select_set(False)
+
+                    stem_counts: dict[str, int] = {}
+                    for dae_norm, _ in dae_entries:
+                        st = os.path.splitext(dae_norm.rsplit("/", 1)[-1])[0].lower()
+                        stem_counts[st] = stem_counts.get(st, 0) + 1
+
+                    any_ok = False
+                    for dae_norm, dae_info in dae_entries:
+                        self._reset_dae_state()
+                        self._archive_dae_dir = dae_norm.rsplit("/", 1)[0] if "/" in dae_norm else ""
+                        dae_bytes = self._read_zip_entry(zf, dae_info)
+                        try:
+                            tree = ET.parse(io.BytesIO(dae_bytes))
+                        except Exception as e:
+                            self.warnings.append(f"Failed to parse XML in '{dae_norm}': {e}")
+                            continue
+                        bname = dae_norm.rsplit("/", 1)[-1]
+                        stem = os.path.splitext(bname)[0] or "Model"
+                        if stem_counts.get(stem.lower(), 0) > 1 and "/" in dae_norm:
+                            parent_seg = dae_norm.rsplit("/", 2)[-2]
+                            coll_name = f"{parent_seg}_{stem}"
+                        else:
+                            coll_name = stem
+                        sub_coll = bpy.data.collections.new(coll_name)
+                        base_collection.children.link(sub_coll)
+                        self.target_collection = sub_coll
+                        if self._import_dae_tree(tree, deselect_existing=False):
+                            any_ok = True
+                    return any_ok
             except Exception as e:
                 self.errors.append(f"Archive import failed: {e}")
                 return False
             finally:
+                self.target_collection = base_collection
                 self._archive_zf = None
                 self._archive_entries = {}
                 self._archive_entries_ci = {}
                 self._archive_by_basename = {}
                 self._archive_images_by_entry = {}
                 self._archive_dae_dir = ""
+                self._beamng_mat_maps = {}
         return self._import_dae_file(self.settings.filepath)
 
     def _import_dae_file(self, dae_path: str) -> bool:
+        self._beamng_mat_maps = {}
+        self._load_disk_materials_json(self.dae_dir)
         try:
             tree = ET.parse(dae_path)
         except Exception as e:
@@ -409,7 +541,7 @@ class DocumentImporter:
             return False
         return self._import_dae_tree(tree)
 
-    def _import_dae_tree(self, tree: ET.ElementTree) -> bool:
+    def _import_dae_tree(self, tree: ET.ElementTree, *, deselect_existing: bool = True) -> bool:
 
         root = tree.getroot()
         if _strip_ns(root.tag) != "COLLADA":
@@ -417,8 +549,9 @@ class DocumentImporter:
             return False
 
         # Deselect all existing objects
-        for ob in self.view_layer.objects:
-            ob.select_set(False)
+        if deselect_existing:
+            for ob in self.view_layer.objects:
+                ob.select_set(False)
 
         # 1. Asset
         asset_elem = _find_child(root, "asset")
@@ -531,8 +664,8 @@ class DocumentImporter:
     # <library_images>
     # ------------------------------------------------------------------
 
-    def _resolve_archive_image(self, raw_uri: str) -> tuple[str, zipfile.ZipInfo] | None:
-        """Resolve an <init_from> URI strictly against entries inside the open archive."""
+    def _resolve_archive_image_exact(self, raw_uri: str) -> tuple[str, zipfile.ZipInfo] | None:
+        """Resolve a single <init_from> URI strictly against entries inside the open archive."""
         raw = urllib.parse.unquote(raw_uri.strip())
         if raw.lower().startswith("file:///"):
             raw = raw[8:]
@@ -578,11 +711,20 @@ class DocumentImporter:
                 return matches[0]
         return None
 
-    def _resolve_image_path(self, raw_uri: str) -> str | None:
+    def _resolve_archive_image(self, raw_uri: str) -> tuple[str, zipfile.ZipInfo] | None:
+        """Resolve an image URI inside the open archive, with .dds/.png extension fallback."""
+        for ref in alt_image_refs(raw_uri):
+            hit = self._resolve_archive_image_exact(ref)
+            if hit is not None:
+                return hit
+        return None
+
+    def _resolve_image_path_exact(self, raw_uri: str) -> str | None:
         native = _uri_to_native_path(raw_uri)
         # Normalize embedded backslashes so Windows-authored DAEs resolve on Linux/macOS
         norm = native.replace("\\", os.sep)
         bname = os.path.basename(norm)
+        parent_dir = os.path.dirname(self.dae_dir)
 
         candidates = [
             os.path.join(self.dae_dir, native),
@@ -596,16 +738,29 @@ class DocumentImporter:
             os.path.join(self.dae_dir, "Images", bname),
             os.path.join(self.dae_dir, "maps", bname),
         ]
+        if parent_dir and parent_dir != self.dae_dir:
+            candidates.extend((
+                os.path.join(parent_dir, bname),
+                os.path.join(parent_dir, "textures", bname),
+            ))
         for cand in candidates:
             if cand and os.path.isfile(cand):
                 return cand
         return None
 
-    def _load_archive_image(self, raw_ref: str):
+    def _resolve_image_path(self, raw_uri: str) -> str | None:
+        for ref in alt_image_refs(raw_uri):
+            hit = self._resolve_image_path_exact(ref)
+            if hit is not None:
+                return hit
+        return None
+
+    def _load_archive_image(self, raw_ref: str, *, warn_missing: bool = True):
         hit = self._resolve_archive_image(raw_ref)
         if hit is None:
-            bname = raw_ref.replace("\\", "/").rsplit("/", 1)[-1]
-            self.warnings.append(f"Texture not found in archive: {bname or raw_ref}")
+            if warn_missing:
+                bname = raw_ref.replace("\\", "/").rsplit("/", 1)[-1]
+                self.warnings.append(f"Texture not found in archive: {bname or raw_ref}")
             return None
         norm_entry, info = hit
         cached = self._archive_images_by_entry.get(norm_entry)
@@ -684,6 +839,68 @@ class DocumentImporter:
                 eff_elem = self.effects_by_id.get(eff_id)
                 if eff_elem is not None:
                     self._apply_effect_to_material(eff_elem, ma)
+
+            if self._beamng_mat_maps:
+                self._try_apply_beamng_material_texture(ma, mat_name, mat_id)
+
+    def _try_apply_beamng_material_texture(self, ma: Material, mat_name: str, mat_id: str) -> None:
+        """If a material has no Base Color texture yet, look up colorMap/baseColorMap from main.materials.json."""
+        refs = lookup_material_color_maps(self._beamng_mat_maps, mat_name, mat_id)
+        if not refs:
+            return
+
+        ntree = ma.node_tree
+        shader_node = None
+        if ntree is not None:
+            for node in ntree.nodes:
+                if node.type == "BSDF_PRINCIPLED":
+                    shader_node = node
+                    break
+        if shader_node is not None:
+            bc_sock = shader_node.inputs.get("Base Color")
+            if bc_sock is not None and bc_sock.is_linked:
+                return
+
+        ima = None
+        for ref in refs:
+            if self._archive_zf is not None:
+                ima = self._load_archive_image(ref, warn_missing=False)
+            else:
+                workpath = self._resolve_image_path(ref)
+                if workpath is not None:
+                    try:
+                        ima = bpy.data.images.load(workpath, check_existing=True)
+                    except Exception:
+                        ima = None
+            if ima is not None:
+                break
+        if ima is None:
+            return
+
+        if ntree is None:
+            ma.use_nodes = True
+            ntree = ma.node_tree
+        if shader_node is None:
+            for node in ntree.nodes:
+                if node.type == "BSDF_PRINCIPLED":
+                    shader_node = node
+                    break
+        if shader_node is None:
+            shader_node = ntree.nodes.new("ShaderNodeBsdfPrincipled")
+            shader_node.location = (0, 300)
+            output_node = next((n for n in ntree.nodes if n.type == "OUTPUT_MATERIAL"), None)
+            if output_node is None:
+                output_node = ntree.nodes.new("ShaderNodeOutputMaterial")
+                output_node.location = (300, 300)
+            ntree.links.new(shader_node.outputs[0], output_node.inputs[0])
+
+        bc_sock = shader_node.inputs.get("Base Color")
+        if bc_sock is not None and not bc_sock.is_linked:
+            tn = ntree.nodes.new("ShaderNodeTexImage")
+            tn.label = "Base Color"
+            tn.location = (-300, 300)
+            tn.image = ima
+            ntree.links.new(tn.outputs[0], bc_sock)
 
     def _apply_effect_to_material(self, eff_elem: ET.Element, ma: Material) -> None:
         profile = _find_child(eff_elem, "profile_COMMON")
@@ -1125,7 +1342,9 @@ class DocumentImporter:
         col_chunks: dict[str, list[np.ndarray]] = {}
         col_set_order: list[str] = []
         loose_edges: list[tuple[int, int]] = []
-        mat_prims: dict[str, list[tuple[int, int]]] = {}  # material_symbol -> [(start_face, count)]
+        mat_sym_order: list[str] = []
+        mat_sym_to_id: dict[str, int] = {}
+        face_mat_chunks: list[np.ndarray] = []
         total_faces = 0
         total_loops = 0
         dropped_faces_total = 0
@@ -1415,7 +1634,12 @@ class DocumentImporter:
             prim_face_count = int(prim_vcounts.size)
             prim_loop_count = int(prim_p.shape[0])
             mat_sym = child.attrib.get("material", "")
-            mat_prims.setdefault(mat_sym, []).append((total_faces, prim_face_count))
+            sym_id = mat_sym_to_id.get(mat_sym)
+            if sym_id is None:
+                sym_id = len(mat_sym_order)
+                mat_sym_to_id[mat_sym] = sym_id
+                mat_sym_order.append(mat_sym)
+            face_mat_chunks.append(np.full(prim_face_count, sym_id, dtype=np.int32))
 
             l_verts = prim_p[:, vert_off]
             vcount_chunks.append(prim_vcounts)
@@ -1504,6 +1728,126 @@ class DocumentImporter:
                 f"Geometry '{geom_name}': dropped {dropped_faces_total} face(s) with out-of-range indices"
             )
 
+        # Concatenate per-face and per-loop arrays and drop degenerate/duplicate faces
+        # BEFORE building the Blender mesh so UVs, vertex colors, and custom normals
+        # on all remaining faces are preserved instead of wiped by me.validate().
+        all_vcounts: np.ndarray | None = None
+        all_loop_verts: np.ndarray | None = None
+        all_face_mats: np.ndarray | None = None
+        all_face_sharp: np.ndarray | None = None
+        all_loop_normals = (
+            (np.vstack(loop_norm_chunks) if len(loop_norm_chunks) > 1 else loop_norm_chunks[0])
+            if (has_all_loop_normals and loop_norm_chunks)
+            else None
+        )
+        uv_arrays: dict[str, np.ndarray] = {}
+        for u_id in uv_set_order:
+            chunks = uv_chunks[u_id]
+            if chunks:
+                uv_arrays[u_id] = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+        col_arrays: dict[str, np.ndarray] = {}
+        for cn in col_set_order:
+            chunks = col_chunks[cn]
+            if chunks:
+                col_arrays[cn] = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
+
+        if total_faces > 0:
+            all_vcounts = np.concatenate(vcount_chunks) if len(vcount_chunks) > 1 else vcount_chunks[0]
+            all_loop_verts = np.concatenate(loop_vert_chunks) if len(loop_vert_chunks) > 1 else loop_vert_chunks[0]
+            all_face_mats = np.concatenate(face_mat_chunks) if len(face_mat_chunks) > 1 else face_mat_chunks[0]
+            if face_sharp_chunks:
+                all_face_sharp = np.concatenate(face_sharp_chunks) if len(face_sharp_chunks) > 1 else face_sharp_chunks[0]
+
+            keep_face: np.ndarray | None = None
+            n_degen = 0
+            n_dups = 0
+            if bool((all_vcounts == 3).all()):
+                tris = all_loop_verts.reshape(total_faces, 3)
+                non_degen = (tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 0] != tris[:, 2])
+                n_degen = int((~non_degen).sum())
+                valid_idx = np.flatnonzero(non_degen)
+                if valid_idx.size > 0:
+                    s_tris = np.ascontiguousarray(np.sort(tris[valid_idx], axis=1))
+                    s_view = s_tris.view(np.dtype((np.void, s_tris.dtype.itemsize * 3))).ravel()
+                    _, first_pos = np.unique(s_view, return_index=True)
+                    n_dups = int(valid_idx.size - first_pos.size)
+                    if n_degen > 0 or n_dups > 0:
+                        keep_face = np.zeros(total_faces, dtype=bool)
+                        keep_face[valid_idx[first_pos]] = True
+                elif n_degen > 0:
+                    keep_face = np.zeros(total_faces, dtype=bool)
+            elif bool((all_vcounts == 4).all()):
+                quads = all_loop_verts.reshape(total_faces, 4)
+                s_all = np.ascontiguousarray(np.sort(quads, axis=1))
+                non_degen = (
+                    (s_all[:, 0] != s_all[:, 1])
+                    & (s_all[:, 1] != s_all[:, 2])
+                    & (s_all[:, 2] != s_all[:, 3])
+                )
+                n_degen = int((~non_degen).sum())
+                valid_idx = np.flatnonzero(non_degen)
+                if valid_idx.size > 0:
+                    s_valid = np.ascontiguousarray(s_all[valid_idx])
+                    s_view = s_valid.view(np.dtype((np.void, s_valid.dtype.itemsize * 4))).ravel()
+                    _, first_pos = np.unique(s_view, return_index=True)
+                    n_dups = int(valid_idx.size - first_pos.size)
+                    if n_degen > 0 or n_dups > 0:
+                        keep_face = np.zeros(total_faces, dtype=bool)
+                        keep_face[valid_idx[first_pos]] = True
+                elif n_degen > 0:
+                    keep_face = np.zeros(total_faces, dtype=bool)
+            else:
+                kf = np.ones(total_faces, dtype=bool)
+                lv_list_chk = all_loop_verts.tolist()
+                seen_faces: set[tuple[int, ...]] = set()
+                cur_chk = 0
+                for fi, vc in enumerate(all_vcounts.tolist()):
+                    sv = tuple(sorted(lv_list_chk[cur_chk : cur_chk + vc]))
+                    cur_chk += vc
+                    if any(sv[k] == sv[k + 1] for k in range(vc - 1)):
+                        kf[fi] = False
+                        n_degen += 1
+                    elif sv in seen_faces:
+                        kf[fi] = False
+                        n_dups += 1
+                    else:
+                        seen_faces.add(sv)
+                if n_degen > 0 or n_dups > 0:
+                    keep_face = kf
+
+            if keep_face is not None:
+                keep_loop = np.repeat(keep_face, all_vcounts)
+                all_vcounts = all_vcounts[keep_face]
+                all_loop_verts = all_loop_verts[keep_loop]
+                all_face_mats = all_face_mats[keep_face]
+                if all_face_sharp is not None:
+                    all_face_sharp = all_face_sharp[keep_face]
+                if all_loop_normals is not None and len(all_loop_normals) == keep_loop.size:
+                    all_loop_normals = all_loop_normals[keep_loop]
+                for u_id in list(uv_arrays.keys()):
+                    if len(uv_arrays[u_id]) == keep_loop.size:
+                        uv_arrays[u_id] = uv_arrays[u_id][keep_loop]
+                for cn in list(col_arrays.keys()):
+                    if len(col_arrays[cn]) == keep_loop.size:
+                        col_arrays[cn] = col_arrays[cn][keep_loop]
+                total_faces = int(all_vcounts.size)
+                total_loops = int(all_loop_verts.size)
+                parts = []
+                if n_dups > 0:
+                    parts.append(f"{n_dups} duplicate")
+                if n_degen > 0:
+                    parts.append(f"{n_degen} degenerate")
+                self.warnings.append(
+                    f"Geometry '{geom_name}': dropped {' and '.join(parts)} face(s)"
+                )
+
+        mat_prims: dict[str, np.ndarray] = {}
+        if total_faces > 0 and all_face_mats is not None:
+            for sym_id, sym in enumerate(mat_sym_order):
+                f_ids = np.flatnonzero(all_face_mats == sym_id)
+                if f_ids.size > 0:
+                    mat_prims[sym] = f_ids
+
         # Construct Blender Mesh with foreach_set (fast path when no loose edges)
         me = bpy.data.meshes.new(name=geom_name)
         if num_verts > 0:
@@ -1517,9 +1861,7 @@ class DocumentImporter:
         else:
             pos_flat = np.empty(0, dtype=np.float32)
 
-        if not loose_edges and total_faces > 0:
-            all_vcounts = np.concatenate(vcount_chunks) if len(vcount_chunks) > 1 else vcount_chunks[0]
-            all_loop_verts = np.concatenate(loop_vert_chunks) if len(loop_vert_chunks) > 1 else loop_vert_chunks[0]
+        if not loose_edges and total_faces > 0 and all_vcounts is not None and all_loop_verts is not None:
             loop_starts = np.empty(total_faces, dtype=np.int32)
             loop_starts[0] = 0
             if total_faces > 1:
@@ -1536,9 +1878,7 @@ class DocumentImporter:
         else:
             verts_co = pos_flat.reshape(num_verts, 3).tolist() if num_verts > 0 else []
             face_vert_indices: list[list[int]] = []
-            if total_faces > 0:
-                all_vcounts = np.concatenate(vcount_chunks) if len(vcount_chunks) > 1 else vcount_chunks[0]
-                all_loop_verts = np.concatenate(loop_vert_chunks) if len(loop_vert_chunks) > 1 else loop_vert_chunks[0]
+            if total_faces > 0 and all_vcounts is not None and all_loop_verts is not None:
                 lv_list = all_loop_verts.tolist()
                 cur = 0
                 for vc in all_vcounts.tolist():
@@ -1550,19 +1890,13 @@ class DocumentImporter:
             self.warnings.append(f"Geometry '{geom_name}' had invalid data and was repaired")
 
         # Smooth/flat face flags (foreach_set)
-        all_loop_normals = (
-            (np.vstack(loop_norm_chunks) if len(loop_norm_chunks) > 1 else loop_norm_chunks[0])
-            if (has_all_loop_normals and loop_norm_chunks)
-            else None
-        )
         cur_n_loops = len(me.loops)
         cur_n_polys = len(me.polygons)
         if total_faces > 0 and cur_n_polys == total_faces:
             if self.settings.sharp_edges_from_normals and all_loop_normals is not None and len(all_loop_normals) == cur_n_loops:
                 me.polygons.foreach_set("use_smooth", np.ones(total_faces, dtype=bool))
-            elif face_sharp_chunks:
-                all_sharp = np.concatenate(face_sharp_chunks) if len(face_sharp_chunks) > 1 else face_sharp_chunks[0]
-                me.polygons.foreach_set("use_smooth", np.logical_not(all_sharp))
+            elif all_face_sharp is not None:
+                me.polygons.foreach_set("use_smooth", np.logical_not(all_face_sharp))
 
         loops_match = (cur_n_loops == total_loops)
         if not loops_match and (uv_set_order or col_set_order or all_loop_normals is not None):
@@ -1574,10 +1908,9 @@ class DocumentImporter:
         if loops_match:
             # UVs (foreach_set)
             for u_id in uv_set_order:
-                chunks = uv_chunks[u_id]
-                if not chunks:
+                uv_arr = uv_arrays.get(u_id)
+                if uv_arr is None:
                     continue
-                uv_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
                 if len(uv_arr) == cur_n_loops:
                     if not np.isfinite(uv_arr).all():
                         uv_arr = np.where(np.isfinite(uv_arr), uv_arr, np.float32(0.0))
@@ -1586,10 +1919,9 @@ class DocumentImporter:
 
             # Byte Color Attributes (foreach_set)
             for cn in col_set_order:
-                chunks = col_chunks[cn]
-                if not chunks:
+                c_arr = col_arrays.get(cn)
+                if c_arr is None:
                     continue
-                c_arr = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
                 if len(c_arr) == cur_n_loops:
                     if not np.isfinite(c_arr).all():
                         c_arr = np.where(np.isfinite(c_arr), c_arr, np.float32(0.0))
@@ -1916,10 +2248,11 @@ class DocumentImporter:
                 ob.data.materials.append(None)
             ob.material_slots[idx].link = "OBJECT"
             ob.material_slots[idx].material = ma
-            for start_f, count_f in mat_prims.get(sym, ()):
-                end_f = min(start_f + count_f, n_polys)
-                if start_f < end_f:
-                    mat_idx_arr[start_f:end_f] = idx
+            face_ids = mat_prims.get(sym)
+            if face_ids is not None and face_ids.size > 0:
+                valid_ids = face_ids[face_ids < n_polys]
+                if valid_ids.size > 0:
+                    mat_idx_arr[valid_ids] = idx
                     has_mat_assign = True
         if has_mat_assign and n_polys > 0:
             mesh.polygons.foreach_set("material_index", mat_idx_arr)

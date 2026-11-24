@@ -369,6 +369,39 @@ def _resolve_parent_meshes(meshes: list[CdaeMesh], warnings: list[str]) -> None:
                         break
 
 
+def _detect_non_cdae_reason(data: bytes) -> str | None:
+    """Detect common non-.cdae file headers so users get a clear message instead of a bogus version number."""
+    if data.startswith((b"PK\x03\x04", b"PK\x05\x06", b"PK\x07\x08")):
+        return (
+            "This file is a ZIP archive, not a .cdae file "
+            "(use File > Import > Collada (.dae, .zae, .kmz) for .zip/.zae/.kmz archives)"
+        )
+    head_stripped = data[:64].lstrip(b" \t\r\n")
+    if (
+        head_stripped.startswith((b"<?xml", b"<COLLADA", b"<collada"))
+        or data.startswith(b"\xef\xbb\xbf<")
+    ):
+        return (
+            "This file is XML/COLLADA text, not a binary .cdae file "
+            "(use File > Import > Collada (.dae, .zae, .kmz))"
+        )
+    if data.startswith(b"\x89PNG\r\n\x1a\n"):
+        return "This file is a PNG image, not a .cdae file"
+    if data.startswith(b"DDS "):
+        return "This file is a DDS texture, not a .cdae file"
+    if data.startswith(b"BLENDER"):
+        return "This file is a Blender .blend file, not a .cdae file"
+    if data.startswith(b"glTF"):
+        return "This file is a glTF/GLB file, not a .cdae file"
+    if data.startswith(b"Kaydara FBX Binary"):
+        return "This file is an FBX file, not a .cdae file"
+    if data.startswith(b"\x1f\x8b"):
+        return "This file is a gzip archive, not a .cdae file"
+    if data.startswith(b"\x28\xb5\x2f\xfd"):
+        return "This file is a raw Zstandard stream, not a .cdae file"
+    return None
+
+
 def read_cdae_bytes(data: bytes) -> CdaeShape:
     """Parse a BeamNG .cdae v31 binary buffer into a CdaeShape."""
     if len(data) < 8:
@@ -376,9 +409,16 @@ def read_cdae_bytes(data: bytes) -> CdaeShape:
     if len(data) > _MAX_BODY_BYTES:
         raise CdaeError(f".cdae file exceeds 1 GiB safety limit ({len(data)} bytes)")
 
+    non_cdae = _detect_non_cdae_reason(data)
+    if non_cdae is not None:
+        raise CdaeError(non_cdae)
+
     version_val, header_size = struct.unpack_from("<II", data, 0)
     shape_version = version_val & 0xFF
+    reserved_byte = (version_val >> 8) & 0xFF
     exporter_version = version_val >> 16
+    if reserved_byte != 0 or shape_version == 0 or shape_version > 40:
+        raise CdaeError("Not a valid .cdae file (unrecognized header)")
     if shape_version != SUPPORTED_CDAE_VERSION:
         raise CdaeError(
             f"Unsupported .cdae version {shape_version} (exporter={exporter_version}); "

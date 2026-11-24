@@ -468,6 +468,27 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         subtype="ANGLE",
     )
 
+    archive_mode: EnumProperty(
+        name="Archive Models",
+        description=(
+            "How to handle archives (.zip/.zae/.kmz) containing multiple .dae files "
+            "(manifest.xml is always honored when present)"
+        ),
+        items=(
+            (
+                "ALL",
+                "All models (collections)",
+                "Import every .dae file in the archive into its own collection",
+            ),
+            (
+                "MAIN",
+                "Main model only",
+                "Import only the .dae matching the archive name (or shallowest) and warn about skipped models",
+            ),
+        ),
+        default="ALL",
+    )
+
     fix_orientation: BoolProperty(
         name="Fix Leaf Bones",
         description="Fix Orientation of Leaf Bones (Collada does only support Joints)",
@@ -513,6 +534,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         box.prop(self, "sharp_edges_from_normals")
         if self.sharp_edges_from_normals:
             box.prop(self, "sharp_angle_threshold")
+        box.prop(self, "archive_mode")
 
         box = layout.box()
         box.label(text="Armature Options", icon="ARMATURE_DATA")
@@ -537,6 +559,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
             fast_exact_normals=self.fast_exact_normals,
             sharp_edges_from_normals=self.sharp_edges_from_normals,
             sharp_angle_threshold=self.sharp_angle_threshold,
+            archive_mode=self.archive_mode,
             find_chains=self.find_chains,
             auto_connect=self.auto_connect,
             fix_orientation=self.fix_orientation,

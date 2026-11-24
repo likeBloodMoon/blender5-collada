@@ -1073,6 +1073,25 @@ def main() -> int:
         assert not r5b["ok"] and any("SortedMesh" in e and "3" in e for e in r5b["errors"]), r5b
         print("  PASS unsupported_mesh_type_rejected")
 
+        # Case 5d: Non-.cdae files (ZIP, XML/DAE, PNG, garbage) get clear non-.cdae errors (never "version 80")
+        non_cdae_cases = [
+            ("car.zip", b"PK\x03\x04" + b"\x00" * 32, "zip archive"),
+            ("car.dae", b'<?xml version="1.0"?><COLLADA/>', "xml/collada"),
+            ("tex.png", b"\x89PNG\r\n\x1a\n" + b"\x00" * 32, "png image"),
+            ("random.bin", b"NOTACDAE_RANDOM_HEADER_DATA", "not a valid .cdae"),
+        ]
+        for fname, payload, expect_sub in non_cdae_cases:
+            fp = os.path.join(workdir, fname)
+            with open(fp, "wb") as f:
+                f.write(payload)
+            rr = _run_import(runner, worker_path, fp)
+            assert not rr["ok"], f"{fname} unexpectedly succeeded"
+            joined = " ".join(rr["errors"]).lower()
+            assert expect_sub in joined and "version 80" not in joined, (
+                f"{fname}: expected '{expect_sub}' without 'version 80', got {rr['errors']}"
+            )
+        print("  PASS non_cdae_files_clear_error")
+
         # Case 5c: Active collection linking for both .dae and .cdae (HIGHEST and ALL modes)
         coll_worker = os.path.join(workdir, "_active_coll_worker.py")
         with open(coll_worker, "w", encoding="utf-8") as f:

@@ -8,6 +8,7 @@
 from __future__ import annotations
 
 import math
+import os
 from dataclasses import dataclass
 
 import bpy
@@ -15,6 +16,11 @@ import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 from mathutils.kdtree import KDTree
 
+from ..beamng_materials import (
+    alt_image_refs,
+    lookup_material_color_maps,
+    parse_beamng_materials_json,
+)
 from ..import_collada import DocumentImporter
 from .normal_table import U8_TO_NORMAL_TABLE
 from .reader import (
@@ -441,12 +447,98 @@ class CdaeImporter:
         for i in range(n_nodes):
             _get_world_mat(i)
 
+        # Optionally read sibling/parent main.materials.json for loose .cdae files on disk
+        cdae_dir = os.path.dirname(os.path.abspath(self.settings.filepath)) if self.settings.filepath else ""
+        beamng_mat_maps: dict[str, list[str]] = {}
+        if cdae_dir:
+            mat_candidates = [os.path.join(cdae_dir, "main.materials.json")]
+            parent_dir = os.path.dirname(cdae_dir)
+            if parent_dir and parent_dir != cdae_dir:
+                mat_candidates.append(os.path.join(parent_dir, "main.materials.json"))
+            for mpath in mat_candidates:
+                if not os.path.isfile(mpath):
+                    continue
+                try:
+                    with open(mpath, "r", encoding="utf-8", errors="replace") as mf:
+                        parsed = parse_beamng_materials_json(mf.read())
+                    for k, mlist in parsed.items():
+                        cur = beamng_mat_maps.setdefault(k, [])
+                        for item in mlist:
+                            if item not in cur:
+                                cur.append(item)
+                except Exception as exc:
+                    self.warnings.append(f"Could not parse '{os.path.basename(mpath)}': {exc}")
+
+        def _resolve_disk_tex(raw_ref: str) -> str | None:
+            if not cdae_dir:
+                return None
+            pdir = os.path.dirname(cdae_dir)
+            for ref in alt_image_refs(raw_ref):
+                norm = ref.replace("\\", os.sep).lstrip(os.sep)
+                bname = os.path.basename(norm)
+                cands = [
+                    os.path.join(cdae_dir, norm),
+                    os.path.join(cdae_dir, bname),
+                    os.path.join(cdae_dir, "textures", bname),
+                ]
+                if pdir and pdir != cdae_dir:
+                    cands.extend((
+                        os.path.join(pdir, norm),
+                        os.path.join(pdir, bname),
+                        os.path.join(pdir, "textures", bname),
+                    ))
+                for c in cands:
+                    if c and os.path.isfile(c):
+                        return c
+            return None
+
         # Create/reuse materials by name
         materials: list = []
         for mat in shape.materials:
             ma = bpy.data.materials.get(mat.name)
             if ma is None:
                 ma = bpy.data.materials.new(name=mat.name)
+            if beamng_mat_maps:
+                refs = lookup_material_color_maps(beamng_mat_maps, mat.name)
+                if refs:
+                    ntree = ma.node_tree
+                    shader_node = (
+                        next((n for n in ntree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+                        if ntree is not None
+                        else None
+                    )
+                    bc_sock = shader_node.inputs.get("Base Color") if shader_node is not None else None
+                    if bc_sock is None or not bc_sock.is_linked:
+                        ima = None
+                        for ref in refs:
+                            fp = _resolve_disk_tex(ref)
+                            if fp is not None:
+                                try:
+                                    ima = bpy.data.images.load(fp, check_existing=True)
+                                    break
+                                except Exception:
+                                    ima = None
+                        if ima is not None:
+                            if ntree is None:
+                                ma.use_nodes = True
+                                ntree = ma.node_tree
+                            if shader_node is None:
+                                shader_node = next((n for n in ntree.nodes if n.type == "BSDF_PRINCIPLED"), None)
+                            if shader_node is None:
+                                shader_node = ntree.nodes.new("ShaderNodeBsdfPrincipled")
+                                shader_node.location = (0, 300)
+                                out_node = next((n for n in ntree.nodes if n.type == "OUTPUT_MATERIAL"), None)
+                                if out_node is None:
+                                    out_node = ntree.nodes.new("ShaderNodeOutputMaterial")
+                                    out_node.location = (300, 300)
+                                ntree.links.new(shader_node.outputs[0], out_node.inputs[0])
+                            bc_sock = shader_node.inputs.get("Base Color")
+                            if bc_sock is not None and not bc_sock.is_linked:
+                                tn = ntree.nodes.new("ShaderNodeTexImage")
+                                tn.label = "Base Color"
+                                tn.location = (-300, 300)
+                                tn.image = ima
+                                ntree.links.new(tn.outputs[0], bc_sock)
             materials.append(ma)
 
         # Select detail levels to import

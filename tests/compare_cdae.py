@@ -65,21 +65,56 @@ def _quat16_angle_deg(q1: np.ndarray, q2: np.ndarray) -> float:
     return math.degrees(2.0 * math.acos(dot))
 
 
-def _match_mesh_normals(ma, mb, max_tris: int = 2000) -> list[float]:
-    """Compare corner normals (degrees) between original and re-exported CDAE meshes."""
-    if len(ma.indices) < 3 or len(mb.indices) < 3 or len(ma.norms) == 0 or len(mb.norms) == 0:
-        return []
-    ta = ma.indices[: (len(ma.indices) // 3) * 3].reshape(-1, 3)
-    tb = mb.indices[: (len(mb.indices) // 3) * 3].reshape(-1, 3)
-    if len(ta) > max_tris:
-        ta = ta[:max_tris]
-    if len(tb) > max_tris:
-        tb = tb[:max_tris]
-    pa = ma.verts[ta]  # (F, 3, 3)
-    pb = mb.verts[tb]
-    na = ma.norms[ta]
-    nb = mb.norms[tb]
+def _non_sliver_tri_indices(mesh, edge_tol: float = 1e-5, area_tol: float = 1e-12) -> np.ndarray:
+    """Return triangle vertex-index array (F, 3) excluding degenerate / zero-area sliver triangles."""
+    if len(mesh.indices) < 3 or len(mesh.verts) == 0:
+        return np.empty((0, 3), dtype=np.int64)
+    tris = mesh.indices[: (len(mesh.indices) // 3) * 3].reshape(-1, 3).astype(np.int64, copy=False)
+    valid_idx = (tris >= 0).all(axis=1) & (tris < len(mesh.verts)).all(axis=1)
+    tris = tris[valid_idx]
+    if len(tris) == 0:
+        return tris
+    p = mesh.verts[tris].astype(np.float64)
+    e01 = p[:, 1] - p[:, 0]
+    e12 = p[:, 2] - p[:, 1]
+    e20 = p[:, 0] - p[:, 2]
+    min_edge = np.minimum(
+        np.linalg.norm(e01, axis=1),
+        np.minimum(np.linalg.norm(e12, axis=1), np.linalg.norm(e20, axis=1)),
+    )
+    twice_area = np.linalg.norm(np.cross(e01, -e20), axis=1)
+    keep = (min_edge > edge_tol) & (twice_area > 2.0 * area_tol)
+    return tris[keep]
 
+
+def _match_mesh_normals(ma, mb) -> tuple[list[float], int]:
+    """Compare corner normals (degrees) across EVERY triangle between two CDAE meshes.
+
+    Skips zero-length normals (present in some game files) instead of reporting false 90° errors.
+    Returns (angle_degrees_list, skipped_zero_norm_corners).
+    """
+    if len(ma.indices) < 3 or len(mb.indices) < 3 or len(ma.norms) == 0 or len(mb.norms) == 0:
+        return [], 0
+    ta = _non_sliver_tri_indices(ma)
+    tb = _non_sliver_tri_indices(mb)
+    if len(ta) == 0 or len(tb) == 0:
+        return [], 0
+
+    pa = ma.verts[ta].astype(np.float64)  # (Fa, 3, 3)
+    pb = mb.verts[tb].astype(np.float64)  # (Fb, 3, 3)
+    na = ma.norms[ta].astype(np.float64)
+    nb = mb.norms[tb].astype(np.float64)
+
+    la = np.linalg.norm(na, axis=2)  # (Fa, 3)
+    lb = np.linalg.norm(nb, axis=2)  # (Fb, 3)
+    va = la > 1e-6
+    vb = lb > 1e-6
+    ua = np.zeros_like(na)
+    ub = np.zeros_like(nb)
+    ua[va] = na[va] / la[va, None]
+    ub[vb] = nb[vb] / lb[vb, None]
+
+    # Quantize centroids for O(N) spatial bucketing across all triangles
     tol = 1e-3
     ca = np.round(pa.mean(axis=1) / tol).astype(np.int64)
     cb = np.round(pb.mean(axis=1) / tol).astype(np.int64)
@@ -87,33 +122,67 @@ def _match_mesh_normals(ma, mb, max_tris: int = 2000) -> list[float]:
     for bi, key in enumerate(map(tuple, cb.tolist())):
         buckets.setdefault(key, []).append(bi)
 
+    # Pre-unpack to Python lists/tuples for fast inner loop without NumPy scalar overhead
     angs: list[float] = []
+    skipped_zero = 0
     used_b: set[int] = set()
-    for ai, key in enumerate(map(tuple, ca.tolist())):
-        cands = buckets.get(key)
+    ca_list = ca.tolist()
+
+    for ai, key_l in enumerate(ca_list):
+        cands = buckets.get((key_l[0], key_l[1], key_l[2]))
         if not cands:
             continue
         p0 = pa[ai]
-        n0 = na[ai]
+        u0 = ua[ai]
+        v0 = va[ai]
         best = None
         best_score = -4.0
         for bi in cands:
             if bi in used_b:
                 continue
             p1 = pb[bi]
-            dmat = np.linalg.norm(p0[:, None, :] - p1[None, :, :], axis=2)
-            perm = dmat.argmin(axis=1)
-            if len(set(perm.tolist())) == 3 and dmat[0, perm[0]] < 2e-3 and dmat[1, perm[1]] < 2e-3 and dmat[2, perm[2]] < 2e-3:
-                score = float(np.sum(n0 * nb[bi][perm]))
+            # Fast 3x3 squared distance matrix
+            diff = p0[:, None, :] - p1[None, :, :]
+            d2 = (diff * diff).sum(axis=2)
+            # Greedy/exact min per row (3x3)
+            c0 = int(d2[0].argmin())
+            c1 = int(d2[1].argmin())
+            c2 = int(d2[2].argmin())
+            if (
+                c0 != c1
+                and c1 != c2
+                and c0 != c2
+                and d2[0, c0] < 4e-6
+                and d2[1, c1] < 4e-6
+                and d2[2, c2] < 4e-6
+            ):
+                perm = (c0, c1, c2)
+                u1 = ub[bi]
+                score = float(
+                    (u0[0] * u1[c0]).sum()
+                    + (u0[1] * u1[c1]).sum()
+                    + (u0[2] * u1[c2]).sum()
+                )
                 if score > best_score:
                     best_score = score
                     best = (bi, perm)
         if best is not None:
             bi, perm = best
             used_b.add(bi)
-            dots = np.clip(np.sum(n0 * nb[bi][perm], axis=1), -1.0, 1.0)
-            angs.extend(np.degrees(np.arccos(dots)).tolist())
-    return angs
+            u1 = ub[bi]
+            v1 = vb[bi]
+            for k in range(3):
+                pk = perm[k]
+                if not (v0[k] and v1[pk]):
+                    skipped_zero += 1
+                    continue
+                dot = float((u0[k] * u1[pk]).sum())
+                if dot > 1.0:
+                    dot = 1.0
+                elif dot < -1.0:
+                    dot = -1.0
+                angs.append(math.degrees(math.acos(dot)))
+    return angs, skipped_zero
 
 
 def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4, check_normals: bool = False) -> dict:
@@ -220,8 +289,10 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4, 
         "norm_deg_p99": float("nan"),
         "norm_deg_max": float("nan"),
         "norm_corners_compared": 0,
+        "norm_zero_corners_skipped": 0,
     }
     all_norm_angs: list[float] = []
+    total_zero_norm_skipped = 0
 
     for nm in common_objs:
         ma, mb = ma_map[nm], mb_map[nm]
@@ -241,23 +312,36 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4, 
         )
         mesh_stats["max_radius_diff"] = max(mesh_stats["max_radius_diff"], abs(ma.radius - mb.radius))
 
+        # Compute UV bounding boxes over vertices referenced by non-sliver triangles so
+        # zero-area sliver triangles removed by Exact mode do not trigger false UV mismatches.
+        ta_valid = _non_sliver_tri_indices(ma)
+        tb_valid = _non_sliver_tri_indices(mb)
+        va_used = np.unique(ta_valid) if len(ta_valid) > 0 else np.empty(0, dtype=np.int64)
+        vb_used = np.unique(tb_valid) if len(tb_valid) > 0 else np.empty(0, dtype=np.int64)
+
         if (len(ma.tverts) > 0) != (len(mb.tverts) > 0):
             mesh_stats["uv0_present_mismatch"] += 1
-        elif len(ma.tverts) > 0:
-            d_uv0 = max(
-                float(np.abs(ma.tverts.min(0) - mb.tverts.min(0)).max()),
-                float(np.abs(ma.tverts.max(0) - mb.tverts.max(0)).max()),
-            )
-            mesh_stats["max_uv0_bbox_diff"] = max(mesh_stats["max_uv0_bbox_diff"], d_uv0)
+        elif len(ma.tverts) > 0 and len(va_used) > 0 and len(vb_used) > 0:
+            uv0_a = ma.tverts[va_used[va_used < len(ma.tverts)]]
+            uv0_b = mb.tverts[vb_used[vb_used < len(mb.tverts)]]
+            if len(uv0_a) > 0 and len(uv0_b) > 0:
+                d_uv0 = max(
+                    float(np.abs(uv0_a.min(0) - uv0_b.min(0)).max()),
+                    float(np.abs(uv0_a.max(0) - uv0_b.max(0)).max()),
+                )
+                mesh_stats["max_uv0_bbox_diff"] = max(mesh_stats["max_uv0_bbox_diff"], d_uv0)
 
         if (len(ma.tverts2) > 0) != (len(mb.tverts2) > 0):
             mesh_stats["uv1_present_mismatch"] += 1
-        elif len(ma.tverts2) > 0:
-            d_uv1 = max(
-                float(np.abs(ma.tverts2.min(0) - mb.tverts2.min(0)).max()),
-                float(np.abs(ma.tverts2.max(0) - mb.tverts2.max(0)).max()),
-            )
-            mesh_stats["max_uv1_bbox_diff"] = max(mesh_stats["max_uv1_bbox_diff"], d_uv1)
+        elif len(ma.tverts2) > 0 and len(va_used) > 0 and len(vb_used) > 0:
+            uv1_a = ma.tverts2[va_used[va_used < len(ma.tverts2)]]
+            uv1_b = mb.tverts2[vb_used[vb_used < len(mb.tverts2)]]
+            if len(uv1_a) > 0 and len(uv1_b) > 0:
+                d_uv1 = max(
+                    float(np.abs(uv1_a.min(0) - uv1_b.min(0)).max()),
+                    float(np.abs(uv1_a.max(0) - uv1_b.max(0)).max()),
+                )
+                mesh_stats["max_uv1_bbox_diff"] = max(mesh_stats["max_uv1_bbox_diff"], d_uv1)
 
         if (len(ma.colors) > 0) != (len(mb.colors) > 0):
             mesh_stats["color_present_mismatch"] += 1
@@ -271,7 +355,9 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4, 
                     mesh_stats["max_tan_norm_err"], float(np.abs(tlens[nz] - 1.0).max())
                 )
         if check_normals:
-            all_norm_angs.extend(_match_mesh_normals(ma, mb))
+            angs_m, z_skip = _match_mesh_normals(ma, mb)
+            all_norm_angs.extend(angs_m)
+            total_zero_norm_skipped += z_skip
 
     if all_norm_angs:
         arr_n = np.array(all_norm_angs, dtype=np.float64)
@@ -279,6 +365,7 @@ def compare_cdae_files(orig_path: str, exp_path: str, *, pos_tol: float = 1e-4, 
         mesh_stats["norm_deg_p99"] = float(np.percentile(arr_n, 99))
         mesh_stats["norm_deg_max"] = float(arr_n.max())
         mesh_stats["norm_corners_compared"] = len(all_norm_angs)
+        mesh_stats["norm_zero_corners_skipped"] = total_zero_norm_skipped
 
     # 6. Materials
     mats_a = {m.name for m in sa.materials}
@@ -397,7 +484,8 @@ def run_oracle(all_modes: bool = False) -> int:
                       f"uv1_miss={ms['uv1_present_mismatch']} (max_bb={ms['max_uv1_bbox_diff']:.6f}), "
                       f"col_miss={ms['color_present_mismatch']}, tan_miss={ms['tan_present_mismatch']} (max_len_err={ms['max_tan_norm_err']:.5f})")
                 print(f"  Normals deg: med={ms['norm_deg_med']:.4f}°, p99={ms['norm_deg_p99']:.4f}°, "
-                      f"max={ms['norm_deg_max']:.4f}° ({ms['norm_corners_compared']} corners)")
+                      f"max={ms['norm_deg_max']:.4f}° ({ms['norm_corners_compared']} corners, "
+                      f"{ms['norm_zero_corners_skipped']} zero-len skipped)")
                 print(f"  Materials:   orig={rep['materials']['orig']}, exp={rep['materials']['exp']}, "
                       f"only_orig={rep['materials']['only_orig']}, only_exp={rep['materials']['only_exp']}")
         return 0

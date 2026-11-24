@@ -4,6 +4,17 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.4] - 2026-11-24
+
+- Fixed: multi-`.dae` zip archive import, preserving UVs/colors/normals when dropping duplicate or degenerate triangles, `.dds` fallback & BeamNG `main.materials.json` texture loading, clearer non-`.cdae` file errors, and `compare_cdae.py` oracle accuracy
+
+### Details
+- **Multi-`.dae` archive import** (`import_collada.py`, `__init__.py`): added **Archive Models** (`archive_mode`: **All models (collections)** *(default)* or **Main model only**) for `.zip`/`.zae`/`.kmz` archives. `manifest.xml` `<dae_root>` is still honored when present; otherwise `.dae` entries are ranked preferring the `.dae` matching the archive name and shallowest path (ignoring `__MACOSX` / `._*` junk). In **All models** mode, multi-`.dae` car archives import every `.dae` into its own collection under the active collection; in **Main model only** mode, the main `.dae` is imported and skipped `.dae` files are reported in a warning.
+- **Preserve UVs, colors, and normals when dropping bad faces** (`import_collada.py`): `_read_mesh()` now filters degenerate faces (repeated vertex in a face) and duplicate faces (same sorted vertex set) together with their per-loop UV, vertex color, normal, and material-assignment arrays *before* constructing the Blender mesh, so one bad/duplicate triangle no longer causes `me.validate()` to discard all UVs, colors, and custom normals for the entire mesh.
+- **`.dds` fallback & lenient `main.materials.json` texture loading** (`beamng_materials.py`, `import_collada.py`, `cdae/importer.py`): when a referenced `.png`/raster texture is missing, the importer now also checks for the same filename with `.dds` (and `.dds` → `.png`), both inside archives and on disk. Added a lenient JSON parser (supporting trailing commas and `//`/`/* */` comments) that reads `main.materials.json` and links `baseColorMap` / `colorMap` / `diffuseMap` textures to untextured materials without warning on external `common.zip` textures.
+- **Clear non-`.cdae` file errors** (`cdae/reader.py`): handing a `.zip`, `.dae`/XML, `.png`, `.dds`, `.blend`, or other non-`.cdae` file to the `.cdae` importer now reports a clear format error instead of a misleading `"Unsupported .cdae version 80"`.
+- **Oracle script accuracy** (`tests/compare_cdae.py`): removed the 2,000-triangle sampling cap in `_match_mesh_normals()` so every triangle is compared, skipped zero-length normals instead of reporting false `90°` errors, and computed UV0/UV1 bounding boxes over non-sliver triangles so zero-area slivers removed in `Exact` mode do not cause false UV mismatches.
+
 ## [1.4.3] - 2026-11-24
 
 - Fixed: prevented transitive vertex-merge chaining in `.cdae` import and added real-file skinned rest-pose verification

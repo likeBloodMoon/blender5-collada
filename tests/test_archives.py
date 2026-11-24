@@ -54,7 +54,42 @@ def _make_png(width: int = 4, height: int = 4, rgba: tuple[int, int, int, int] =
     return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", ihdr) + chunk(b"IDAT", idat) + chunk(b"IEND", b"")
 
 
-def _make_textured_dae(geom_name: str, image_uri: str | None) -> str:
+def _make_dds(width: int = 4, height: int = 4, rgba: tuple[int, int, int, int] = (255, 0, 0, 255)) -> bytes:
+    """Generate a valid uncompressed 32-bit RGBA DDS image in pure Python."""
+    r, g, b, a = rgba
+    # DDS_HEADER (124 bytes): dwSize=124, dwFlags=CAPS|HEIGHT|WIDTH|PIXELFORMAT|PITCH (0x100F)
+    # DDS_PIXELFORMAT (32 bytes): dwSize=32, dwFlags=DDPF_RGB|DDPF_ALPHAPIXELS (0x41), 32-bit RGBA masks
+    pitch = width * 4
+    ddspf = struct.pack(
+        "<8I",
+        32,            # dwSize
+        0x41,          # DDPF_RGB | DDPF_ALPHAPIXELS
+        0,             # dwFourCC
+        32,            # dwRGBBitCount
+        0x000000FF,    # dwRBitMask
+        0x0000FF00,    # dwGBitMask
+        0x00FF0000,    # dwBBitMask
+        0xFF000000,    # dwABitMask
+    )
+    header = struct.pack(
+        "<7I",
+        124,           # dwSize
+        0x0000100F,    # DDSD_CAPS | DDSD_HEIGHT | DDSD_WIDTH | DDSD_PITCH | DDSD_PIXELFORMAT
+        height,
+        width,
+        pitch,
+        0,             # dwDepth
+        0,             # dwMipMapCount
+    )
+    header += b"\x00" * (11 * 4)  # dwReserved1[11]
+    header += ddspf
+    header += struct.pack("<5I", 0x1000, 0, 0, 0, 0)  # DDSCAPS_TEXTURE + caps2..4 + reserved2
+    assert len(header) == 124
+    pixels = bytes((r, g, b, a)) * (width * height)
+    return b"DDS " + header + pixels
+
+
+def _make_textured_dae(geom_name: str, image_uri: str | None, mat_name: str = "Mat") -> str:
     img_lib = ""
     mat_diff = "<color>0.5 0.5 0.5 1</color>"
     newparams = ""
@@ -72,7 +107,7 @@ def _make_textured_dae(geom_name: str, image_uri: str | None) -> str:
 <COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
   <asset><up_axis>Z_UP</up_axis></asset>{img_lib}
   <library_effects>
-    <effect id="Mat-fx">
+    <effect id="{mat_name}-fx">
       <profile_COMMON>{newparams}
         <technique sid="common">
           <lambert><diffuse>{mat_diff}</diffuse></lambert>
@@ -81,7 +116,7 @@ def _make_textured_dae(geom_name: str, image_uri: str | None) -> str:
     </effect>
   </library_effects>
   <library_materials>
-    <material id="Mat-mat" name="Mat"><instance_effect url="#Mat-fx"/></material>
+    <material id="{mat_name}-mat" name="{mat_name}"><instance_effect url="#{mat_name}-fx"/></material>
   </library_materials>
   <library_geometries>
     <geometry id="{geom_name}-mesh" name="{geom_name}">
@@ -105,7 +140,7 @@ def _make_textured_dae(geom_name: str, image_uri: str | None) -> str:
         <vertices id="{geom_name}-verts">
           <input semantic="POSITION" source="#{geom_name}-pos"/>
         </vertices>
-        <triangles material="Mat-mat" count="2">
+        <triangles material="{mat_name}-mat" count="2">
           <input semantic="VERTEX" source="#{geom_name}-verts" offset="0"/>
           <input semantic="TEXCOORD" source="#{geom_name}-uv" offset="1" set="0"/>
           <p>0 0 1 1 2 2 0 0 2 2 3 3</p>
@@ -118,7 +153,7 @@ def _make_textured_dae(geom_name: str, image_uri: str | None) -> str:
       <node id="{geom_name}" name="{geom_name}" type="NODE">
         <instance_geometry url="#{geom_name}-mesh">
           <bind_material><technique_common>
-            <instance_material symbol="Mat-mat" target="#Mat-mat"/>
+            <instance_material symbol="{mat_name}-mat" target="#{mat_name}-mat"/>
           </technique_common></bind_material>
         </instance_geometry>
       </node>
@@ -141,6 +176,7 @@ else:
     argv = argv[1:]
 
 repo_root, archive_path, out_json, save_blend = argv[0], argv[1], argv[2], argv[3]
+archive_mode = argv[4] if len(argv) > 4 else ""
 sys.path.insert(0, repo_root)
 
 import bpy
@@ -151,7 +187,10 @@ bpy.ops.wm.read_factory_settings(use_empty=True)
 if not hasattr(bpy.ops.wm, "collada_import"):
     io_scene_collada.register()
 
-settings = ImportSettings(filepath=archive_path)
+kwargs = {"filepath": archive_path}
+if archive_mode:
+    kwargs["archive_mode"] = archive_mode
+settings = ImportSettings(**kwargs)
 importer = DocumentImporter(bpy.context, settings)
 ok = importer.import_document()
 
@@ -169,6 +208,7 @@ def snapshot_state():
             "first_pixel": [round(float(c), 3) for c in px],
         })
     linked_base_colors = []
+    mat_links = {}
     for ma in bpy.data.materials:
         if ma.node_tree:
             for n in ma.node_tree.nodes:
@@ -178,10 +218,14 @@ def snapshot_state():
                         from_node = sock.links[0].from_node
                         if from_node.type == "TEX_IMAGE" and from_node.image is not None:
                             linked_base_colors.append(from_node.image.name)
+                            mat_links[ma.name] = from_node.image.name
+    colls = {c.name: sorted(o.name for o in c.objects) for c in bpy.data.collections}
     return {
         "objects": sorted(ob.name for ob in bpy.data.objects),
+        "collections": colls,
         "images": imgs,
         "linked_base_colors": linked_base_colors,
+        "mat_links": mat_links,
     }
 
 
@@ -204,12 +248,19 @@ with open(out_json, "w", encoding="utf-8") as f:
 '''
 
 
-def _run_archive(runner: list[str], worker_path: str, archive_path: str, save_blend: str = "") -> dict:
-    out_json = archive_path + ".result.json"
+def _run_archive(
+    runner: list[str],
+    worker_path: str,
+    archive_path: str,
+    save_blend: str = "",
+    archive_mode: str = "",
+) -> dict:
+    suffix = f".{archive_mode}" if archive_mode else ""
+    out_json = archive_path + suffix + ".result.json"
     if runner[0] == sys.executable:
-        cmd = [runner[0], worker_path, REPO_ROOT, archive_path, out_json, save_blend]
+        cmd = [runner[0], worker_path, REPO_ROOT, archive_path, out_json, save_blend, archive_mode]
     else:
-        cmd = [*runner, worker_path, "--", REPO_ROOT, archive_path, out_json, save_blend]
+        cmd = [*runner, worker_path, "--", REPO_ROOT, archive_path, out_json, save_blend, archive_mode]
     proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if proc.returncode != 0:
         raise AssertionError(
@@ -260,15 +311,24 @@ def main() -> int:
             assert len(snap["linked_base_colors"]) == 1, f"Case 1 ({label}): Base Color not linked: {snap}"
         print("  PASS case1_manifest_and_reopen")
 
-        # Case 2: no manifest, two .dae files -> deterministic sorted pick (alpha.dae before zeta.dae)
-        c2_zip = os.path.join(workdir, "case2_deterministic.zip")
+        # Case 2: multi-.dae archive without manifest (BeamNG covet.zip layout: 3wheel/ sorts before covet.dae)
+        c2_zip = os.path.join(workdir, "covet.zip")
         with zipfile.ZipFile(c2_zip, "w", zipfile.ZIP_DEFLATED) as zf:
-            zf.writestr("zeta.dae", _make_textured_dae("ZetaMesh", None))
-            zf.writestr("alpha.dae", _make_textured_dae("AlphaMesh", None))
-        r2 = _run_archive(runner, worker_path, c2_zip)
-        assert r2["ok"], f"Case 2 failed: {r2['errors']}"
-        assert r2["before"]["objects"] == ["AlphaMesh"], f"Case 2 wrong pick: {r2['before']['objects']}"
-        print("  PASS case2_deterministic_pick")
+            zf.writestr("vehicles/covet/3wheel/covet_3wheel.dae", _make_textured_dae("ThreeWheelMesh", None))
+            zf.writestr("vehicles/covet/covet.dae", _make_textured_dae("CovetMainMesh", None))
+            zf.writestr("__MACOSX/vehicles/covet/._covet.dae", "not xml")
+        # 2a. Default ALL mode: imports every .dae into its own collection
+        r2_all = _run_archive(runner, worker_path, c2_zip, archive_mode="ALL")
+        assert r2_all["ok"], f"Case 2 (ALL) failed: {r2_all['errors']}"
+        assert r2_all["before"]["objects"] == ["CovetMainMesh", "ThreeWheelMesh"], r2_all["before"]
+        assert r2_all["before"]["collections"].get("covet") == ["CovetMainMesh"], r2_all["before"]["collections"]
+        assert r2_all["before"]["collections"].get("covet_3wheel") == ["ThreeWheelMesh"], r2_all["before"]["collections"]
+        # 2b. MAIN mode: prefers covet.dae (matches zip name, shallower) over 3wheel/covet_3wheel.dae and warns
+        r2_main = _run_archive(runner, worker_path, c2_zip, archive_mode="MAIN")
+        assert r2_main["ok"], f"Case 2 (MAIN) failed: {r2_main['errors']}"
+        assert r2_main["before"]["objects"] == ["CovetMainMesh"], f"Case 2 (MAIN) wrong pick: {r2_main['before']}"
+        assert any("skipped 1 other" in w and "covet_3wheel.dae" in w for w in r2_main["warnings"]), r2_main["warnings"]
+        print("  PASS case2_multi_dae_all_and_main_ranking")
 
         # Case 3: texture referenced with Windows backslashes and different case
         c3_kmz = os.path.join(workdir, "case3_win_case.kmz")
@@ -337,7 +397,80 @@ def main() -> int:
         ), f"Case 7 expected clear zip-bomb error, got: {r7['errors']}"
         print(f"  PASS case7_zipbomb_guard (error: {r7['errors'][0]})")
 
-        print("\nAll 7 archive tests passed!")
+        # Case 8: .png reference falls back to .dds shipped inside the archive (BeamNG Barstow case)
+        red_dds = _make_dds(4, 4, (255, 0, 0, 255))
+        blue_dds = _make_dds(4, 4, (0, 0, 255, 255))
+        c8_zip = os.path.join(workdir, "barstow_dds_fallback.zip")
+        with zipfile.ZipFile(c8_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "vehicles/barstow/barstow.dae",
+                _make_textured_dae("BarstowInterior", r"D:\BeamNG\barstow_interior_b.color.png", mat_name="barstow_interior"),
+            )
+            zf.writestr("vehicles/barstow/barstow_interior_b.color.dds", red_dds)
+        r8 = _run_archive(runner, worker_path, c8_zip)
+        assert r8["ok"], f"Case 8 failed: {r8['errors']}"
+        assert len(r8["before"]["images"]) == 1, f"Case 8 missing DDS fallback image: {r8['before']}"
+        im8 = r8["before"]["images"][0]
+        assert im8["packed"] and im8["has_data"] and im8["size"] == [4, 4], im8
+        assert im8["first_pixel"][0] > 0.9 and im8["first_pixel"][2] < 0.1, im8
+        assert r8["before"]["mat_links"].get("barstow_interior") == "barstow_interior_b.color.dds", r8["before"]
+        print("  PASS case8_png_to_dds_fallback")
+
+        # Case 9: BeamNG main.materials.json (with trailing commas + comments) fills untextured .dae materials
+        c9_zip = os.path.join(workdir, "wigeon.zip")
+        main_mats_json = """{
+          // Base vehicle material using PBR baseColorMap referencing .png while .dds is in zip
+          "wigeon_body": {
+            "name": "wigeon_body",
+            "mapTo": "wigeon_body",
+            "Stages": [
+              {
+                "baseColorMap": "/vehicles/wigeon/wigeon_body_b.color.png",
+              },
+              {},
+            ],
+          },
+          // Material whose texture lives in common.zip (missing here -> must NOT warn or error)
+          "common_rubber": {
+            "name": "common_rubber",
+            "mapTo": "common_rubber",
+            "Stages": [
+              {
+                "colorMap": "/vehicles/common/tires/rubber_d.dds",
+              }
+            ]
+          },
+        }"""
+        decal_mats_json = """{
+          /* dynamicDecals with trailing comma */
+          "wigeon_decal": {
+            "name": "wigeon_decal",
+            "mapTo": "wigeon_decal",
+            "Stages": [
+              {
+                "colorMap": "vehicles/wigeon/dynamicDecals/decal_d.png",
+              },
+            ],
+          },
+        }"""
+        with zipfile.ZipFile(c9_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("vehicles/wigeon/wigeon.dae", _make_textured_dae("WigeonBody", None, mat_name="wigeon_body"))
+            zf.writestr("vehicles/wigeon/decals.dae", _make_textured_dae("WigeonDecal", None, mat_name="wigeon_decal"))
+            zf.writestr("vehicles/wigeon/common_part.dae", _make_textured_dae("CommonPart", None, mat_name="common_rubber"))
+            zf.writestr("vehicles/wigeon/main.materials.json", main_mats_json)
+            zf.writestr("vehicles/wigeon/dynamicDecals/main.materials.json", decal_mats_json)
+            zf.writestr("vehicles/wigeon/wigeon_body_b.color.dds", blue_dds)
+            zf.writestr("vehicles/wigeon/dynamicDecals/decal_d.png", green_png)
+        r9 = _run_archive(runner, worker_path, c9_zip)
+        assert r9["ok"], f"Case 9 failed: {r9['errors']}"
+        assert not r9["warnings"], f"Case 9 unexpected warnings (trailing comma or common.zip): {r9['warnings']}"
+        assert r9["before"]["mat_links"].get("wigeon_body") == "wigeon_body_b.color.dds", r9["before"]
+        assert r9["before"]["mat_links"].get("wigeon_decal") == "decal_d.png", r9["before"]
+        assert "common_rubber" not in r9["before"]["mat_links"], r9["before"]
+        assert set(r9["before"]["collections"].keys()) == {"wigeon", "decals", "common_part"}, r9["before"]["collections"]
+        print("  PASS case9_beamng_materials_json_lenient_and_dds")
+
+        print("\nAll 9 archive tests passed!")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
