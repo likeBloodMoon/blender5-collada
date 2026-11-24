@@ -12,13 +12,13 @@ This extension brings back the full Blender 4.5.1 COLLADA importer and exporter 
 
 ## Install
 
-1. Grab the zip for your OS from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases) (e.g., `collada_io-1.4.3-windows_x64.zip`), or `collada_io-1.4.3-pure-python.zip` if you prefer no compiled binary.
+1. Grab the zip for your OS from [**Releases**](https://github.com/likeBloodMoon/blender5-collada/releases) (e.g., `collada_io-1.4.4-windows_x64.zip`), or `collada_io-1.4.4-pure-python.zip` if you prefer no compiled binary.
 2. Drag and drop the `.zip` onto Blender, **or** go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…** and pick the `.zip`.
 3. **Updating**: After installing a new version over an existing one, restart Blender. Blender keeps the old add-on code loaded until restart.
 
 CLI install:
 ```bash
-blender --command extension install-file -r user_default -e collada_io-1.4.3-windows_x64.zip
+blender --command extension install-file -r user_default -e collada_io-1.4.4-windows_x64.zip
 ```
 
 ### About the optional native binary (`fastfmt.dll` / `libfastfmt.so` / `libfastfmt.dylib`)
@@ -62,11 +62,11 @@ Automatic sharp-edge reconstruction on a vehicle fender imported from `.dae` (lo
 ## What's Supported
 
 - **Geometry**: `<triangles>`, `<polylist>`, `<polygons>` (including `<ph>`), `<trifans>`, `<tristrips>`, `<lines>`, n-gons, custom split normals, multiple UV maps, byte vertex colors, modifiers, and instancing.
-- **Materials & Textures**: Principled BSDF, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, texture copying on export, and automatic fallback lookup for relative/subfolder textures (`textures/`, `images/`, `maps/`) on import.
+- **Materials & Textures**: Principled BSDF, `<lambert>` / `<phong>` / `<blinn>` / `<constant>`, texture copying on export, automatic fallback lookup for relative/subfolder textures (`textures/`, `images/`, `maps/`) and `.png` → `.dds` fallback on import, plus lenient BeamNG `main.materials.json` `baseColorMap` / `colorMap` loading.
 - **Rigs & Morphs**: Armatures, skinning (`<skin>`, vertex weights, `<bind_shape_matrix>`, `Name_array` and `IDREF_array`), bone collections, shape keys (`<morph>`), OpenSim export, and armature import options (`auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info`).
 - **Animation**: Object and pose-bone animations (sampled matrices, decomposed transforms, and keyframe curves) using Blender 5.0+'s layered Action / Slot / Channelbag API.
 - **Cameras & Lights**: Perspective/ortho cameras and Point, Sun, Spot, and Area lights with Blender `<extra>` profile data.
-- **Archives**: Direct import of `.zae`, `.kmz`, and `.zip` archives with `manifest.xml` lookup and automatic texture packing.
+- **Archives**: Direct in-memory import of `.zae`, `.kmz`, and `.zip` archives with `manifest.xml` support, multi-model **Archive Models** modes (**All models (collections)** default or **Main model only** preferring the `.dae` matching the archive name), and automatic texture packing.
 - **Performance**: Mesh export and import use `foreach_get` / `foreach_set` with NumPy (~4.2 s export / ~7.0 s import on a 500k-triangle mesh).
 
 ---
@@ -94,7 +94,7 @@ In addition to `.dae`, the extension includes native **BeamNG Cached Collada (`.
 - **Verification**:
   - **Tested against all 6,319 v31 `.cdae` files shipped with BeamNG.drive `0.40.6.0`** (`172` archives scanned read-only in `16.0 s`: `6,319 / 6,319` v31 files parsed cleanly with 0 errors; `39 / 39` animated files import cleanly; `2` legacy v26 files rejected cleanly).
   - **Paired `.dae` vs `.cdae` verification** (`wigeon_bigwing`, `wigeon`, `midtruck` — `396` objects): `0.000000 m` location error, `max 0.0396°` `Quat16` rotation error, `0.000000` median UV0/UV1 error, `≤ 1/255` sRGB vertex color diff, `100.00%` per-face material match.
-  - **Export round-trip oracle** (`import → export → compare_cdae.py` on `wigeon_bigwing`, `wigeon`, `midtruck`): `0.000000` diff on all shape scalars, all 19 shape vectors, and all `396/396` mesh bounds/centers/radii/UVs/materials; default **Exact** mode achieves `0.0000°` median / `0.0280°` p99 / `≤ 0.1545°` max normal delta across `646,632` corners (`Unmerged`: `0.0000°` median / `0.0280°` p99 / `≤ 0.0442°` max).
+  - **Export round-trip oracle** (`import → export → compare_cdae.py` on `wigeon_bigwing`, `wigeon`, `midtruck`): `0.000000` diff on all shape scalars, all 19 shape vectors, and all `396/396` mesh bounds/centers/radii/UVs/materials; default **Exact** mode achieves `0.0000°` median / `0.0000°` p99 / `0.0000°` max normal delta across all `1,098,870` non-sliver corners.
   - Real game files are never committed to the repository; CI runs synthetic unit, round-trip, and fuzz tests only. See [`docs/cdae_format.md`](docs/cdae_format.md) and [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 ---
