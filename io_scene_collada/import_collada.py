@@ -1126,6 +1126,7 @@ class DocumentImporter:
         total_faces = 0
         total_loops = 0
         dropped_faces_total = 0
+        invalid_vcount_total = 0
 
         def extract_vcolname(src_id: str, src_name: str) -> str:
             if src_name and src_name != src_id:
@@ -1231,21 +1232,31 @@ class DocumentImporter:
             elif tag == "polylist":
                 vc_el = _find_child(child, "vcount")
                 p_el = _find_child(child, "p")
-                if vc_el is not None and vc_el.text and p_el is not None and p_el.text:
+                if vc_el is not None and vc_el.text:
                     vc_raw = _parse_i32_np(vc_el.text, self.warnings, f"<polylist>/<vcount> of geometry '{geom_name}'")
+                    if vc_raw is None or vc_raw.size == 0:
+                        continue
+                    if p_el is None or not p_el.text:
+                        n_lt3 = int((vc_raw < 3).sum())
+                        invalid_vcount_total += n_lt3
+                        if n_lt3 < vc_raw.size:
+                            self.warnings.append(
+                                f"Geometry '{geom_name}': <polylist> has empty <p> with non-zero <vcount>; skipped"
+                            )
+                        continue
                     p_raw = _parse_i32_np(p_el.text, self.warnings, f"<polylist>/<p> of geometry '{geom_name}'")
-                    if vc_raw is None or p_raw is None:
+                    if p_raw is None:
                         continue
                     n_tuples = p_raw.size // num_inputs
                     p_2d = p_raw[:n_tuples * num_inputs].reshape(n_tuples, num_inputs)
-                    if vc_raw.size > 0 and bool((vc_raw >= 3).all()):
-                        need = int(vc_raw.sum())
+                    if bool((vc_raw >= 3).all()):
+                        need = int(vc_raw.sum(dtype=np.int64))
                         if need <= n_tuples:
                             prim_vcounts = vc_raw
                             prim_p = p_2d[:need]
                         else:
                             # vcount sum exceeds <p>; keep only complete polygons
-                            cs = np.cumsum(vc_raw)
+                            cs = np.cumsum(vc_raw, dtype=np.int64)
                             valid_n = int(np.searchsorted(cs, n_tuples, side="right"))
                             if valid_n > 0:
                                 prim_vcounts = vc_raw[:valid_n]
@@ -1253,15 +1264,26 @@ class DocumentImporter:
                             self.warnings.append(
                                 f"Geometry '{geom_name}': <polylist> vcount sum ({need}) exceeds <p> tuples ({n_tuples}); truncated"
                             )
-                    elif vc_raw.size > 0:
+                    else:
                         valid_vc: list[int] = []
                         valid_rows: list[np.ndarray] = []
                         cursor = 0
+                        truncated = False
                         for vc in vc_raw.tolist():
-                            if vc >= 3 and cursor + vc <= n_tuples:
+                            if vc < 3:
+                                invalid_vcount_total += 1
+                                cursor += max(vc, 0)
+                            elif cursor + vc <= n_tuples:
                                 valid_vc.append(vc)
                                 valid_rows.append(p_2d[cursor:cursor + vc])
-                            cursor += abs(vc)
+                                cursor += vc
+                            else:
+                                truncated = True
+                                cursor += vc
+                        if truncated:
+                            self.warnings.append(
+                                f"Geometry '{geom_name}': <polylist> vcount exceeds <p> tuples ({n_tuples}); truncated"
+                            )
                         if valid_vc:
                             prim_vcounts = np.asarray(valid_vc, dtype=np.int32)
                             prim_p = np.vstack(valid_rows)
@@ -1274,14 +1296,18 @@ class DocumentImporter:
                     if pe is not None:
                         p_elems.append(pe)
                 for p_el in p_elems:
-                    if p_el.text:
-                        pr = _parse_i32_np(p_el.text, self.warnings, f"<polygons>/<p> of geometry '{geom_name}'")
-                        if pr is None:
-                            continue
-                        vc = pr.size // num_inputs
-                        if vc >= 3:
-                            vc_list.append(vc)
-                            p_list.append(pr[:vc * num_inputs].reshape(vc, num_inputs))
+                    if not p_el.text:
+                        invalid_vcount_total += 1
+                        continue
+                    pr = _parse_i32_np(p_el.text, self.warnings, f"<polygons>/<p> of geometry '{geom_name}'")
+                    if pr is None:
+                        continue
+                    vc = pr.size // num_inputs
+                    if vc >= 3:
+                        vc_list.append(vc)
+                        p_list.append(pr[:vc * num_inputs].reshape(vc, num_inputs))
+                    else:
+                        invalid_vcount_total += 1
                 if vc_list:
                     prim_vcounts = np.asarray(vc_list, dtype=np.int32)
                     prim_p = np.vstack(p_list)
@@ -1329,7 +1355,13 @@ class DocumentImporter:
                     prim_vcounts = np.full(tri_total, 3, dtype=np.int32)
                     prim_p = np.vstack(tri_rows)
 
-            if prim_vcounts is None or prim_p is None or prim_vcounts.size == 0:
+            if (
+                prim_vcounts is None
+                or prim_p is None
+                or prim_vcounts.size == 0
+                or prim_p.shape[0] == 0
+                or int(prim_vcounts.sum(dtype=np.int64)) != int(prim_p.shape[0])
+            ):
                 continue
 
             # Vectorized bounds check: drop only faces with out-of-range VERTEX/NORMAL/TEXCOORD/COLOR indices
@@ -1365,7 +1397,7 @@ class DocumentImporter:
                 if tag in ("triangles", "trifans", "tristrips") or bool((prim_vcounts == 3).all()):
                     face_ok = loop_ok.reshape(-1, 3).all(axis=1)
                 else:
-                    starts_chk = np.cumsum(prim_vcounts) - prim_vcounts
+                    starts_chk = np.cumsum(prim_vcounts, dtype=np.int64) - prim_vcounts
                     face_ok = np.logical_and.reduceat(loop_ok, starts_chk)
                 dropped = int((~face_ok).sum())
                 dropped_faces_total += dropped
@@ -1374,6 +1406,8 @@ class DocumentImporter:
                 loop_keep = np.repeat(face_ok, prim_vcounts)
                 prim_vcounts = prim_vcounts[face_ok]
                 prim_p = prim_p[loop_keep]
+                if prim_vcounts.size == 0 or prim_p.shape[0] == 0:
+                    continue
 
             prim_face_count = int(prim_vcounts.size)
             prim_loop_count = int(prim_p.shape[0])
@@ -1401,11 +1435,14 @@ class DocumentImporter:
                     dp2 = (n3[:, 0] * n3[:, 2]).sum(axis=1)
                     is_flat = (dp1 >= 0.99999) & (dp1 <= 1.00001) & (dp2 >= 0.99999) & (dp2 <= 1.00001)
                 else:
-                    starts = np.cumsum(prim_vcounts) - prim_vcounts
-                    first_n = np.repeat(p_norms[starts], prim_vcounts, axis=0)
-                    dots = (p_norms * first_n).sum(axis=1)
-                    ok = (dots >= 0.99999) & (dots <= 1.00001)
-                    is_flat = np.logical_and.reduceat(ok, starts)
+                    starts = np.cumsum(prim_vcounts, dtype=np.int64) - prim_vcounts
+                    if p_norms.shape[0] > 0 and starts.size > 0:
+                        first_n = np.repeat(p_norms[starts], prim_vcounts, axis=0)
+                        dots = (p_norms * first_n).sum(axis=1)
+                        ok = (dots >= 0.99999) & (dots <= 1.00001)
+                        is_flat = np.logical_and.reduceat(ok, starts)
+                    else:
+                        is_flat = np.ones(prim_face_count, dtype=bool)
                 face_sharp_chunks.append(is_flat)
                 loop_norm_chunks.append(p_norms.astype(np.float32))
             else:
@@ -1455,6 +1492,10 @@ class DocumentImporter:
             total_faces += prim_face_count
             total_loops += prim_loop_count
 
+        if invalid_vcount_total > 0:
+            self.warnings.append(
+                f"Geometry '{geom_name}': {invalid_vcount_total} invalid faces with fewer than 3 vertices skipped"
+            )
         if dropped_faces_total > 0:
             self.warnings.append(
                 f"Geometry '{geom_name}': dropped {dropped_faces_total} face(s) with out-of-range indices"

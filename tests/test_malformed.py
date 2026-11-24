@@ -195,6 +195,29 @@ def build_cases() -> dict[str, tuple[str, dict]]:
         </source>
     """
     norm_input = '<input semantic="NORMAL" source="#norm-src" offset="1"/>'
+    full_sources = norm_source + """
+        <source id="uv-src">
+          <float_array id="uv-arr" count="8">0 0  1 0  1 1  0 1</float_array>
+          <technique_common>
+            <accessor source="#uv-arr" count="4" stride="2">
+              <param name="S" type="float"/><param name="T" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="col-src">
+          <float_array id="col-arr" count="6">1 0 0  0 1 0</float_array>
+          <technique_common>
+            <accessor source="#col-arr" count="2" stride="3">
+              <param name="R" type="float"/><param name="G" type="float"/><param name="B" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+    """
+    full_inputs = (
+        '<input semantic="NORMAL" source="#norm-src" offset="1"/>'
+        '<input semantic="TEXCOORD" source="#uv-src" offset="2" set="0"/>'
+        '<input semantic="COLOR" source="#col-src" offset="3" set="0"/>'
+    )
 
     return {
         "leading_plus": (
@@ -288,6 +311,67 @@ def build_cases() -> dict[str, tuple[str, dict]]:
             _make_dae(p_text="0 1 2  0 0 2"),
             {"expect_verts": 4, "expect_polys": 1, "expect_warning": True},
         ),
+        "polylist_mixed_vcount_0_1_2": (
+            _make_dae(
+                extra_sources=full_sources,
+                extra_inputs=full_inputs,
+                prim_tag="polylist",
+                prim_count=5,
+                vcount_text="0 3 1 4 2",
+                # vcount=0 (0 tuples), vcount=3 (valid tri: 0,1,2), vcount=1 (1 tuple),
+                # vcount=4 (valid quad: 0,1,2,3), vcount=2 (2 tuples)
+                p_text=(
+                    "0 0 0 0  1 0 1 1  2 0 2 0  "
+                    "0 0 0 0  "
+                    "0 0 0 0  1 0 1 1  2 0 2 0  3 0 3 1  "
+                    "0 0 0 0  1 0 1 1"
+                ),
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "3 invalid faces with fewer than 3 vertices skipped",
+            },
+        ),
+        "polylist_all_zero_vcount": (
+            _make_dae(
+                extra_sources=full_sources,
+                extra_inputs=full_inputs,
+                prim_tag="polylist",
+                prim_count=3,
+                vcount_text="0 0 0",
+                p_text="0 0 0 0  1 0 1 1  2 0 2 0",
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 0,
+                "expect_warning": True,
+                "expect_warning_substr": "3 invalid faces with fewer than 3 vertices skipped",
+            },
+        ),
+        "polylist_empty_p_nonzero_vcount": (
+            _make_dae(
+                extra_sources=full_sources,
+                extra_inputs=full_inputs,
+                prim_tag="polylist",
+                prim_count=2,
+                vcount_text="3 4",
+                p_text="",
+            ),
+            {"expect_verts": 4, "expect_polys": 0, "expect_warning": True},
+        ),
+        "polylist_vcount_int32_overflow": (
+            _make_dae(
+                extra_sources=full_sources,
+                extra_inputs=full_inputs,
+                prim_tag="polylist",
+                prim_count=4,
+                vcount_text="2147483647 4 99999 4",
+                p_text="0 0 0 0  1 0 1 1  2 0 2 0  3 0 3 1",
+            ),
+            {"expect_verts": 4, "expect_polys": 0, "expect_warning": True},
+        ),
     }
 
 
@@ -315,6 +399,12 @@ def main() -> int:
                     results[native] = res
                     if exp.get("expect_warning") and not res["warnings"]:
                         raise AssertionError(f"Expected warning for {name} (native={native}), got none")
+                    if "expect_warning_substr" in exp:
+                        sub = exp["expect_warning_substr"]
+                        if not any(sub in w for w in res["warnings"]):
+                            raise AssertionError(
+                                f"{name} (native={native}): expected warning containing {sub!r}, got {res['warnings']}"
+                            )
                     if "expect_verts" in exp:
                         got_v = res["meshes"][0]["num_verts"] if res["meshes"] else 0
                         if got_v != exp["expect_verts"]:
