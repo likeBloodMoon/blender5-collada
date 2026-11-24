@@ -158,9 +158,11 @@ assert shape.shape_version == 31 and shape.header_info["compression"] is False
 assert len(shape.meshes) == 2 and all(len(m.tangents) == len(m.verts) for m in shape.meshes)
 
 bpy.ops.wm.read_factory_settings(use_empty=True)
-res = bpy.ops.import_scene.beamng_cdae(filepath=p_raw, merge_by_distance=True, sharp_edges_from_normals=True)
+res = bpy.ops.import_scene.beamng_cdae(filepath=p_raw, normals_mode="EXACT")
 assert res == {"FINISHED"}
 assert "HeroPart" in bpy.data.objects and "ExtraWheel" in bpy.data.objects and "ParentRig" in bpy.data.objects
+# Verify EXACT mode stores BOTH exact custom_normal attribute AND sharp_edge markers
+assert bpy.data.objects["HeroPart"].data.attributes.get("custom_normal") is not None
 
 got_cube = snapshot_obj(bpy.data.objects["HeroPart"])
 assert got_cube["tris"] == ref_cube["tris"] == 12
@@ -182,9 +184,15 @@ for ob in bpy.data.objects:
         bm = bmesh.new(); bm.from_mesh(ob.data); bm.free()
         assert not ob.data.validate(verbose=False, clean_customdata=False)
 
-# Sharp edges recovered on merged HeroPart cube (all 12 cube edges sharp)
-sa = bpy.data.objects["HeroPart"].data.attributes.get("sharp_edge")
+# Sharp edges recovered on merged HeroPart cube (all 12 cube edges sharp),
+# and clearing custom_normal preserves those 12 sharp edges cleanly.
+hero_me = bpy.data.objects["HeroPart"].data
+sa = hero_me.attributes.get("sharp_edge")
 assert sa is not None and sum(1 for d in sa.data if d.value) == 12
+hero_me.attributes.remove(hero_me.attributes["custom_normal"])
+hero_me.update()
+sa_after = hero_me.attributes.get("sharp_edge")
+assert sa_after is not None and sum(1 for d in sa_after.data if d.value) == 12
 print("  PASS roundtrip_full_uncompressed_hierarchy_uv_color_sharp_modifiers")
 
 # Test 2: Selection-only export (must exclude ExtraWheel)

@@ -385,6 +385,7 @@ for ob in bpy.data.objects:
             "verts": len(me.vertices),
             "polys": len(me.polygons),
             "sharp_edges": n_sharp,
+            "has_custom_normals": me.attributes.get("custom_normal") is not None,
             "uv_layers": uv_names,
             "color_attrs": col_names,
             "materials": mat_names,
@@ -459,10 +460,17 @@ def main() -> int:
         m1 = r1["meshes"][0]
         assert m1["verts"] == 8 and m1["polys"] == 12, m1
         assert m1["outward_ok"], f"CubeObj face winding is inside-out: {m1}"
+        assert m1["has_custom_normals"], f"Expected custom_normal in default EXACT mode: {m1}"
         assert m1["sharp_edges"] == 12, f"Expected 12 sharp edges on merged cube, got {m1}"
         assert m1["uv_layers"] == ["UVMap", "UVMap.001"], m1
         assert m1["color_attrs"] == ["Color"], m1
         assert m1["materials"] == ["paint_main", "chrome_trim"], m1
+        # Verify SHARP (merge + sharp edges only) and UNMERGED (raw GPU 24 verts + custom normals) modes
+        r1_sharp = _run_import(runner, worker_path, c1, {"normals_mode": "SHARP"})
+        assert r1_sharp["ok"] and r1_sharp["meshes"][0]["verts"] == 8
+        assert not r1_sharp["meshes"][0]["has_custom_normals"] and r1_sharp["meshes"][0]["sharp_edges"] == 12
+        r1_unm = _run_import(runner, worker_path, c1, {"normals_mode": "UNMERGED"})
+        assert r1_unm["ok"] and r1_unm["meshes"][0]["verts"] == 24 and r1_unm["meshes"][0]["has_custom_normals"]
         print("  PASS split_cube_merge_sharp_uv_color_mats")
 
         # Case 2: Strip + Fan + encodedNorms + parentMesh >= 0 sharing

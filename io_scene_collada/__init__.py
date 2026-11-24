@@ -591,23 +591,44 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         description="Also import negative-size / collision detail levels",
         default=False,
     )
-    merge_by_distance: BoolProperty(
-        name="Merge by Distance",
-        description="Weld GPU-split duplicate vertices within each mesh while preserving per-corner UV/color/normal seams",
-        default=True,
+    normals_mode: EnumProperty(
+        name="Normals",
+        description=(
+            "How to handle split vertices and vertex normals on import. "
+            "Exact normals match the game but do not auto-update if you reshape the mesh; "
+            "Sharp edges recompute shading from geometry and can differ from the game"
+        ),
+        items=(
+            (
+                "EXACT",
+                "Exact (keep game normals)",
+                "Merge split vertices and keep exact game custom normals, while also marking "
+                "sharp edges so creases survive if custom normals are cleared later. "
+                "Note: exact custom normals will not update automatically if you reshape the mesh",
+            ),
+            (
+                "SHARP",
+                "Sharp edges (easier to edit)",
+                "Merge split vertices and convert normal discontinuities into sharp edges without "
+                "locked custom normals. Easier to edit, but shading is recomputed from geometry "
+                "and can differ from the game",
+            ),
+            (
+                "UNMERGED",
+                "Unmerged (raw GPU vertices)",
+                "Keep raw unmerged GPU vertices and exact game custom normals (for debugging or "
+                "byte-faithful round trips; exact normals will not update if you reshape the mesh)",
+            ),
+        ),
+        default="EXACT",
     )
     merge_distance: FloatProperty(
         name="Merge Distance",
-        description="Maximum distance between vertices to merge",
+        description="Maximum distance between vertices to weld when merging",
         default=1e-5,
         min=0.0,
         max=0.1,
         precision=6,
-    )
-    sharp_edges_from_normals: BoolProperty(
-        name="Mark Sharp from Normals",
-        description="Convert split normal discontinuities into clean sharp edges instead of locked custom normals",
-        default=True,
     )
     sharp_angle_threshold: FloatProperty(
         name="Sharp Angle",
@@ -616,11 +637,6 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         min=0.0,
         max=math.pi,
         subtype="ANGLE",
-    )
-    fast_exact_normals: BoolProperty(
-        name="Fast Exact Normals",
-        description="Write exact float32 custom_normal attribute directly when Mark Sharp from Normals is off",
-        default=False,
     )
 
     def draw(self, context):
@@ -637,17 +653,11 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         box = layout.box()
         box.label(text="Geometry & Normals", icon="NORMALS_VERTEX_FACE")
         col = box.column(align=False)
-        col.prop(self, "merge_by_distance")
+        col.prop(self, "normals_mode")
         sub = col.column()
-        sub.enabled = self.merge_by_distance
+        sub.enabled = self.normals_mode != "UNMERGED"
         sub.prop(self, "merge_distance")
-        col.prop(self, "sharp_edges_from_normals")
-        sub2 = col.column()
-        sub2.enabled = self.sharp_edges_from_normals
-        sub2.prop(self, "sharp_angle_threshold")
-        sub3 = col.column()
-        sub3.enabled = not self.sharp_edges_from_normals
-        sub3.prop(self, "fast_exact_normals")
+        sub.prop(self, "sharp_angle_threshold")
 
     def execute(self, context):
         if not self.filepath or not os.path.exists(self.filepath):
@@ -658,11 +668,9 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
             filepath=self.filepath,
             lod_mode=self.lod_mode,
             import_collision=self.import_collision,
-            merge_by_distance=self.merge_by_distance,
+            normals_mode=self.normals_mode,
             merge_distance=self.merge_distance,
-            sharp_edges_from_normals=self.sharp_edges_from_normals,
             sharp_angle_threshold=self.sharp_angle_threshold,
-            fast_exact_normals=self.fast_exact_normals,
         )
         importer = CdaeImporter(context, settings)
         ok = importer.import_document()

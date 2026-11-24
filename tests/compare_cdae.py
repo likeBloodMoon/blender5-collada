@@ -335,12 +335,12 @@ def run_oracle(all_modes: bool = False) -> int:
 
     modes = (
         [
-            ("unmerged_exact", dict(merge_by_distance=False, sharp_edges_from_normals=False, fast_exact_normals=True)),
-            ("default_sharp", dict(merge_by_distance=True, sharp_edges_from_normals=True, fast_exact_normals=False)),
-            ("merged_exact", dict(merge_by_distance=True, sharp_edges_from_normals=False, fast_exact_normals=True)),
+            ("EXACT (default)", dict(normals_mode="EXACT")),
+            ("SHARP", dict(normals_mode="SHARP")),
+            ("UNMERGED", dict(normals_mode="UNMERGED")),
         ]
         if all_modes
-        else [("unmerged_exact", dict(merge_by_distance=False, sharp_edges_from_normals=False, fast_exact_normals=True))]
+        else [("EXACT (default)", dict(normals_mode="EXACT"))]
     )
 
     workdir = tempfile.mkdtemp(prefix="cdae_oracle_")

@@ -16,7 +16,6 @@ Builds a Torque3D/BeamNG v31 TSShape binary matching verified real .cdae files:
 
 from __future__ import annotations
 
-import math
 import struct
 from dataclasses import dataclass
 

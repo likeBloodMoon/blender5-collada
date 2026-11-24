@@ -38,11 +38,9 @@ class CdaeImportSettings:
     filepath: str = ""
     lod_mode: str = "HIGHEST"  # "HIGHEST" or "ALL"
     import_collision: bool = False
-    merge_by_distance: bool = True
+    normals_mode: str = "EXACT"  # "EXACT", "SHARP", or "UNMERGED"
     merge_distance: float = 1e-5
-    sharp_edges_from_normals: bool = True
     sharp_angle_threshold: float = math.radians(1.0)
-    fast_exact_normals: bool = False
 
 
 def _quat16_to_blender(q16: np.ndarray) -> Quaternion:
@@ -650,8 +648,9 @@ class CdaeImporter:
         elif len(c_mesh.encoded_norms) >= n_verts:
             norm_loops = U8_TO_NORMAL_TABLE[c_mesh.encoded_norms[:n_verts]][flat_orig_idx]
 
-        # Merge vertices by position within this mesh (required for sharp_edges_from_normals on GPU-split meshes)
-        if self.settings.merge_by_distance and self.settings.merge_distance > 0.0:
+        # Merge vertices by position within this mesh unless UNMERGED mode is selected
+        do_merge = self.settings.normals_mode != "UNMERGED"
+        if do_merge and self.settings.merge_distance > 0.0:
             n_before_merge = len(tris)
             verts, tris, kept, old_to_new = _merge_verts_by_distance(verts, tris, self.settings.merge_distance)
             n_degen = n_before_merge - len(tris)
@@ -758,11 +757,14 @@ class CdaeImporter:
             if norm_loops is not None and len(norm_loops) == cur_n_loops:
                 if cur_n_polys > 0:
                     me.polygons.foreach_set("use_smooth", np.ones(cur_n_polys, dtype=bool))
-                if self.settings.sharp_edges_from_normals:
+                mode = self.settings.normals_mode
+                if mode in ("EXACT", "SHARP"):
+                    # Mark sharp edges wherever corner normals differ across an edge.
+                    # In EXACT mode this keeps hard edges ready if custom normals are cleared later.
                     DocumentImporter._apply_sharp_edges_from_normals(
                         me, norm_loops, self.settings.sharp_angle_threshold
                     )
-                elif self.settings.fast_exact_normals:
+                if mode in ("EXACT", "UNMERGED"):
                     try:
                         cn = me.attributes.get("custom_normal")
                         if cn is not None and (cn.data_type != "FLOAT_VECTOR" or cn.domain != "CORNER"):
@@ -774,11 +776,6 @@ class CdaeImporter:
                     except Exception as exc:
                         self.warnings.append(f"Fast exact normals failed on '{mesh_name}', falling back: {exc}")
                         me.normals_split_custom_set(norm_loops.tolist())
-                else:
-                    try:
-                        me.normals_split_custom_set(norm_loops.tolist())
-                    except Exception as exc:
-                        self.warnings.append(f"Could not set custom normals on '{mesh_name}': {exc}")
 
         me.update()
         return me, old_to_new
