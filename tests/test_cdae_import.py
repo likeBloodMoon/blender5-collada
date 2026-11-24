@@ -402,10 +402,267 @@ result = {
     "infos": list(importer.infos),
     "collections": sorted(c.name for c in bpy.data.collections),
     "armatures": [ob.name for ob in bpy.data.objects if ob.type == "ARMATURE"],
+    "empties": [
+        {"name": ob.name, "display_size": float(ob.empty_display_size)}
+        for ob in bpy.data.objects
+        if ob.type == "EMPTY"
+    ],
     "meshes": meshes_out,
 }
 with open(out_json, "w", encoding="utf-8") as f:
     json.dump(result, f)
+'''
+
+
+POS_CHECK_WORKER_SCRIPT = r'''
+import collections
+import re
+import sys
+
+argv = sys.argv
+if "--" in argv:
+    argv = argv[argv.index("--") + 1:]
+else:
+    argv = argv[1:]
+
+repo_root = argv[0]
+cdae_paths = argv[1:]
+sys.path.insert(0, repo_root)
+
+import bpy
+import numpy as np
+import io_scene_collada
+from io_scene_collada.cdae.importer import (
+    CdaeImporter,
+    CdaeImportSettings,
+    _primitives_to_triangles,
+    _safe_name,
+)
+from io_scene_collada.cdae.reader import MESH_TYPE_NULL, MESH_TYPE_SKIN, read_cdae_file
+
+io_scene_collada.register()
+
+
+def _max_tri_edge(tri_pos: np.ndarray) -> float:
+    if len(tri_pos) == 0:
+        return 0.0
+    e01 = np.linalg.norm(tri_pos[:, 1] - tri_pos[:, 0], axis=1)
+    e12 = np.linalg.norm(tri_pos[:, 2] - tri_pos[:, 1], axis=1)
+    e20 = np.linalg.norm(tri_pos[:, 0] - tri_pos[:, 2], axis=1)
+    return float(max(e01.max(), e12.max(), e20.max()))
+
+
+def _tri_keys_and_map(tri_pos: np.ndarray, quant_tol: float):
+    q = np.round(tri_pos.astype(np.float64) / quant_tol).astype(np.int64)
+    ctr = collections.Counter()
+    by_key = collections.defaultdict(list)
+    for idx in range(len(q)):
+        p0 = (int(q[idx, 0, 0]), int(q[idx, 0, 1]), int(q[idx, 0, 2]))
+        p1 = (int(q[idx, 1, 0]), int(q[idx, 1, 1]), int(q[idx, 1, 2]))
+        p2 = (int(q[idx, 2, 0]), int(q[idx, 2, 1]), int(q[idx, 2, 2]))
+        # Cyclic rotation preserving triangle winding
+        if p0 <= p1 and p0 <= p2:
+            key = (p0, p1, p2)
+        elif p1 <= p0 and p1 <= p2:
+            key = (p1, p2, p0)
+        else:
+            key = (p2, p0, p1)
+        ctr[key] += 1
+        by_key[key].append(idx)
+    return ctr, by_key
+
+
+def _cyclic_corner_dist(t_a: np.ndarray, t_b: np.ndarray) -> float:
+    best = 1e9
+    for shift in range(3):
+        b_rot = np.roll(t_b, -shift, axis=0)
+        d = float(np.linalg.norm(t_a - b_rot, axis=1).max())
+        if d < best:
+            best = d
+    return best
+
+
+def _verify_file(cdae_path: str) -> None:
+    shape = read_cdae_file(cdae_path)
+    for normals_mode in ("EXACT", "SHARP", "UNMERGED"):
+        bpy.ops.wm.read_factory_settings(use_empty=True)
+        settings = CdaeImportSettings(
+            filepath=cdae_path,
+            lod_mode="ALL",
+            import_collision=True,
+            normals_mode=normals_mode,
+        )
+        importer = CdaeImporter(bpy.context, settings)
+        ok = importer.import_document()
+        assert ok, f"{cdae_path} ({normals_mode}) import failed: {importer.errors}"
+
+        # Every created Empty must have a reasonable model-relative display size (never 1.0 m default)
+        for ob in bpy.data.objects:
+            if ob.type == "EMPTY":
+                assert 0.009 <= ob.empty_display_size <= 0.101, (
+                    f"{cdae_path} ({normals_mode}): Empty '{ob.name}' has display_size={ob.empty_display_size}"
+                )
+
+        # Parse reported exact duplicate and degenerate removals per mesh name
+        reported_dups = collections.Counter()
+        reported_degen = collections.Counter()
+        for info in importer.infos:
+            m = re.match(
+                r"^Mesh '(.+)': \d+ double-sided and \d+ layered faces kept unwelded, (\d+) exact duplicates removed$",
+                info,
+            )
+            if m:
+                reported_dups[m.group(1)] += int(m.group(2))
+        for warn in importer.warnings:
+            m = re.match(r"^Mesh '(.+)': (\d+) degenerate faces smaller than ", warn)
+            if m:
+                reported_degen[m.group(1)] += int(m.group(2))
+
+        selected_details = importer._select_details(shape)
+        # Collect expected non-null (obj_name, c_mesh) per detail collection in exact creation order
+        detail_colls = list(bpy.context.scene.collection.children)
+        expected_groups = []
+        if selected_details:
+            assert len(detail_colls) == len(selected_details), (
+                f"{cdae_path}: expected {len(selected_details)} collections, got {len(detail_colls)}"
+            )
+            for coll, (_det_idx, det) in zip(detail_colls, selected_details):
+                sub_idx = int(det["sub_shape_num"])
+                obj_det = int(det["object_detail_num"])
+                if sub_idx < 0 or sub_idx >= len(shape.sub_shape_first_object):
+                    continue
+                first_obj = int(shape.sub_shape_first_object[sub_idx])
+                num_objs = int(shape.sub_shape_num_objects[sub_idx])
+                jobs = []
+                for obj_i in range(first_obj, min(first_obj + num_objs, len(shape.objects))):
+                    obj = shape.objects[obj_i]
+                    if 0 <= obj_det < int(obj["num_meshes"]):
+                        mi = int(obj["start_mesh_index"]) + obj_det
+                        if 0 <= mi < len(shape.meshes) and shape.meshes[mi].mesh_type != MESH_TYPE_NULL:
+                            obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
+                            jobs.append((obj_name, shape.meshes[mi]))
+                expected_groups.append((coll, jobs))
+        else:
+            jobs = []
+            for obj_i in range(len(shape.objects)):
+                obj = shape.objects[obj_i]
+                if int(obj["num_meshes"]) > 0:
+                    mi = int(obj["start_mesh_index"])
+                    if 0 <= mi < len(shape.meshes) and shape.meshes[mi].mesh_type != MESH_TYPE_NULL:
+                        obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
+                        jobs.append((obj_name, shape.meshes[mi]))
+            expected_groups.append((bpy.context.scene.collection, jobs))
+
+        dropped_by_name = collections.Counter()
+        quant_tol = 1e-5 if normals_mode == "UNMERGED" else 1e-4
+        edge_tol = 1e-5 if normals_mode == "UNMERGED" else 1e-4
+        merge_tol = 2.5 * settings.merge_distance + 1e-6
+
+        for coll, jobs in expected_groups:
+            mesh_obs = [ob for ob in coll.objects if ob.type == "MESH"]
+            # Filter jobs whose raw source mesh actually produces >= 1 triangle
+            non_empty_jobs = []
+            for obj_name, c_mesh in jobs:
+                verts_src = c_mesh.verts
+                if c_mesh.mesh_type == MESH_TYPE_SKIN and len(verts_src) == 0 and len(c_mesh.initial_verts) > 0:
+                    verts_src = c_mesh.initial_verts
+                if len(verts_src) == 0:
+                    continue
+                n_v = len(verts_src)
+                if c_mesh.verts_per_frame > 0 and c_mesh.verts_per_frame < n_v:
+                    n_v = c_mesh.verts_per_frame
+                verts = verts_src[:n_v].astype(np.float32, copy=True)
+                if not np.isfinite(verts).all():
+                    verts = np.where(np.isfinite(verts), verts, np.float32(0.0))
+                raw_tris, _ = _primitives_to_triangles(c_mesh, n_v, [], obj_name)
+                if len(raw_tris) > 0:
+                    non_empty_jobs.append((obj_name, verts[raw_tris]))
+
+            assert len(mesh_obs) == len(non_empty_jobs), (
+                f"{cdae_path} ({normals_mode}, coll={coll.name}): "
+                f"imported {len(mesh_obs)} meshes != {len(non_empty_jobs)} source meshes"
+            )
+
+            for ob, (obj_name, src_tri_pos) in zip(mesh_obs, non_empty_jobs):
+                me = ob.data
+                n_p = len(me.polygons)
+                assert n_p > 0, f"{cdae_path} ({normals_mode}): '{ob.name}' has 0 polys"
+                v_co = np.empty(len(me.vertices) * 3, dtype=np.float32)
+                me.vertices.foreach_get("co", v_co)
+                v_co = v_co.reshape(-1, 3)
+
+                l_tot = np.empty(n_p, dtype=np.int32)
+                me.polygons.foreach_get("loop_total", l_tot)
+                assert (l_tot == 3).all(), f"{cdae_path} ({normals_mode}): non-triangle poly in '{ob.name}'"
+                l_verts = np.empty(n_p * 3, dtype=np.int32)
+                me.loops.foreach_get("vertex_index", l_verts)
+                imp_tri_pos = v_co[l_verts.reshape(n_p, 3)]
+
+                # 1. Longest edge invariant (imported mesh must never exceed source longest edge)
+                src_max_e = _max_tri_edge(src_tri_pos)
+                imp_max_e = _max_tri_edge(imp_tri_pos)
+                assert imp_max_e <= src_max_e + edge_tol, (
+                    f"{cdae_path} ({normals_mode}): '{ob.name}' longest edge {imp_max_e:.6f} "
+                    f"> source {src_max_e:.6f}"
+                )
+
+                # 2. Positional triangle multiset invariant (winding-preserving)
+                src_ctr, src_by_key = _tri_keys_and_map(src_tri_pos, quant_tol)
+                imp_ctr, imp_by_key = _tri_keys_and_map(imp_tri_pos, quant_tol)
+                src_diff = src_ctr - imp_ctr
+                imp_diff = imp_ctr - src_ctr
+
+                src_rem_idx = []
+                for k, cnt in src_diff.items():
+                    src_rem_idx.extend(src_by_key[k][:cnt])
+                imp_rem_idx = []
+                for k, cnt in imp_diff.items():
+                    imp_rem_idx.extend(imp_by_key[k][:cnt])
+
+                # Handle boundary-straddling vertices in merged modes by exact cyclic Euclidean distance
+                if imp_rem_idx and normals_mode != "UNMERGED":
+                    still_imp = []
+                    used_src = set()
+                    # Fast centroid prefilter before exact cyclic corner check
+                    src_rem_arr = src_tri_pos[src_rem_idx]
+                    src_cent = src_rem_arr.mean(axis=1)
+                    for ii in imp_rem_idx:
+                        t_i = imp_tri_pos[ii]
+                        c_i = t_i.mean(axis=0)
+                        dists = np.linalg.norm(src_cent - c_i, axis=1)
+                        cands = np.flatnonzero(dists <= merge_tol * 2.0)
+                        matched = False
+                        for ci in cands.tolist():
+                            if ci in used_src:
+                                continue
+                            if _cyclic_corner_dist(t_i, src_rem_arr[ci]) <= merge_tol:
+                                used_src.add(ci)
+                                matched = True
+                                break
+                        if not matched:
+                            still_imp.append(ii)
+                    imp_rem_idx = still_imp
+                    src_rem_idx = [src_rem_idx[j] for j in range(len(src_rem_idx)) if j not in used_src]
+
+                assert len(imp_rem_idx) == 0, (
+                    f"{cdae_path} ({normals_mode}): '{ob.name}' has {len(imp_rem_idx)} imported "
+                    f"triangle(s) not matching any raw .cdae triangle!"
+                )
+                dropped_by_name[obj_name] += len(src_rem_idx)
+
+        all_names = set(dropped_by_name) | set(reported_dups) | set(reported_degen)
+        for name in sorted(all_names):
+            expected_drop = reported_dups[name] + reported_degen[name]
+            got_drop = dropped_by_name[name]
+            assert got_drop == expected_drop, (
+                f"{cdae_path} ({normals_mode}): '{name}' dropped {got_drop} tris "
+                f"!= reported {reported_dups[name]} exact dups + {reported_degen[name]} degenerates"
+            )
+
+
+for fp in cdae_paths:
+    _verify_file(fp)
+print(f"POS_TRI_CHECK_OK {len(cdae_paths)}")
 '''
 
 
@@ -435,6 +692,20 @@ def _run_import(runner: list[str], worker_path: str, cdae_path: str, opts: dict 
     return data
 
 
+def _verify_positional_triangles(runner: list[str], pos_worker_path: str, cdae_paths: list[str]) -> None:
+    if runner[0] == sys.executable:
+        cmd = [runner[0], pos_worker_path, REPO_ROOT, *cdae_paths]
+    else:
+        cmd = [*runner, pos_worker_path, "--", REPO_ROOT, *cdae_paths]
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=300)
+    if proc.returncode != 0 or "Traceback (most recent call last)" in proc.stderr:
+        raise AssertionError(
+            f"Positional triangle check failed (rc={proc.returncode}):\n"
+            f"STDOUT:\n{proc.stdout[-1500:]}\nSTDERR:\n{proc.stderr[-1500:]}"
+        )
+    assert f"POS_TRI_CHECK_OK {len(cdae_paths)}" in proc.stdout, proc.stdout[-1000:]
+
+
 def main() -> int:
     print("Running BeamNG .cdae v31 import test suite...")
     test_msgpack_lite_unit()
@@ -445,6 +716,9 @@ def main() -> int:
         worker_path = os.path.join(workdir, "_cdae_worker.py")
         with open(worker_path, "w", encoding="utf-8") as f:
             f.write(WORKER_SCRIPT)
+        pos_worker_path = os.path.join(workdir, "_pos_tri_worker.py")
+        with open(pos_worker_path, "w", encoding="utf-8") as f:
+            f.write(POS_CHECK_WORKER_SCRIPT)
 
         # Case 1: Split cube -> merge_by_distance (24 -> 8 verts) + UV0/UV1/Color + 12 sharp edges + 2 materials
         c1 = os.path.join(workdir, "split_cube.cdae")
@@ -508,8 +782,24 @@ def main() -> int:
         assert r2_all["ok"], r2_all["errors"]
         assert set(r2_all["collections"]) == {"detail100", "detail50", "collision-1"}, r2_all["collections"]
         assert len(r2_all["meshes"]) == 3 and all(m["polys"] == 2 for m in r2_all["meshes"]), r2_all["meshes"]
+        # Multi-LOD node must get an Empty with model-relative display size (never 1.0 m default)
+        assert len(r2_all["empties"]) == 1 and 0.009 <= r2_all["empties"][0]["display_size"] <= 0.1, r2_all["empties"]
         r2_hi = _run_import(runner, worker_path, c2, {"lod_mode": "HIGHEST", "import_collision": False})
         assert r2_hi["ok"] and len(r2_hi["meshes"]) == 1, r2_hi
+        # Single-LOD 1-to-1 node+mesh (node_name == obj_name) must produce 0 Empties in BOTH HIGHEST and ALL modes
+        c2_single = os.path.join(workdir, "single_lod_direct.cdae")
+        with open(c2_single, "wb") as f:
+            f.write(build_synthetic_cdae(
+                names=["CubeObj", "detail2"],
+                nodes=[(0, -1, -1, -1, -1)],
+                objects=[(0, 1, 0, 0, -1, -1)],
+                details=[(1, 0, 0, 2.0, -1.0, -1.0, 12, 0, 0, 0, 0, 0.0, 0)],
+                meshes=[_make_split_cube_mesh()],
+                materials=["paint_main", "chrome_trim"],
+            ))
+        for lm in ("HIGHEST", "ALL"):
+            r_dir = _run_import(runner, worker_path, c2_single, {"lod_mode": lm})
+            assert r_dir["ok"] and len(r_dir["empties"]) == 0 and len(r_dir["meshes"]) == 1, (lm, r_dir)
         print("  PASS parentMesh_sharing_strip_fan_lod_collision")
 
         # Case 3: SkinMesh + skipped sequence info
@@ -639,6 +929,10 @@ def main() -> int:
         assert any("0 double-sided and 2 layered faces kept unwelded, 0 exact duplicates removed" in inf for inf in r_ov["infos"]), r_ov["infos"]
         print("  PASS overlay_decal_quad_survives")
 
+        # Positional triangle & longest-edge check across all synthetic fixtures, all details, all 3 Normals modes
+        _verify_positional_triangles(runner, pos_worker_path, [c1, c2, c2_single, c3, c_ds, c_ov])
+        print("  PASS positional_triangles_and_max_edge_all_3_modes_synthetic")
+
         # Case 4: Unsupported version (24) -> clear error naming version 24
         c4 = os.path.join(workdir, "bad_version.cdae")
         with open(c4, "wb") as f:
@@ -722,7 +1016,15 @@ for p in argv[1:]:
                         rr = _run_import(runner, worker_path, rf, {"lod_mode": mode}, workdir=workdir)
                         assert rr["ok"], f"Real file {rf} ({mode}) failed: {rr['errors']}"
                         assert any(m["polys"] > 0 for m in rr["meshes"]), f"Real file {rf} ({mode}) had 0 polys"
+                        for em in rr["empties"]:
+                            assert em["display_size"] <= 0.101, f"Real file {rf} ({mode}) large empty: {em}"
+                        if os.path.basename(rf).lower() == "wigeon.cdae":
+                            assert len(rr["empties"]) == 0, (
+                                f"wigeon.cdae ({mode}) should have 0 Empties, got {len(rr['empties'])}"
+                            )
                     print(f"    PASS real {os.path.basename(rf)}")
+                _verify_positional_triangles(runner, pos_worker_path, real_files)
+                print(f"    PASS positional_triangles_and_max_edge_all_3_modes ({len(real_files)} real files)")
 
         print("\nAll .cdae import tests passed!")
         return 0

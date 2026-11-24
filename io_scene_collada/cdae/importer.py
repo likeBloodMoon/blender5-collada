@@ -63,6 +63,18 @@ def _safe_name(names: list[str], idx: int, fallback: str) -> str:
     return fallback
 
 
+def _bounds_extent(bounds: tuple[float, ...] | list[float]) -> float:
+    if len(bounds) < 6:
+        return 0.0
+    dx = float(bounds[3]) - float(bounds[0])
+    dy = float(bounds[4]) - float(bounds[1])
+    dz = float(bounds[5]) - float(bounds[2])
+    if not (np.isfinite(dx) and np.isfinite(dy) and np.isfinite(dz)):
+        return 0.0
+    ext = max(dx, dy, dz)
+    return ext if ext > 0.0 else 0.0
+
+
 def _is_collision_detail(name: str, size: float) -> bool:
     if size < 0.0:
         return True
@@ -427,37 +439,61 @@ class CdaeImporter:
             for obj_i in range(len(shape.objects)):
                 import_jobs.append((obj_i, 0, self.scene.collection))
 
-        # Count how many valid non-skin jobs attach to each node
+        # Count how many valid non-skin jobs attach to each node and track mesh extents
         node_job_counts: dict[int, int] = {}
-        for obj_i, obj_det, target_coll in import_jobs:
+        node_extents: dict[int, float] = {}
+        shape_extent = _bounds_extent(shape.bounds)
+        for obj_i, obj_det, _target_coll in import_jobs:
             obj = shape.objects[obj_i]
             if 0 <= obj_det < int(obj["num_meshes"]):
                 mi = int(obj["start_mesh_index"]) + obj_det
-                if 0 <= mi < len(shape.meshes) and shape.meshes[mi].mesh_type not in (MESH_TYPE_NULL, MESH_TYPE_SKIN):
+                if 0 <= mi < len(shape.meshes):
+                    cm = shape.meshes[mi]
                     ni = int(obj["node_index"])
                     if 0 <= ni < n_nodes:
-                        node_job_counts[ni] = node_job_counts.get(ni, 0) + 1
+                        ext = _bounds_extent(cm.bounds)
+                        if ext <= 0.0 and len(cm.verts) > 0:
+                            ext = float(np.ptp(cm.verts, axis=0).max())
+                        if ext > node_extents.get(ni, 0.0):
+                            node_extents[ni] = ext
+                        if cm.mesh_type not in (MESH_TYPE_NULL, MESH_TYPE_SKIN):
+                            node_job_counts[ni] = node_job_counts.get(ni, 0) + 1
 
-        # Create node objects: defer creating an Empty if a single non-skin mesh in the
-        # scene collection will occupy this node directly with the same name.
+        def _empty_display_size(node_idx: int) -> float:
+            ext = node_extents.get(node_idx, 0.0) or shape_extent
+            if ext > 0.0:
+                return max(0.01, min(0.1, 0.02 * ext))
+            return 0.05
+
+        # Create node objects: defer creating an Empty whenever a single non-skin mesh
+        # occupies this node directly with the same name (in both HIGHEST and ALL modes).
         node_objects: list = [None] * n_nodes
         direct_node_jobs: set[tuple[int, int]] = set()
-        if self.settings.lod_mode != "ALL":
-            for obj_i, obj_det, target_coll in import_jobs:
-                obj = shape.objects[obj_i]
-                ni = int(obj["node_index"])
-                if 0 <= ni < n_nodes and node_job_counts.get(ni) == 1 and target_coll == self.scene.collection:
-                    node_name = _safe_name(shape.names, int(shape.nodes[ni]["name_index"]), f"Node_{ni}")
-                    obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
-                    if obj_name == node_name:
-                        direct_node_jobs.add((obj_i, obj_det))
+        direct_node_indices: set[int] = set()
+        for obj_i, obj_det, _target_coll in import_jobs:
+            obj = shape.objects[obj_i]
+            if not (0 <= obj_det < int(obj["num_meshes"])):
+                continue
+            mi = int(obj["start_mesh_index"]) + obj_det
+            if not (0 <= mi < len(shape.meshes)):
+                continue
+            if shape.meshes[mi].mesh_type in (MESH_TYPE_NULL, MESH_TYPE_SKIN):
+                continue
+            ni = int(obj["node_index"])
+            if 0 <= ni < n_nodes and node_job_counts.get(ni) == 1:
+                node_name = _safe_name(shape.names, int(shape.nodes[ni]["name_index"]), f"Node_{ni}")
+                obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
+                if obj_name == node_name:
+                    direct_node_jobs.add((obj_i, obj_det))
+                    direct_node_indices.add(ni)
 
         for i in range(n_nodes):
             # Will be filled by mesh object if claimed in direct_node_jobs
-            if any(int(shape.objects[oi]["node_index"]) == i for oi, _ in direct_node_jobs):
+            if i in direct_node_indices:
                 continue
             node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
             ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
+            ob_empty.empty_display_size = _empty_display_size(i)
             self.scene.collection.objects.link(ob_empty)
             ob_empty.matrix_basis = local_mats[i]
             ob_empty.select_set(True)
@@ -491,6 +527,7 @@ class CdaeImporter:
             if node_objects[i] is None:
                 node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
                 ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
+                ob_empty.empty_display_size = _empty_display_size(i)
                 self.scene.collection.objects.link(ob_empty)
                 ob_empty.matrix_basis = local_mats[i]
                 ob_empty.select_set(True)
