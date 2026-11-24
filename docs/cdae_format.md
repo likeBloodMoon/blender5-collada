@@ -201,7 +201,7 @@ Each `TSDrawPrimitive` is 12 bytes (`<3i`: `start`, `numElements`, `matIndex`) [
 7. **Per-face material assignment & normals** (`wigeon_bigwing`, `wigeon`, `midtruck`): `100.00%` per-face material name match across `179,148` matched triangles; normal angle median `0.0027°`, p99 `≤ 0.028°`.
 8. **`SkinMesh` (`meshType=1`) & `initialTransforms` matrix order** (`scarecrow.cdae`, `snowman.cdae`, `flag_usa_anim.cdae`): **`initialTransforms` is ROW-MAJOR** (`scarecrow.cdae`: row-major `max||M_bone @ invBind - I|| = 0.000163` & `LBS err = 0.000014` vs column-major `5.05` & `5.32`; `flag_usa_anim.cdae`: row-major `0.013` vs column-major `4.00`; `snowman.cdae` carries a uniform `0.36` inverse bind scale). Weight sums per vertex are `1.000000` (`0` out-of-range bone/node/vertex indices across `5,081` skinned vertices); Blender depsgraph rest-pose evaluation matches `initialVerts` to `≤ 1e-6`.
 9. **`TSIntegerSet` encoding** (`scarecrow.cdae`, `snowman.cdae`, `flag_usa_anim.cdae`): stored as a MsgPack `list` of `uint32` bitmask words (e.g. `list(len=2)`).
+10. **`parentMesh >= 0` child-mesh data sharing**: not used by any of the `6,319` files in BeamNG.drive `0.40.6.0`; supported per Torque3D MIT source (`tsMesh.cpp`) and synthetic test, but untested on real data.
 
-### Still Open (Unverified Against Real Files)
-1. **`parentMesh >= 0` child-mesh data sharing**: `0` occurrences across all `6,319` BeamNG `0.40.6.0` v31 files (verified against Torque3D MIT source & synthetic test only).
-2. **In-game loading of exported `.cdae` & BeamNG cache write location**: to be verified manually in BeamNG World Editor using `docs/cdae_manual_test.md`.
+### Remaining Manual Check
+1. **In-game loading of exported `.cdae` & BeamNG cache write location**: to be verified manually in BeamNG World Editor using `docs/cdae_manual_test.md`.

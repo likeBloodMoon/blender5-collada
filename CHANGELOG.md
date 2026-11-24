@@ -4,6 +4,21 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.0] - 2026-11-24
+
+- Added: BeamNG .cdae (v31) import; experimental .cdae export
+
+### Details
+- **BeamNG `.cdae` (v31) Importer** (`import_scene.beamng_cdae` + `IO_FH_beamng_cdae` drag-and-drop):
+  - Pure-Python bounds-checked MsgPack reader (`io_scene_collada/cdae/msgpack_lite.py`), optional Zstandard decompression using Blender's bundled `zstandard` at runtime (clean error if missing), strict `elemSize` validation, and rejection of non-v31 files with the exact version number.
+  - Supports `StandardMesh` and `SkinMesh` (armature, vertex groups, Armature modifier, verified row-major `initialTransforms`), node hierarchies (`Quat16`), `Triangles`/`Strip`/`Fan` primitives, `UV0`/`UV1` (V-flipped), sRGB `ColorI` vertex colors, explicit & encoded normals (Torque3D MIT lookup table), LOD selection (**Highest detail only** or **All detail levels**), optional collision meshes, and double-sided / layered-overlay face preservation on vertex welding.
+  - Unified **Normals** mode: **Exact (keep game normals)** *(default — welded vertices + exact `custom_normal` + `sharp_edge` hints)*, **Sharp edges (easier to edit)**, and **Unmerged (raw GPU vertices)**.
+- **BeamNG `.cdae` (v31) Exporter [Experimental]** (`export_scene.beamng_cdae`):
+  - Scoped to `StandardMesh` only (labeled `[Experimental]` pending in-game confirmation across test cases in `docs/cdae_manual_test.md`), with CW winding conversion, exact float32 GPU vertex deduplication, `calc_tangents()`, selection-only & modifier-application options, and optional Zstandard compression.
+- **Verification & CI**:
+  - Verified against all `6,319` v31 `.cdae` files shipped with BeamNG.drive `0.40.6.0` (0 parse errors), paired `.dae` vs `.cdae` ground-truth checks, and 3-mode export round-trip oracle (`0.0000°` median / `0.0280°` p99 normal delta in default **Exact** mode).
+  - Wired synthetic `.cdae` unit, import, export round-trip, and fuzz tests (`tests/test_cdae_import.py`, `tests/test_cdae_export.py`) into GitHub Actions across Blender `5.0.1` and `5.3.0`. No game files are committed or used in CI.
+
 ## [1.3.1] - 2026-11-23
 
 - Fixed: malformed files could create invalid meshes that crash Blender; archive textures are now read directly from the zip
@@ -76,6 +91,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.4.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.1...v1.4.0
+[1.3.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.2.0...v1.3.0
 [1.2.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.1...v1.2.0
 [1.1.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.1.0...v1.1.1

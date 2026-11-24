@@ -133,13 +133,16 @@ jobs:
           mkdir -p tests/_work_native
           cp tests/_work/*_53.dae tests/_work_native/
 
-      - name: Run Malformed, Fuzz (N=200), and Archive Tests
+      - name: Run Malformed, Fuzz (N=200), Archive, and BeamNG .cdae Synthetic Tests
         run: |
           export BLENDER_5X=".tools/blender-${{ matrix.blender_ver }}-linux-x64/blender"
+          python3 -m pip install --quiet numpy
           python3 tests/test_malformed.py
           COLLADA_NATIVE=1 FUZZ_ITERS=200 python3 tests/fuzz_import.py
           COLLADA_NATIVE=0 FUZZ_ITERS=200 python3 tests/fuzz_import.py
           python3 tests/test_archives.py
+          python3 tests/test_cdae_import.py
+          python3 tests/test_cdae_export.py
 
       - name: Verify byte-identical output with COLLADA_NATIVE=0 fallback
         env:
