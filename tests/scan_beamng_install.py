@@ -111,11 +111,13 @@ def main() -> int:
     # Accept BEAMNG_DIR env var or CLI arg (handling Blender's '--' separator)
     argv = sys.argv
     if "--" in argv:
-        argv = argv[argv.index("--") + 1 :]
+        cli_args = argv[argv.index("--") + 1 :]
+    elif os.path.basename(argv[0]).lower().startswith("blender"):
+        cli_args = []
     else:
-        argv = argv[1:]
+        cli_args = argv[1:]
 
-    beamng_dir = argv[0] if argv else os.environ.get("BEAMNG_DIR", "")
+    beamng_dir = cli_args[0] if cli_args else os.environ.get("BEAMNG_DIR", "")
     if not beamng_dir or not os.path.isdir(beamng_dir):
         print("ERROR: Set BEAMNG_DIR to a valid BeamNG.drive installation directory (or pass as CLI argument).")
         return 1
