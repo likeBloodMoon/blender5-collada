@@ -3,8 +3,9 @@
 .venv*/
 blender-4.5.1-src/
 
-# Built extension archives & native binaries (built in CI)
+# Built extension archives, drafted release notes & native binaries
 dist/
+release-notes/
 io_scene_collada/_native/
 
 # Generated test artifacts & local BeamNG test fixtures (never commit game files)
