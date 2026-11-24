@@ -217,7 +217,8 @@ def _merge_verts_by_distance(
     stage1_map = inv_order[inv_exact].astype(np.int32)
     n_u = len(u_verts)
 
-    # Stage 2: Exact Euclidean <= tol clustering via KDTree (no grid-boundary misses)
+    # Stage 2: Exact Euclidean <= tol clustering via KDTree without transitive chaining.
+    # Every vertex in a cluster is guaranteed to be within <= tol of the cluster's first vertex.
     if n_u > 1:
         kd = KDTree(n_u)
         u_list = u_verts.tolist()
@@ -225,38 +226,19 @@ def _merge_verts_by_distance(
             kd.insert(co, i)
         kd.balance()
 
-        parent = list(range(n_u))
-
-        def _find(x: int) -> int:
-            while parent[x] != x:
-                parent[x] = parent[parent[x]]
-                x = parent[x]
-            return x
-
+        u_to_new = np.full(n_u, -1, dtype=np.int32)
+        keep_u: list[int] = []
         for i, co in enumerate(u_list):
+            if u_to_new[i] != -1:
+                continue
+            nid = len(keep_u)
+            keep_u.append(i)
+            u_to_new[i] = nid
             hits = kd.find_range(co, tol)
             if len(hits) > 1:
-                ri = _find(i)
                 for _hco, j, _dist in hits:
-                    rj = _find(j)
-                    if rj != ri:
-                        if ri < rj:
-                            parent[rj] = ri
-                        else:
-                            parent[ri] = rj
-                            ri = rj
-
-        root_to_new: dict[int, int] = {}
-        keep_u: list[int] = []
-        u_to_new = np.empty(n_u, dtype=np.int32)
-        for i in range(n_u):
-            r = _find(i)
-            nid = root_to_new.get(r)
-            if nid is None:
-                nid = len(keep_u)
-                root_to_new[r] = nid
-                keep_u.append(r)
-            u_to_new[i] = nid
+                    if u_to_new[j] == -1:
+                        u_to_new[j] = nid
 
         if len(keep_u) < n_u:
             merged_verts = u_verts[np.asarray(keep_u, dtype=np.int32)]

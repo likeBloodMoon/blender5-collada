@@ -4,6 +4,14 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.3] - 2026-11-24
+
+- Fixed: prevented transitive vertex-merge chaining in `.cdae` import and added real-file skinned rest-pose verification
+
+### Details
+- **Non-chaining KD-tree vertex merge** (`io_scene_collada/cdae/importer.py`): replaced union-find transitive clustering in `_merge_verts_by_distance()` with greedy first-vertex-bounded clustering so every vertex merged into a cluster stays strictly within `merge_distance` of the cluster's first vertex (eliminating 31 chained merges up to `1.8× tol` on `midtruck_windshield_dmg`).
+- **Tests** (`tests/test_cdae_import.py`): added synthetic non-chaining merge regression test (`kdtree_merge_across_grid_boundary_no_chaining`) and depsgraph rest-pose vertex/normal verification against `initialVerts`/`initialNorms` for skinned `.cdae` meshes.
+
 ## [1.4.2] - 2026-11-24
 
 - Fixed: active collection linking for `.dae` and `.cdae` imports, exact KD-tree vertex merging, skinned `.cdae` bind-pose bones with roll, explicit tangent/mesh-type diagnostics, and `.cdae` export warning summary
@@ -124,6 +132,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.4.3]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.1...v1.4.0

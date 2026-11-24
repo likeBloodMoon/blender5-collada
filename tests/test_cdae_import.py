@@ -512,6 +512,39 @@ def _verify_file(cdae_path: str) -> None:
                     f"{cdae_path} ({normals_mode}): Empty '{ob.name}' has display_size={ob.empty_display_size}"
                 )
 
+        # Also verify rest-pose armature evaluation matches initialVerts/initialNorms for SkinMeshes
+        skin_meshes = [m for m in shape.meshes if m.mesh_type == MESH_TYPE_SKIN]
+        if skin_meshes and normals_mode == "UNMERGED":
+            deps = bpy.context.evaluated_depsgraph_get()
+            sm_obs = [ob for ob in bpy.data.objects if ob.type == "MESH" and any(m.type == "ARMATURE" for m in ob.modifiers)]
+            for ob, sm in zip(sm_obs, skin_meshes):
+                iv = sm.initial_verts if len(sm.initial_verts) > 0 else sm.verts
+                inorm = sm.initial_norms if len(sm.initial_norms) > 0 else sm.norms
+                if len(iv) == 0:
+                    continue
+                ev_ob = ob.evaluated_get(deps)
+                ev_me = ev_ob.to_mesh()
+                try:
+                    ev_co = np.empty(len(ev_me.vertices) * 3, dtype=np.float32)
+                    ev_me.vertices.foreach_get("co", ev_co)
+                    ev_co = ev_co.reshape(-1, 3)
+                    v_err = float(np.linalg.norm(ev_co - iv[:len(ev_co)], axis=1).max())
+                    assert v_err <= 1e-4, f"{cdae_path}: skinned rest-pose vert error {v_err:.6f} > 1e-4"
+                    if len(inorm) >= len(ev_co) and len(ev_me.loops) > 0:
+                        ev_cn = np.empty(len(ev_me.loops) * 3, dtype=np.float32)
+                        ev_me.corner_normals.foreach_get("vector", ev_cn)
+                        ev_cn = ev_cn.reshape(-1, 3)
+                        lv_s = np.empty(len(ev_me.loops), dtype=np.int32)
+                        ev_me.loops.foreach_get("vertex_index", lv_s)
+                        sn = inorm[lv_s].astype(np.float64)
+                        sn /= np.maximum(np.linalg.norm(sn, axis=1, keepdims=True), 1e-12)
+                        en = ev_cn.astype(np.float64)
+                        en /= np.maximum(np.linalg.norm(en, axis=1, keepdims=True), 1e-12)
+                        max_ndeg = float(np.degrees(np.arccos(np.clip(np.einsum("ij,ij->i", en, sn), -1.0, 1.0))).max())
+                        assert max_ndeg <= 0.1, f"{cdae_path}: skinned rest-pose normal error {max_ndeg:.4f}° > 0.1°"
+                finally:
+                    ev_ob.to_mesh_clear()
+
         # Parse reported exact duplicate and degenerate removals per mesh name
         reported_dups = collections.Counter()
         reported_degen = collections.Counter()
@@ -886,7 +919,35 @@ def main() -> int:
             ))
         r_gb = _run_import(runner, worker_path, c_gb, {"normals_mode": "EXACT", "merge_distance": 1e-5})
         assert r_gb["ok"] and r_gb["meshes"][0]["verts"] == 4 and r_gb["meshes"][0]["polys"] == 2, r_gb
-        print("  PASS kdtree_merge_across_grid_boundary")
+        # Verify KD-tree merge does NOT transitively chain (v0=0, v1=0.8e-5, v2=1.6e-5 with tol=1e-5:
+        # v0 & v1 merge, v2 stays separate because ||v2 - v0|| = 1.6e-5 > 1e-5)
+        ch_verts = np.array(
+            [
+                [0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0],
+                [0.8e-5, 0.0, 0.0], [1.6e-5, 0.0, 0.0], [1.0, 1.0, 0.0],
+            ],
+            dtype=np.float32,
+        )
+        ch_mesh = {
+            "type": 0,
+            "verts": ch_verts,
+            "norms": np.tile([0.0, 0.0, 1.0], (6, 1)).astype(np.float32),
+            "primitives": [(0, 6, 0x20000000 | 0)],
+            "indices": np.array([0, 2, 1, 3, 5, 4], dtype=np.uint32),
+        }
+        c_ch = os.path.join(workdir, "kdtree_no_chain.cdae")
+        with open(c_ch, "wb") as f:
+            f.write(build_synthetic_cdae(
+                names=["ChainObj", "detail2"],
+                nodes=[(0, -1, -1, -1, -1)],
+                objects=[(0, 1, 0, 0, -1, -1)],
+                details=[(1, 0, 0, 2.0, -1.0, -1.0, 2, 0, 0, 0, 0, 0.0, 0)],
+                meshes=[ch_mesh],
+                materials=["mat_a"],
+            ))
+        r_ch = _run_import(runner, worker_path, c_ch, {"normals_mode": "EXACT", "merge_distance": 1e-5})
+        assert r_ch["ok"] and r_ch["meshes"][0]["verts"] == 5 and r_ch["meshes"][0]["polys"] == 2, r_ch
+        print("  PASS kdtree_merge_across_grid_boundary_no_chaining")
 
         # Case 4b: Double-sided quad (opposite winding kept unwelded) + exact-duplicate triangle (dropped)
         # Front quad: 2 tris (0,1,2) & (0,2,3); back quad: 2 tris (4,6,5) & (4,7,6) at identical positions;
