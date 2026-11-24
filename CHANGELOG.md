@@ -4,6 +4,21 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.4.1] - 2026-11-24
+
+- Performance: vectorized sharp-edge detection from normals with NumPy (`4×–5.7×` faster `.cdae` and `.dae` imports on large meshes)
+
+### Details
+- **Vectorized `_apply_sharp_edges_from_normals`** (`io_scene_collada/import_collada.py`): replaced per-polygon/per-edge Python dict and `Vector.angle()` loops with `foreach_get`, `np.argsort` grouping by `edge_index`, vectorized dot-product angle calculation for manifold edges, exact non-manifold (`3+` loops) fallback, and a single `foreach_set` write to `sharp_edge`. Benefits both BeamNG `.cdae` (`Exact` and `Sharp edges` modes) and COLLADA `.dae` (`Mark Sharp from Normals`).
+- Verified **100% identical `sharp_edge` sets** across 22 snapshots (`1,308` meshes / `233,792` sharp edges: all synthetic fixtures, 6 local real `.cdae` files in all 3 Normals modes, `.dae` sharp-edge fixtures, and non-manifold edges).
+
+### Performance (Blender 5.3.0, `.cdae` import)
+| Mesh | Mode | Before (`v1.4.0`) | After (`v1.4.1`) | Speedup |
+| --- | --- | ---: | ---: | ---: |
+| `wigeon.cdae` (`83,935` tris) | Exact / Sharp | `1.85 s` / `1.84 s` | **`0.46 s`** / **`0.47 s`** | `4.1×` / `3.9×` |
+| `midtruck.cdae` (`280,787` tris) | Exact / Sharp | `6.54 s` / `6.22 s` | **`1.62 s`** / **`1.55 s`** | `4.0×` / `4.0×` |
+| Suzanne + Subsurf 5 (`503,808` quads / `1,007,616` tris) | Exact / Sharp | `23.51 s` / `23.15 s` | **`4.31 s`** / **`4.03 s`** | `5.5×` / `5.7×` |
+
 ## [1.4.0] - 2026-11-24
 
 - Added: BeamNG .cdae (v31) import; experimental .cdae export
@@ -98,6 +113,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.4.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.0...v1.4.1
 [1.4.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.1...v1.4.0
 [1.3.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.3.0...v1.3.1
 [1.3.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.2.0...v1.3.0

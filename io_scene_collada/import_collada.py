@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import bpy
+import numpy as np
 from mathutils import Matrix, Vector
 
 from ._native_loader import native_parse_f32, native_parse_i32
@@ -690,14 +691,14 @@ class DocumentImporter:
         # Parse <newparam> surface & sampler2D mappings
         surface_to_img: dict[str, str] = {}
         sampler_to_surface: dict[str, str] = {}
-        for np in _find_children(profile, "newparam"):
-            sid = np.attrib.get("sid", "")
-            surf = _find_child(np, "surface")
+        for np_el in _find_children(profile, "newparam"):
+            sid = np_el.attrib.get("sid", "")
+            surf = _find_child(np_el, "surface")
             if surf is not None:
                 init_from = _find_child(surf, "init_from")
                 if init_from is not None and init_from.text:
                     surface_to_img[sid] = init_from.text.strip()
-            samp = _find_child(np, "sampler2D")
+            samp = _find_child(np_el, "sampler2D")
             if samp is not None:
                 src = _find_child(samp, "source")
                 if src is not None and src.text:
@@ -1625,39 +1626,100 @@ class DocumentImporter:
 
     @staticmethod
     def _apply_sharp_edges_from_normals(
-        me: Mesh, loop_normals: list[tuple[float, float, float]], threshold_rad: float
+        me: Mesh, loop_normals: list[tuple[float, float, float]] | np.ndarray, threshold_rad: float
     ) -> None:
-        """Mark sharp_edge directly from COLLADA loop normal discontinuities across each edge."""
-        edge_face_normals: dict[tuple[int, int], list[tuple[Vector, Vector]]] = {}
-        loops = me.loops
-        for poly in me.polygons:
-            lstart = poly.loop_start
-            ltot = poly.loop_total
-            for k in range(ltot):
-                l0 = lstart + k
-                l1 = lstart + ((k + 1) % ltot)
-                v0 = loops[l0].vertex_index
-                v1 = loops[l1].vertex_index
-                n0 = Vector(loop_normals[l0])
-                n1 = Vector(loop_normals[l1])
-                if v0 < v1:
-                    edge_face_normals.setdefault((v0, v1), []).append((n0, n1))
-                else:
-                    edge_face_normals.setdefault((v1, v0), []).append((n1, n0))
+        """Mark sharp_edge directly from loop normal discontinuities across each edge (vectorized)."""
+        n_edges = len(me.edges)
+        if n_edges == 0:
+            return
 
-        sharp_flags: list[bool] = []
-        for edge in me.edges:
-            pairs = edge_face_normals.get(edge.key)
-            is_sharp = False
-            if pairs and len(pairs) >= 2:
-                n_a0, n_a1 = pairs[0]
-                for n_b0, n_b1 in pairs[1:]:
-                    ang0 = n_a0.angle(n_b0, 0.0) if (n_a0.length_squared > 0 and n_b0.length_squared > 0) else 0.0
-                    ang1 = n_a1.angle(n_b1, 0.0) if (n_a1.length_squared > 0 and n_b1.length_squared > 0) else 0.0
-                    if (ang0 + ang1) * 0.5 > threshold_rad:
-                        is_sharp = True
-                        break
-            sharp_flags.append(is_sharp)
+        sharp_flags = np.zeros(n_edges, dtype=bool)
+        n_loops = len(me.loops)
+        n_polys = len(me.polygons)
+
+        if n_loops > 0 and n_polys > 0:
+            loop_verts = np.empty(n_loops, dtype=np.int32)
+            me.loops.foreach_get("vertex_index", loop_verts)
+            loop_edges = np.empty(n_loops, dtype=np.int32)
+            me.loops.foreach_get("edge_index", loop_edges)
+
+            poly_starts = np.empty(n_polys, dtype=np.int32)
+            me.polygons.foreach_get("loop_start", poly_starts)
+            poly_totals = np.empty(n_polys, dtype=np.int32)
+            me.polygons.foreach_get("loop_total", poly_totals)
+
+            arange_l = np.arange(n_loops, dtype=np.int32)
+            next_loop = arange_l + 1
+            poly_ends = poly_starts + poly_totals - 1
+            next_loop[poly_ends] = poly_starts
+
+            # Canonicalize per-loop endpoint order by vertex index so both sides of an edge pair matching ends
+            v0 = loop_verts
+            v1 = loop_verts[next_loop]
+            swap = v0 > v1
+            l_lo = np.where(swap, next_loop, arange_l)
+            l_hi = np.where(swap, arange_l, next_loop)
+
+            norms = np.asarray(loop_normals, dtype=np.float64).reshape(n_loops, 3)
+            lens_sq = np.einsum("ij,ij->i", norms, norms)
+            valid = lens_sq > 0.0
+            unit = np.zeros_like(norms)
+            unit[valid] = norms[valid] / np.sqrt(lens_sq[valid])[:, None]
+
+            order = np.argsort(loop_edges, kind="stable")
+            e_sorted = loop_edges[order]
+            counts = np.bincount(e_sorted, minlength=n_edges)
+            e_starts = np.empty(n_edges, dtype=np.int32)
+            e_starts[0] = 0
+            if n_edges > 1:
+                np.cumsum(counts[:-1], out=e_starts[1:])
+
+            # Fast path: manifold edges (exactly 2 loops)
+            m2 = np.flatnonzero(counts == 2)
+            if m2.size > 0:
+                s2 = e_starts[m2]
+                la = order[s2]
+                lb = order[s2 + 1]
+                ia0 = l_lo[la]
+                ia1 = l_hi[la]
+                ib0 = l_lo[lb]
+                ib1 = l_hi[lb]
+                dot0 = np.clip(np.einsum("ij,ij->i", unit[ia0], unit[ib0]), -1.0, 1.0)
+                dot1 = np.clip(np.einsum("ij,ij->i", unit[ia1], unit[ib1]), -1.0, 1.0)
+                ang0 = np.where(valid[ia0] & valid[ib0], np.arccos(dot0), 0.0)
+                ang1 = np.where(valid[ia1] & valid[ib1], np.arccos(dot1), 0.0)
+                sharp_flags[m2] = (ang0 + ang1) * 0.5 > threshold_rad
+
+            # Non-manifold edges (3+ loops): compare first face pair against remaining pairs
+            m3 = np.flatnonzero(counts >= 3)
+            if m3.size > 0:
+                for ei in m3.tolist():
+                    st = int(e_starts[ei])
+                    cnt = int(counts[ei])
+                    la_i = int(order[st])
+                    ia0_i = int(l_lo[la_i])
+                    ia1_i = int(l_hi[la_i])
+                    ua0 = unit[ia0_i]
+                    ua1 = unit[ia1_i]
+                    va0 = bool(valid[ia0_i])
+                    va1 = bool(valid[ia1_i])
+                    for k in range(1, cnt):
+                        lb_i = int(order[st + k])
+                        ib0_i = int(l_lo[lb_i])
+                        ib1_i = int(l_hi[lb_i])
+                        ang0_f = (
+                            math.acos(max(-1.0, min(1.0, float(np.dot(ua0, unit[ib0_i])))))
+                            if (va0 and valid[ib0_i])
+                            else 0.0
+                        )
+                        ang1_f = (
+                            math.acos(max(-1.0, min(1.0, float(np.dot(ua1, unit[ib1_i])))))
+                            if (va1 and valid[ib1_i])
+                            else 0.0
+                        )
+                        if (ang0_f + ang1_f) * 0.5 > threshold_rad:
+                            sharp_flags[ei] = True
+                            break
 
         se = me.attributes.get("sharp_edge")
         if se is None:
