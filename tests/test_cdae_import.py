@@ -513,10 +513,9 @@ def _verify_file(cdae_path: str) -> None:
             )
             if m:
                 reported_dups[m.group(1)] += int(m.group(2))
-        for warn in importer.warnings:
-            m = re.match(r"^Mesh '(.+)': (\d+) degenerate faces smaller than ", warn)
-            if m:
-                reported_degen[m.group(1)] += int(m.group(2))
+            m2 = re.match(r"^Mesh '(.+)': (\d+) tiny faces \(under [0-9.eE+-]+ mm\) merged away$", info)
+            if m2:
+                reported_degen[m2.group(1)] += int(m2.group(2))
 
         selected_details = importer._select_details(shape)
         # Collect expected non-null (obj_name, c_mesh) per detail collection in exact creation order
