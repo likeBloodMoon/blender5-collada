@@ -27,6 +27,7 @@ from bpy_extras.io_utils import (
     poll_file_object_drop,
 )
 
+from .cdae.exporter import CdaeExporter, CdaeExportSettings, zstd_available
 from .cdae.importer import CdaeImporter, CdaeImportSettings
 from .export_collada import DocumentExporter, ExportSettings
 from .import_collada import DocumentImporter, ImportSettings
@@ -675,6 +676,73 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         return {"CANCELLED"}
 
 
+class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
+    """Export mesh objects to BeamNG Cached Collada (.cdae v31, experimental, StandardMesh only)"""
+
+    bl_idname = "export_scene.beamng_cdae"
+    bl_label = "BeamNG Cached Collada (.cdae) [Experimental]"
+    bl_options = {"PRESET"}
+
+    filename_ext = ".cdae"
+    filter_glob: StringProperty(
+        default="*.cdae",
+        options={"HIDDEN"},
+    )
+
+    use_selection: BoolProperty(
+        name="Selection Only",
+        description="Export selected mesh objects only",
+        default=False,
+    )
+    apply_modifiers: BoolProperty(
+        name="Apply Modifiers",
+        description="Apply modifiers before exporting",
+        default=True,
+    )
+    compress: BoolProperty(
+        name="Compress (Zstandard)",
+        description="Compress the .cdae body with Zstandard (requires zstandard in Blender's Python)",
+        default=False,
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        layout.use_property_split = True
+        layout.use_property_decorate = False
+
+        box = layout.box()
+        box.label(text="BeamNG .cdae [Experimental]", icon="EXPORT")
+        col = box.column(align=False)
+        col.prop(self, "use_selection")
+        col.prop(self, "apply_modifiers")
+        sub = col.column()
+        sub.enabled = zstd_available()
+        sub.prop(self, "compress")
+
+    def execute(self, context):
+        if not self.filepath:
+            self.report({"ERROR"}, "No filepath given")
+            return {"CANCELLED"}
+
+        settings = CdaeExportSettings(
+            filepath=self.filepath,
+            use_selection=self.use_selection,
+            apply_modifiers=self.apply_modifiers,
+            compress=self.compress and zstd_available(),
+        )
+        exporter = CdaeExporter(context, settings)
+        ok = exporter.export_document()
+        for warn in exporter.warnings[:5]:
+            self.report({"WARNING"}, warn)
+        if ok:
+            return {"FINISHED"}
+        if exporter.errors:
+            self.report({"ERROR"}, "; ".join(exporter.errors))
+        else:
+            self.report({"ERROR"}, "BeamNG .cdae export failed")
+        return {"CANCELLED"}
+
+
 class IO_FH_collada(bpy.types.FileHandler):
     bl_idname = "IO_FH_collada"
     bl_label = "Collada"
@@ -705,12 +773,17 @@ def menu_func_import(self, context):
 
 def menu_func_export(self, context):
     self.layout.operator(WM_OT_collada_export.bl_idname, text="Collada (Default) (.dae)")
+    self.layout.operator(
+        EXPORT_SCENE_OT_beamng_cdae.bl_idname,
+        text="BeamNG Cached Collada (.cdae) [Experimental]",
+    )
 
 
 classes = (
     WM_OT_collada_export,
     WM_OT_collada_import,
     IMPORT_SCENE_OT_beamng_cdae,
+    EXPORT_SCENE_OT_beamng_cdae,
     IO_FH_collada,
     IO_FH_beamng_cdae,
 )
