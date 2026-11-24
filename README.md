@@ -86,6 +86,11 @@ In addition to `.dae`, the extension includes native **BeamNG Cached Collada (`.
 - **Export [Experimental]** (`export_scene.beamng_cdae` — **File → Export → BeamNG Cached Collada (.cdae) [Experimental]**):
   - Currently scoped to **`StandardMesh` only** (skinned export waits on in-game verification) and labeled `[Experimental]` until in-game loading is confirmed across all test cases (see [`docs/cdae_manual_test.md`](docs/cdae_manual_test.md)).
   - Note: BeamNG.drive normally regenerates `.cdae` files automatically from `.dae` on first load, so `.dae` remains the recommended production export format for BeamNG mods.
+- **Known limitations**:
+  - `.cdae` **v31 only** (BeamNG.drive `0.40.x`); older versions (such as legacy v26) are rejected with a clear message.
+  - Animations (sequences) are not imported yet; meshes, armatures, and skin weights are.
+  - Export is **`[Experimental]`**: static meshes (`StandardMesh`) only, not yet tested in-game.
+  - Tested by parsing all **6,319 `.cdae` files** shipped with BeamNG.drive `0.40.6.0` (0 parse errors).
 - **Verification**:
   - **Tested against all 6,319 v31 `.cdae` files shipped with BeamNG.drive `0.40.6.0`** (`172` archives scanned read-only in `16.0 s`: `6,319 / 6,319` v31 files parsed cleanly with 0 errors; `39 / 39` animated files import cleanly; `2` legacy v26 files rejected cleanly).
   - **Paired `.dae` vs `.cdae` verification** (`wigeon_bigwing`, `wigeon`, `midtruck` — `396` objects): `0.000000 m` location error, `max 0.0396°` `Quat16` rotation error, `0.000000` median UV0/UV1 error, `≤ 1/255` sRGB vertex color diff, `100.00%` per-face material match.
