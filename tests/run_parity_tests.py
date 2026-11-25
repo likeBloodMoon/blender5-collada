@@ -571,7 +571,7 @@ def main() -> int:
             kw_str = ", " + kw_str
 
         s45 = f"import bpy; bpy.ops.wm.collada_export(filepath=r'{dae45}'{kw_str})"
-        s53 = f"import bpy; bpy.ops.wm.collada_export(filepath=r'{dae53}'{kw_str})"
+        s53 = f"import bpy; bpy.ops.wm.collada_export(filepath=r'{dae53}'{kw_str}, keep_normals=False)"
 
         r45 = run_blender(BLENDER_45, bpath, s45)
         r53 = run_blender(BLENDER_53, bpath, s53)

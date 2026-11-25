@@ -57,6 +57,7 @@ from .collada_utils import (
     is_export_root,
     is_leaf_bone,
     is_root_bone,
+    KEEP_NORMALS_ATTR,
     matrix_to_dae_flat,
     sanitize_matrix,
     sanitize_vec3,
@@ -89,6 +90,7 @@ class ExportSettings:
     active_uv_only: bool = False
     use_texture_copies: bool = True
     triangulate: bool = True
+    keep_normals: bool = True
     use_object_instantiation: bool = True
     use_blender_profile: bool = True
     sort_by_name: bool = False
@@ -813,7 +815,14 @@ class DocumentExporter:
         if n_polys == 0:
             return np.empty((0, 3), dtype=np.float32), np.empty((0,), dtype=np.int32)
 
-        use_corner_normals = mesh.has_custom_normals or mesh.normals_domain == "CORNER"
+        keep_attr = mesh.attributes.get(KEEP_NORMALS_ATTR)
+        use_kept_normals = (
+            keep_attr is not None
+            and keep_attr.domain == "CORNER"
+            and keep_attr.data_type == "FLOAT_VECTOR"
+            and len(keep_attr.data) == n_loops
+        )
+        use_corner_normals = use_kept_normals or mesh.has_custom_normals or mesh.normals_domain == "CORNER"
         all_vert_normals = use_corner_normals or bool(use_smooth.all())
         all_flat = (not use_corner_normals) and (not bool(use_smooth.any()))
 
@@ -827,7 +836,12 @@ class DocumentExporter:
 
         # Fast path 2: corner normals or all smooth faces -> deduplicate in first-seen order
         if all_vert_normals:
-            if use_corner_normals:
+            if use_kept_normals:
+                raw_n = np.empty(n_loops * 3, dtype=np.float32)
+                keep_attr.data.foreach_get("vector", raw_n)
+                raw_n = raw_n.reshape(n_loops, 3)
+                mesh.attributes.remove(keep_attr)
+            elif use_corner_normals:
                 raw_n = np.empty(n_loops * 3, dtype=np.float32)
                 mesh.corner_normals.foreach_get("vector", raw_n)
                 raw_n = raw_n.reshape(n_loops, 3)
@@ -1227,7 +1241,11 @@ class DocumentExporter:
         geom_name = encode_xml(ob.data.name if use_inst else ob.name)
 
         mesh, needs_free = get_mesh_copy(
-            self.depsgraph, ob, self.settings.apply_modifiers, self.settings.triangulate
+            self.depsgraph,
+            ob,
+            self.settings.apply_modifiers,
+            self.settings.triangulate,
+            keep_normals=self.settings.keep_normals,
         )
         try:
             self._write_mesh_xml(ob, mesh, geom_id, geom_name, include_loose_edges=True)
@@ -1272,7 +1290,11 @@ class DocumentExporter:
         if len(ob.vertex_groups) == 0:
             return
         mesh, needs_free = get_mesh_copy(
-            self.depsgraph, ob, self.settings.apply_modifiers, self.settings.triangulate
+            self.depsgraph,
+            ob,
+            self.settings.apply_modifiers,
+            self.settings.triangulate,
+            keep_normals=False,
         )
         try:
             has_any_weights = any(len(v.groups) > 0 for v in mesh.vertices)
