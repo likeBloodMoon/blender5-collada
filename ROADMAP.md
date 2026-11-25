@@ -24,7 +24,7 @@ Products:
 - [ ] #13 `.cdae` import: read Blenux-written files, with warnings
 
 **Robustness**
-- [ ] #1 Malformed `.dae` → clean error, not a traceback
+- [x] #1 Malformed `.dae` → clean error, not a traceback
 - [ ] #2 msgpack unhashable keys + NumPy warning control flow
 - [ ] #3 Archive hardening: entry-count cap, reject DTDs
 

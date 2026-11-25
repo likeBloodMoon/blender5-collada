@@ -10,6 +10,7 @@ import io
 import math
 import os
 import re
+import traceback
 import urllib.parse
 import warnings as _warnings_mod
 import xml.etree.ElementTree as ET
@@ -539,7 +540,7 @@ class DocumentImporter:
                         except Exception as e:
                             self.errors.append(f"Failed to parse XML: {e}")
                             return False
-                        return self._import_dae_tree(tree)
+                        return self._safe_import_dae_tree(tree)
 
                     # Multi-DAE import ("ALL"): import every .dae into its own sub-collection
                     for ob in self.view_layer.objects:
@@ -570,8 +571,16 @@ class DocumentImporter:
                         sub_coll = bpy.data.collections.new(coll_name)
                         base_collection.children.link(sub_coll)
                         self.target_collection = sub_coll
-                        if self._import_dae_tree(tree, deselect_existing=False):
+                        if self._safe_import_dae_tree(
+                            tree,
+                            deselect_existing=False,
+                            entry_label=dae_norm,
+                            as_warning=True,
+                        ):
                             any_ok = True
+                        elif len(sub_coll.objects) == 0 and len(sub_coll.children) == 0:
+                            base_collection.children.unlink(sub_coll)
+                            bpy.data.collections.remove(sub_coll)
                     return any_ok
             except Exception as e:
                 self.errors.append(f"Archive import failed: {e}")
@@ -587,6 +596,58 @@ class DocumentImporter:
                 self._beamng_mat_maps = {}
         return self._import_dae_file(self.settings.filepath)
 
+    def _safe_import_dae_tree(
+        self,
+        tree: ET.ElementTree,
+        *,
+        deselect_existing: bool = True,
+        entry_label: str | None = None,
+        as_warning: bool = False,
+    ) -> bool:
+        """Run ``_import_dae_tree`` with clean error reporting and partial-datablock cleanup."""
+        pre_objects = set(bpy.data.objects)
+        pre_meshes = set(bpy.data.meshes)
+        pre_armatures = set(bpy.data.armatures)
+        pre_cameras = set(bpy.data.cameras)
+        pre_lights = set(bpy.data.lights)
+        pre_materials = set(bpy.data.materials)
+        pre_images = set(bpy.data.images)
+        pre_actions = set(bpy.data.actions)
+        pre_collections = set(bpy.data.collections)
+        try:
+            return self._import_dae_tree(tree, deselect_existing=deselect_existing)
+        except Exception as exc:
+            traceback.print_exc()
+            # Clean up any objects / datablocks partially created before the failure
+            for ob in list(bpy.data.objects):
+                if ob not in pre_objects:
+                    try:
+                        bpy.data.objects.remove(ob, do_unlink=True)
+                    except Exception:
+                        pass
+            for data_coll, pre_set in (
+                (bpy.data.meshes, pre_meshes),
+                (bpy.data.armatures, pre_armatures),
+                (bpy.data.cameras, pre_cameras),
+                (bpy.data.lights, pre_lights),
+                (bpy.data.materials, pre_materials),
+                (bpy.data.images, pre_images),
+                (bpy.data.actions, pre_actions),
+                (bpy.data.collections, pre_collections),
+            ):
+                for item in list(data_coll):
+                    if item not in pre_set:
+                        try:
+                            data_coll.remove(item)
+                        except Exception:
+                            pass
+            msg = f"Import failed for '{entry_label}': {exc}" if entry_label else f"Import failed: {exc}"
+            if as_warning:
+                self.warnings.append(msg)
+            else:
+                self.errors.append(msg)
+            return False
+
     def _import_dae_file(self, dae_path: str) -> bool:
         self._beamng_mat_maps = {}
         self._load_disk_materials_json(self.dae_dir)
@@ -595,7 +656,7 @@ class DocumentImporter:
         except Exception as e:
             self.errors.append(f"Failed to parse XML: {e}")
             return False
-        return self._import_dae_tree(tree)
+        return self._safe_import_dae_tree(tree)
 
     def _compute_node_filter_plan(self, root: ET.Element, node_filter: set[str]) -> None:
         """Pre-scan visual scenes to determine kept nodes, geometries, materials, and images."""
@@ -3005,7 +3066,7 @@ class DocumentImporter:
                         self.warnings.append(
                             f"Invalid stride '{acc.attrib['stride']}' in animation source '{sid}'"
                         )
-                        stride = 0
+                        continue
             if stride <= 0:
                 self.warnings.append(f"Invalid stride {stride} in animation source '{sid}'")
                 continue
