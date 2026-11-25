@@ -949,30 +949,57 @@ class DocumentExporter:
         geom_id: str,
         geom_name: str,
         include_loose_edges: bool = True,
+        use_loop_triangles: bool = False,
     ) -> None:
         import numpy as np
 
-        n_polys = len(mesh.polygons)
         n_loops = len(mesh.loops)
         vcount = len(mesh.vertices)
 
-        loop_starts = np.empty(n_polys, dtype=np.int32)
-        loop_totals = np.empty(n_polys, dtype=np.int32)
-        use_smooth = np.empty(n_polys, dtype=bool)
-        mat_indices = np.empty(n_polys, dtype=np.int32)
-        if n_polys > 0:
-            mesh.polygons.foreach_get("loop_start", loop_starts)
-            mesh.polygons.foreach_get("loop_total", loop_totals)
-            mesh.polygons.foreach_get("use_smooth", use_smooth)
-            mesh.polygons.foreach_get("material_index", mat_indices)
+        if use_loop_triangles:
+            mesh.calc_loop_triangles()
+            n_polys = len(mesh.loop_triangles)
+            n_emit_loops = n_polys * 3
+            tri_loops = np.empty(n_emit_loops, dtype=np.int32)
+            loop_vidx = np.empty(n_emit_loops, dtype=np.int32)
+            mat_indices = np.empty(n_polys, dtype=np.int32)
+            if n_polys > 0:
+                mesh.loop_triangles.foreach_get("loops", tri_loops)
+                mesh.loop_triangles.foreach_get("vertices", loop_vidx)
+                mesh.loop_triangles.foreach_get("material_index", mat_indices)
+            loop_totals = np.full(n_polys, 3, dtype=np.int32)
+            if n_emit_loops > 0:
+                cn = np.empty(n_loops * 3, dtype=np.float32)
+                mesh.corner_normals.foreach_get("vector", cn)
+                raw64 = cn.reshape(n_loops, 3)[tri_loops].astype(np.float64)
+                lens = np.linalg.norm(raw64, axis=1, keepdims=True)
+                mask = lens[:, 0] > 0.0
+                raw64[mask] /= lens[mask]
+                normals_arr, loop_norm_idx = _dedup_float_rows(raw64.astype(np.float32))
+            else:
+                normals_arr = np.empty((0, 3), dtype=np.float32)
+                loop_norm_idx = np.empty(0, dtype=np.int32)
+        else:
+            tri_loops = None
+            n_polys = len(mesh.polygons)
+            n_emit_loops = n_loops
+            loop_starts = np.empty(n_polys, dtype=np.int32)
+            loop_totals = np.empty(n_polys, dtype=np.int32)
+            use_smooth = np.empty(n_polys, dtype=bool)
+            mat_indices = np.empty(n_polys, dtype=np.int32)
+            if n_polys > 0:
+                mesh.polygons.foreach_get("loop_start", loop_starts)
+                mesh.polygons.foreach_get("loop_total", loop_totals)
+                mesh.polygons.foreach_get("use_smooth", use_smooth)
+                mesh.polygons.foreach_get("material_index", mat_indices)
 
-        loop_vidx = np.empty(n_loops, dtype=np.int32)
-        if n_loops > 0:
-            mesh.loops.foreach_get("vertex_index", loop_vidx)
+            loop_vidx = np.empty(n_loops, dtype=np.int32)
+            if n_loops > 0:
+                mesh.loops.foreach_get("vertex_index", loop_vidx)
 
-        normals_arr, loop_norm_idx = self._create_normals(
-            mesh, loop_starts, loop_totals, use_smooth, loop_vidx
-        )
+            normals_arr, loop_norm_idx = self._create_normals(
+                mesh, loop_starts, loop_totals, use_smooth, loop_vidx
+            )
 
         # Byte color attributes on CORNER domain (matching CD_PROP_BYTE_COLOR)
         byte_color_attrs = [
@@ -1030,15 +1057,18 @@ class DocumentExporter:
                 uv_arr = np.empty(n_loops * 2, dtype=np.float32)
                 if n_loops > 0:
                     uvl.data.foreach_get("uv", uv_arr)
-                if dedupe_attrs and n_loops > 0:
-                    uniq_uv, uv_idx = _dedup_float_rows(uv_arr.reshape(n_loops, 2))
+                uv_rows = uv_arr.reshape(n_loops, 2)
+                if tri_loops is not None:
+                    uv_rows = uv_rows[tri_loops] if n_emit_loops > 0 else np.empty((0, 2), dtype=np.float32)
+                if dedupe_attrs and n_emit_loops > 0:
+                    uniq_uv, uv_idx = _dedup_float_rows(uv_rows)
                     self._write_float_source_raw(
                         layer_id, f"{layer_id}-array", len(uniq_uv), 2, ("S", "T"), fmt_f32_array(uniq_uv)
                     )
                     uv_layer_indices.append((layer_id, set_idx, uv_idx))
                 else:
                     self._write_float_source_raw(
-                        layer_id, f"{layer_id}-array", n_loops, 2, ("S", "T"), fmt_f32_array(uv_arr)
+                        layer_id, f"{layer_id}-array", n_emit_loops, 2, ("S", "T"), fmt_f32_array(uv_rows)
                     )
 
         # 4. Vertex color sources (foreach_get)
@@ -1049,8 +1079,11 @@ class DocumentExporter:
                 col_arr = np.empty(n_loops * 4, dtype=np.float32)
                 if n_loops > 0:
                     attr.data.foreach_get("color_srgb", col_arr)
-                if dedupe_attrs and n_loops > 0:
-                    uniq_col, col_idx = _dedup_float_rows(col_arr.reshape(n_loops, 4))
+                col_rows = col_arr.reshape(n_loops, 4)
+                if tri_loops is not None:
+                    col_rows = col_rows[tri_loops] if n_emit_loops > 0 else np.empty((0, 4), dtype=np.float32)
+                if dedupe_attrs and n_emit_loops > 0:
+                    uniq_col, col_idx = _dedup_float_rows(col_rows)
                     self._write_float_source_raw(
                         layer_id,
                         f"{layer_id}-array",
@@ -1065,10 +1098,10 @@ class DocumentExporter:
                     self._write_float_source_raw(
                         layer_id,
                         f"{layer_id}-array",
-                        n_loops,
+                        n_emit_loops,
                         4,
                         ("R", "G", "B", "A"),
-                        fmt_f32_array(col_arr),
+                        fmt_f32_array(col_rows),
                         source_name=attr.name,
                     )
 
@@ -1101,7 +1134,7 @@ class DocumentExporter:
         if n_polys > 0:
             mat_count = len(ob.material_slots)
             loop_mat = np.repeat(mat_indices, loop_totals)
-            tex_indices = None if dedupe_attrs else np.arange(n_loops, dtype=np.int32)
+            tex_indices = None if dedupe_attrs else np.arange(n_emit_loops, dtype=np.int32)
             if mat_count > 0:
                 for a in range(mat_count):
                     self._write_primitive_list(
@@ -1337,16 +1370,24 @@ class DocumentExporter:
         self.exported_geometries.add(geom_id)
         geom_name = encode_xml(ob.data.name if use_inst else ob.name)
 
+        use_loop_tris = self.settings.triangulate and not self.settings.keep_quads and self.settings.keep_normals
         mesh, needs_free = get_mesh_copy(
             self.depsgraph,
             ob,
             self.settings.apply_modifiers,
-            self.settings.triangulate,
+            False if use_loop_tris else self.settings.triangulate,
             keep_normals=self.settings.keep_normals,
             keep_quads=self.settings.keep_quads,
         )
         try:
-            self._write_mesh_xml(ob, mesh, geom_id, geom_name, include_loose_edges=True)
+            self._write_mesh_xml(
+                ob,
+                mesh,
+                geom_id,
+                geom_name,
+                include_loose_edges=True,
+                use_loop_triangles=use_loop_tris,
+            )
 
             # Shape keys
             if self.settings.include_shapekeys and ob.data.shape_keys is not None:
@@ -1361,7 +1402,14 @@ class DocumentExporter:
                             for vi, kd in enumerate(kb.data):
                                 mesh.vertices[vi].co = kd.co
                             mesh.update()
-                        self._write_mesh_xml(ob, mesh, morph_id, encode_xml(kb.name), include_loose_edges=False)
+                        self._write_mesh_xml(
+                            ob,
+                            mesh,
+                            morph_id,
+                            encode_xml(kb.name),
+                            include_loose_edges=False,
+                            use_loop_triangles=use_loop_tris,
+                        )
         finally:
             if needs_free:
                 bpy.data.meshes.remove(mesh)
