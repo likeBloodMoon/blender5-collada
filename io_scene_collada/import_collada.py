@@ -29,6 +29,7 @@ from .beamng_materials import (
     parse_beamng_materials_json,
 )
 from .collada_utils import (
+    check_target_collection_visibility,
     create_fcurve_on_channelbag,
     dae_flat_to_matrix,
     ensure_action_and_channelbag,
@@ -628,7 +629,12 @@ class DocumentImporter:
                         except Exception as e:
                             self.errors.append(f"Failed to parse XML: {e}")
                             return False
-                        return self._safe_import_dae_tree(tree)
+                        ok_main = self._safe_import_dae_tree(tree)
+                        if ok_main:
+                            vis_warn = check_target_collection_visibility(self.view_layer, base_collection)
+                            if vis_warn:
+                                self.warnings.append(vis_warn)
+                        return ok_main
 
                     # Multi-DAE import ("ALL"): import every .dae into its own sub-collection
                     for ob in self.view_layer.objects:
@@ -669,6 +675,10 @@ class DocumentImporter:
                         elif len(sub_coll.objects) == 0 and len(sub_coll.children) == 0:
                             base_collection.children.unlink(sub_coll)
                             bpy.data.collections.remove(sub_coll)
+                    if any_ok:
+                        vis_warn = check_target_collection_visibility(self.view_layer, base_collection)
+                        if vis_warn:
+                            self.warnings.append(vis_warn)
                     return any_ok
             except Exception as e:
                 self.errors.append(f"Archive import failed: {e}")
@@ -682,7 +692,12 @@ class DocumentImporter:
                 self._archive_images_by_entry = {}
                 self._archive_dae_dir = ""
                 self._beamng_mat_maps = {}
-        return self._import_dae_file(self.settings.filepath)
+        ok = self._import_dae_file(self.settings.filepath)
+        if ok:
+            vis_warn = check_target_collection_visibility(self.view_layer, self.target_collection)
+            if vis_warn:
+                self.warnings.append(vis_warn)
+        return ok
 
     def _safe_import_dae_tree(
         self,

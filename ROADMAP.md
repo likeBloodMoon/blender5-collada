@@ -49,7 +49,7 @@ Products:
 - [ ] #6 Allow-failure CI job against Blender daily builds
 - [ ] #14 Broader ruff rules + mypy on `cdae/`
 - [x] #7 Shared warning-cap helper
-- [ ] #8 Warn when importing into an excluded or hidden collection
+- [x] #8 Warn when importing into an excluded or hidden collection
 - [ ] #9 Make "restart after update" visible in Preferences
 - [x] Add the accuracy test kit to CI. Gate: custom-normal, non-planar and hierarchy cases < 0.1° / < 0.1 mm.
 

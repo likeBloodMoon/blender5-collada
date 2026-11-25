@@ -584,3 +584,27 @@ def report_capped(op, level: str, messages, limit: int = 5, *, fallback: str = "
     if len(msgs) > limit:
         noun = level.lower()
         op.report({level}, f"... and {len(msgs) - limit} more {noun}(s)")
+
+
+def check_target_collection_visibility(view_layer, target_collection) -> str | None:
+    """Return a warning message if ``target_collection`` is excluded or hidden in ``view_layer``."""
+    if view_layer is None or target_collection is None:
+        return None
+    root_lc = getattr(view_layer, "layer_collection", None)
+    if root_lc is None:
+        return None
+
+    def _find(lc, ancestor_hidden: bool):
+        is_hidden = ancestor_hidden or bool(lc.exclude) or bool(lc.hide_viewport) or bool(lc.collection.hide_viewport)
+        if lc.collection == target_collection:
+            return is_hidden
+        for ch in lc.children:
+            res = _find(ch, is_hidden)
+            if res is not None:
+                return res
+        return None
+
+    hidden = _find(root_lc, False)
+    if hidden:
+        return f"Imported into '{target_collection.name}', which is excluded/hidden in this view layer"
+    return None
