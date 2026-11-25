@@ -44,7 +44,8 @@ sys.path.insert(0, repo_root)
 import bpy
 import bmesh
 import numpy as np
-from mathutils import Euler, Quaternion
+from mathutils import Euler, Quaternion, Vector
+from mathutils.bvhtree import BVHTree
 
 import io_scene_collada
 from io_scene_collada.cdae.exporter import zstd_available
@@ -237,6 +238,141 @@ tan_warnings = []
 _build_gpu_mesh_data(_FailingTangentMeshProxy(me_orig), None, {}, [], warnings=tan_warnings, mesh_name="BrokenTanMesh")
 assert len(tan_warnings) == 1 and "tangent calculation failed" in tan_warnings[0] and "BrokenTanMesh" in tan_warnings[0], tan_warnings
 print("  PASS tangent_failure_warning_reported")
+
+
+# Test 5: #11 Scaled-parent hierarchies (uniform, non-uniform + shear, negative/mirrored)
+def _extract_world_tris(obs):
+    """Return world-space (tris_P [N,3,3], tris_N [N,3,3], geom_N [N,3]) with outward orientation."""
+    P_list, N_list, G_list = [], [], []
+    for ob in obs:
+        if ob.type != "MESH":
+            continue
+        me = ob.data
+        me.calc_loop_triangles()
+        nt = len(me.loop_triangles)
+        if nt == 0:
+            continue
+        mw = ob.matrix_world.copy()
+        det = mw.to_3x3().determinant()
+        nm = mw.to_3x3().inverted_safe().transposed()
+        tl = np.empty(nt * 3, dtype=np.int32)
+        me.loop_triangles.foreach_get("loops", tl)
+        lv = np.empty(len(me.loops), dtype=np.int32)
+        me.loops.foreach_get("vertex_index", lv)
+        co = np.empty(len(me.vertices) * 3, dtype=np.float64)
+        me.vertices.foreach_get("co", co)
+        M4 = np.array(mw, dtype=np.float64)
+        co_w = co.reshape(-1, 3) @ M4[:3, :3].T + M4[:3, 3]
+        tri_p = co_w[lv[tl]].reshape(nt, 3, 3)
+        cn = np.empty(len(me.loops) * 3, dtype=np.float32)
+        me.corner_normals.foreach_get("vector", cn)
+        cn_w = cn.reshape(-1, 3).astype(np.float64) @ np.array(nm, dtype=np.float64).T
+        cn_w /= np.maximum(np.linalg.norm(cn_w, axis=1, keepdims=True), 1e-12)
+        tri_n = cn_w[tl].reshape(nt, 3, 3)
+        # Compute outward geometric normal (account for negative-det world matrix)
+        cr = np.cross(tri_p[:, 1] - tri_p[:, 0], tri_p[:, 2] - tri_p[:, 0])
+        if det < 0.0:
+            cr = -cr
+        alen = np.linalg.norm(cr, axis=1, keepdims=True)
+        gn = cr / np.maximum(alen, 1e-30)
+        P_list.append(tri_p)
+        N_list.append(tri_n)
+        G_list.append(gn)
+    return np.concatenate(P_list), np.concatenate(N_list), np.concatenate(G_list)
+
+
+def _check_scaled_hierarchy(label, parent_scale):
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    root = bpy.data.objects.new("root_empty", None)
+    bpy.context.scene.collection.objects.link(root)
+    root.location = (5.0, -2.0, 1.0)
+    root.rotation_euler = (0.4, 0.0, 1.0)
+    root.scale = parent_scale
+
+    bm = bmesh.new()
+    bmesh.ops.create_cube(bm, size=1.0)
+    me_a = bpy.data.meshes.new("child_a")
+    bm.to_mesh(me_a)
+    bm.free()
+    me_a.shade_flat()
+    child_a = bpy.data.objects.new("child_a", me_a)
+    bpy.context.scene.collection.objects.link(child_a)
+    child_a.parent = root
+    child_a.location = (1.0, 0.0, 0.0)
+    child_a.rotation_euler = (0.0, 0.5, 0.0)
+    child_a.scale = (1.0, 1.0, 1.0)
+
+    bm = bmesh.new()
+    bmesh.ops.create_cone(bm, cap_ends=True, segments=12, radius1=0.5, radius2=0.0, depth=1.0)
+    me_b = bpy.data.meshes.new("grandchild_b")
+    bm.to_mesh(me_b)
+    bm.free()
+    me_b.shade_flat()
+    grand_b = bpy.data.objects.new("grandchild_b", me_b)
+    bpy.context.scene.collection.objects.link(grand_b)
+    grand_b.parent = child_a
+    grand_b.location = (0.0, 0.0, 2.0)
+    grand_b.rotation_euler = (0.3, 0.3, 0.0)
+    grand_b.scale = (0.5, 1.0, 1.5)
+
+    bpy.context.view_layer.update()
+    gt_P, gt_N, gt_G = _extract_world_tris([child_a, grand_b])
+
+    out_p = os.path.join(workdir, f"hier_{label}.cdae")
+    res = bpy.ops.export_scene.beamng_cdae(filepath=out_p, use_selection=False, apply_modifiers=True)
+    assert res == {"FINISHED"}
+
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    res = bpy.ops.import_scene.beamng_cdae(filepath=out_p, normals_mode="EXACT")
+    assert res == {"FINISHED"}
+    bpy.context.view_layer.update()
+
+    im_obs = [bpy.data.objects["child_a"], bpy.data.objects["grandchild_b"]]
+    # Imported objects must have positive unit scale (all scale/reflection baked into verts)
+    for o in im_obs:
+        assert o.matrix_world.to_3x3().determinant() > 0.0, f"{label}: {o.name} has negative det!"
+
+    im_P, im_N, im_G = _extract_world_tris(im_obs)
+    assert len(im_P) == len(gt_P), f"{label}: tri count {len(im_P)} != {len(gt_P)}"
+
+    # Bidirectional surface distance via BVHTree (robust to quad diagonal choice)
+    gv = gt_P.reshape(-1, 3)
+    gtri = np.arange(len(gv)).reshape(-1, 3)
+    bvh_g = BVHTree.FromPolygons([tuple(v) for v in gv], [tuple(t) for t in gtri], epsilon=0.0)
+    iv = im_P.reshape(-1, 3)
+    itri = np.arange(len(iv)).reshape(-1, 3)
+    bvh_i = BVHTree.FromPolygons([tuple(v) for v in iv], [tuple(t) for t in itri], epsilon=0.0)
+    d1 = max(bvh_g.find_nearest(Vector(v))[3] for v in iv)
+    d2 = max(bvh_i.find_nearest(Vector(v))[3] for v in gv)
+    max_pos_err = float(max(d1, d2))
+
+    # Check triangle orientation and corner normals against nearest source surface triangle
+    max_norm_err = 0.0
+    flipped = 0
+    for ti in range(len(im_P)):
+        cent = im_P[ti].mean(axis=0)
+        gi = bvh_g.find_nearest(Vector(cent))[2]
+        if float(np.dot(im_G[ti], gt_G[gi])) < 0.5:
+            flipped += 1
+        # Verify imported geometric normal agrees with imported outward corner normal (not inside-out)
+        if float(np.dot(im_G[ti], im_N[ti].mean(axis=0))) < 0.5:
+            flipped += 1
+        for k in range(3):
+            hit_gi = bvh_g.find_nearest(Vector(im_P[ti, k]))[2]
+            # Compare against nearest corner normal on the matched source face
+            c_best = max(float(np.clip(np.dot(gt_N[gi, sk], im_N[ti, k]), -1.0, 1.0)) for sk in range(3))
+            max_norm_err = max(max_norm_err, math.degrees(math.acos(c_best)))
+
+    assert max_pos_err < 1e-4, f"{label}: max_pos_err={max_pos_err:.6f} m >= 0.1 mm"
+    assert flipped == 0, f"{label}: flipped={flipped} != 0"
+    assert max_norm_err < 0.1, f"{label}: max_norm_err={max_norm_err:.4f} deg >= 0.1 deg"
+    print(f"  PASS scaled_parent_{label} (pos_max={max_pos_err*1000:.4f}mm, flips={flipped}, norm_max={max_norm_err:.4f}deg)")
+
+
+_check_scaled_hierarchy("uniform_2x", (2.0, 2.0, 2.0))
+_check_scaled_hierarchy("nonuniform_shear", (1.0, 2.0, 0.5))
+_check_scaled_hierarchy("negative_mirror", (-1.0, 1.0, 1.0))
+_check_scaled_hierarchy("negative_nonuniform", (-2.0, 1.0, 0.5))
 '''
 
 
