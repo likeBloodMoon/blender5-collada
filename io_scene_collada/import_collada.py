@@ -1945,14 +1945,12 @@ class DocumentImporter:
                             prim_vcounts = np.asarray(valid_vc, dtype=np.int32)
                             prim_p = np.vstack(valid_rows)
             elif tag == "polygons":
+                from mathutils.geometry import normal as _poly_normal
+                from mathutils.geometry import tessellate_polygon as _tessellate_polygon
+
                 p_list: list[np.ndarray] = []
                 vc_list: list[int] = []
-                p_elems = list(_find_children(child, "p"))
-                for ph_el in _find_children(child, "ph"):
-                    pe = _find_child(ph_el, "p")
-                    if pe is not None:
-                        p_elems.append(pe)
-                for p_el in p_elems:
+                for p_el in _find_children(child, "p"):
                     if not p_el.text:
                         invalid_vcount_total += 1
                         continue
@@ -1965,6 +1963,106 @@ class DocumentImporter:
                         p_list.append(pr[:vc * num_inputs].reshape(vc, num_inputs))
                     else:
                         invalid_vcount_total += 1
+
+                ph_elems = _find_children(child, "ph")
+                if ph_elems:
+                    pos_2d = (
+                        pos_vals[:num_verts * pos_stride].reshape(num_verts, pos_stride)
+                        if num_verts > 0
+                        else np.empty((0, 3), dtype=np.float32)
+                    )
+
+                    def _vert_vec(vi: int) -> Vector:
+                        row = pos_2d[vi]
+                        if pos_stride >= 3:
+                            return Vector((float(row[0]), float(row[1]), float(row[2])))
+                        x = float(row[0]) if pos_stride >= 1 else 0.0
+                        y = float(row[1]) if pos_stride >= 2 else 0.0
+                        return Vector((x, y, 0.0))
+
+                    for ph_el in ph_elems:
+                        pe = _find_child(ph_el, "p")
+                        if pe is None or not pe.text:
+                            invalid_vcount_total += 1
+                            continue
+                        pr = _parse_i32_np(pe.text, self.warnings, f"<polygons>/<ph>/<p> of geometry '{geom_name}'")
+                        if pr is None:
+                            continue
+                        vc = pr.size // num_inputs
+                        if vc < 3:
+                            invalid_vcount_total += 1
+                            continue
+                        outer_rows = pr[:vc * num_inputs].reshape(vc, num_inputs)
+
+                        hole_rows_list: list[np.ndarray] = []
+                        for h_el in _find_children(ph_el, "h"):
+                            if not h_el.text:
+                                self.warnings.append(f"Geometry '{geom_name}': empty <ph>/<h> hole skipped")
+                                continue
+                            hr = _parse_i32_np(h_el.text, self.warnings, f"<polygons>/<ph>/<h> of geometry '{geom_name}'")
+                            if hr is None:
+                                continue
+                            hvc = hr.size // num_inputs
+                            if hvc < 3:
+                                self.warnings.append(
+                                    f"Geometry '{geom_name}': <ph>/<h> hole has fewer than 3 vertices; skipped"
+                                )
+                                continue
+                            h_rows = hr[:hvc * num_inputs].reshape(hvc, num_inputs)
+                            if vert_off >= 0:
+                                hv = h_rows[:, vert_off]
+                                if int(hv.min()) < 0 or int(hv.max()) >= num_verts:
+                                    self.warnings.append(
+                                        f"Geometry '{geom_name}': <ph>/<h> hole vertex index out of range; skipped"
+                                    )
+                                    continue
+                            hole_rows_list.append(h_rows)
+
+                        if not hole_rows_list or vert_off < 0:
+                            vc_list.append(vc)
+                            p_list.append(outer_rows)
+                            continue
+
+                        ov = outer_rows[:, vert_off]
+                        if int(ov.min()) < 0 or int(ov.max()) >= num_verts:
+                            vc_list.append(vc)
+                            p_list.append(outer_rows)
+                            continue
+
+                        polylines: list[list[Vector]] = []
+                        flat_pts: list[Vector] = []
+                        combined_rows: list[np.ndarray] = [outer_rows, *hole_rows_list]
+                        for rows in combined_rows:
+                            pts = [_vert_vec(int(vi)) for vi in rows[:, vert_off].tolist()]
+                            polylines.append(pts)
+                            flat_pts.extend(pts)
+                        all_rows = np.vstack(combined_rows)
+
+                        try:
+                            tris = _tessellate_polygon(polylines)
+                        except Exception:
+                            tris = []
+
+                        if not tris:
+                            self.warnings.append(
+                                f"Geometry '{geom_name}': failed to tessellate <ph> holes; importing outer polygon"
+                            )
+                            vc_list.append(vc)
+                            p_list.append(outer_rows)
+                            continue
+
+                        outer_n = _poly_normal(polylines[0])
+                        tri_idx_flat: list[int] = []
+                        for i0, i1, i2 in tris:
+                            if outer_n.length > 1e-12:
+                                tn = (flat_pts[i1] - flat_pts[i0]).cross(flat_pts[i2] - flat_pts[i0])
+                                if tn.dot(outer_n) < 0.0:
+                                    i1, i2 = i2, i1
+                            tri_idx_flat.extend((i0, i1, i2))
+                        idx_arr = np.asarray(tri_idx_flat, dtype=np.int32)
+                        p_list.append(all_rows[idx_arr])
+                        vc_list.extend([3] * len(tris))
+
                 if vc_list:
                     prim_vcounts = np.asarray(vc_list, dtype=np.int32)
                     prim_p = np.vstack(p_list)
