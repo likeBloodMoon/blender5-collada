@@ -614,6 +614,40 @@ def build_cases() -> dict[str, tuple[str, dict]]:
             + '<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"/>\n',
             {"expect_ok": False, "expect_error_substr": "DTDs are not supported"},
         ),
+        "ph_malformed_hole": (
+            """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="BadHole" name="BadHole">
+      <mesh>
+        <source id="pos">
+          <float_array id="pos-arr" count="12">0 0 0  4 0 0  4 4 0  0 4 0</float_array>
+          <technique_common><accessor source="#pos-arr" count="4" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="verts"><input semantic="POSITION" source="#pos"/></vertices>
+        <polygons count="1">
+          <input semantic="VERTEX" source="#verts" offset="0"/>
+          <ph>
+            <p>0 1 2 3</p>
+            <h>not_an_int 1 2</h>
+            <h>0 1</h>
+            <h>0 1 99</h>
+          </ph>
+        </polygons>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="BadHoleNode" name="BadHoleNode"><instance_geometry url="#BadHole"/></node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
+            {"expect_verts": 4, "expect_polys": 1, "expect_warning": True},
+        ),
     }
 
 

@@ -229,6 +229,116 @@ ok, warns, errs = run_import(dae_clamp, "acc_clamp.dae")
 assert ok and any("exceeds array length" in w for w in warns), (ok, warns, errs)
 results["clamp_warning"] = True
 
+# #28a: 4x4 square with 2x2 square hole -> area 12.0, 0 loose vertices, +Z normals
+dae_ph1 = """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="SqHole" name="SqHole">
+      <mesh>
+        <source id="pos">
+          <float_array id="pos-arr" count="24">
+            0 0 0  4 0 0  4 4 0  0 4 0
+            1 1 0  3 1 0  3 3 0  1 3 0
+          </float_array>
+          <technique_common><accessor source="#pos-arr" count="8" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="verts"><input semantic="POSITION" source="#pos"/></vertices>
+        <polygons count="1">
+          <input semantic="VERTEX" source="#verts" offset="0"/>
+          <ph>
+            <p>0 1 2 3</p>
+            <h>4 7 6 5</h>
+          </ph>
+        </polygons>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="SqHoleNode" name="SqHoleNode"><instance_geometry url="#SqHole"/></node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>"""
+
+ok, warns, errs = run_import(dae_ph1, "ph_single_hole.dae")
+assert ok and not errs, (ok, warns, errs)
+me_ph1 = bpy.data.objects["SqHoleNode"].data
+area1 = sum(p.area for p in me_ph1.polygons)
+used1 = {vi for p in me_ph1.polygons for vi in p.vertices}
+loose1 = len(me_ph1.vertices) - len(used1)
+assert abs(area1 - 12.0) < 1e-4, f"Expected area 12.0, got {area1}"
+assert loose1 == 0, f"Expected 0 loose verts, got {loose1}"
+assert all(p.normal.z > 0.99 for p in me_ph1.polygons), [tuple(p.normal) for p in me_ph1.polygons]
+results["ph_single_hole"] = {"area": round(area1, 4), "polys": len(me_ph1.polygons), "loose": loose1}
+
+# #28b: 6x4 rectangle with TWO 1x2 holes (area = 24 - 2 - 2 = 20.0) + exact per-corner UVs
+dae_ph2 = """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="TwoHoles" name="TwoHoles">
+      <mesh>
+        <source id="pos">
+          <float_array id="pos-arr" count="36">
+            0 0 0  6 0 0  6 4 0  0 4 0
+            1 1 0  2 1 0  2 3 0  1 3 0
+            4 1 0  5 1 0  5 3 0  4 3 0
+          </float_array>
+          <technique_common><accessor source="#pos-arr" count="12" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <source id="uv">
+          <float_array id="uv-arr" count="24">
+            0.0 0.0  1.0 0.0  1.0 1.0  0.0 1.0
+            0.1 0.2  0.3 0.2  0.3 0.8  0.1 0.8
+            0.6 0.2  0.9 0.2  0.9 0.8  0.6 0.8
+          </float_array>
+          <technique_common><accessor source="#uv-arr" count="12" stride="2"><param name="S" type="float"/><param name="T" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="verts"><input semantic="POSITION" source="#pos"/></vertices>
+        <polygons count="1">
+          <input semantic="VERTEX" source="#verts" offset="0"/>
+          <input semantic="TEXCOORD" source="#uv" offset="1" set="0"/>
+          <ph>
+            <p>0 0  1 1  2 2  3 3</p>
+            <h>4 4  7 7  6 6  5 5</h>
+            <h>8 8  11 11  10 10  9 9</h>
+          </ph>
+        </polygons>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="TwoHolesNode" name="TwoHolesNode"><instance_geometry url="#TwoHoles"/></node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>"""
+
+ok, warns, errs = run_import(dae_ph2, "ph_two_holes_uv.dae")
+assert ok and not errs, (ok, warns, errs)
+me_ph2 = bpy.data.objects["TwoHolesNode"].data
+area2 = sum(p.area for p in me_ph2.polygons)
+used2 = {vi for p in me_ph2.polygons for vi in p.vertices}
+loose2 = len(me_ph2.vertices) - len(used2)
+assert abs(area2 - 20.0) < 1e-4, f"Expected area 20.0, got {area2}"
+assert loose2 == 0, f"Expected 0 loose verts, got {loose2}"
+expected_uvs = [
+    (0.0, 0.0), (1.0, 0.0), (1.0, 1.0), (0.0, 1.0),
+    (0.1, 0.2), (0.3, 0.2), (0.3, 0.8), (0.1, 0.8),
+    (0.6, 0.2), (0.9, 0.2), (0.9, 0.8), (0.6, 0.8),
+]
+uv_layer = me_ph2.uv_layers[0]
+max_uv_err = 0.0
+for loop in me_ph2.loops:
+    eu, ev = expected_uvs[loop.vertex_index]
+    gu, gv = uv_layer.data[loop.index].uv
+    max_uv_err = max(max_uv_err, abs(gu - eu), abs(gv - ev))
+assert max_uv_err < 1e-6, f"UV mismatch on <ph> two holes: {max_uv_err}"
+results["ph_two_holes_uv"] = {"area": round(area2, 4), "loose": loose2, "max_uv_err": max_uv_err}
+
 with open(out_json, "w", encoding="utf-8") as fh:
     json.dump(results, fh, indent=2)
 '''
