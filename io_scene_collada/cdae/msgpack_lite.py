@@ -189,8 +189,13 @@ class MsgPackReader:
         out: dict[Any, Any] = {}
         for _ in range(n):
             k = self.read(zero_copy_bin=False, _depth=depth)
+            if isinstance(k, (list, dict)):
+                raise MsgPackError(f"Unhashable MsgPack map key of type {type(k).__name__}")
             v = self.read(zero_copy_bin=zero_copy_bin, _depth=depth)
-            out[k] = v
+            try:
+                out[k] = v
+            except TypeError as exc:
+                raise MsgPackError(f"Unhashable MsgPack map key: {exc}") from exc
         return out
 
 

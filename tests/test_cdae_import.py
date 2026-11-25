@@ -112,8 +112,16 @@ def test_msgpack_lite_unit() -> None:
     r2 = MsgPackReader(w.getvalue())
     assert r2.read(zero_copy_bin=False) == payload and r2.eof
 
-    # Truncation & impossible-count rejection
-    for bad in (b"\xce\x00\x01", b"\xc4\x10abc", b"\xdd\x7f\xff\xff\xff", b"\xdf\x7f\xff\xff\xff", b"\xc1"):
+    # Truncation, impossible-count, and unhashable-map-key rejection (#2)
+    for bad in (
+        b"\xce\x00\x01",
+        b"\xc4\x10abc",
+        b"\xdd\x7f\xff\xff\xff",
+        b"\xdf\x7f\xff\xff\xff",
+        b"\xc1",
+        b"\x81\x91\x01\x02",  # map with list key [1] -> 2 (must raise MsgPackError, not TypeError)
+        b"\x81\x80\x01",      # map with dict key {} -> 1
+    ):
         try:
             MsgPackReader(bad).read()
             raise AssertionError(f"Expected MsgPackError for {bad!r}")
