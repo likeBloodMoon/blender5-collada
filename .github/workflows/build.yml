@@ -146,6 +146,7 @@ jobs:
           python3 tests/test_keep_normals.py
           python3 tests/test_keep_quads.py
           python3 tests/test_uv_color_dedupe.py
+          python3 tests/test_accuracy_roundtrip.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
 
