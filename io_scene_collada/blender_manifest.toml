@@ -1,7 +1,7 @@
 schema_version = "1.0.0"
 
 id = "collada_io"
-version = "1.5.0"
+version = "1.5.1"
 name = "Collada (DAE) Import/Export"
 tagline = "Collada (.dae) and BeamNG (.cdae) import/export for Blender 5"
 maintainer = "likeBloodMoon"

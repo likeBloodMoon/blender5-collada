@@ -4,14 +4,14 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.1] - 2026-11-25
 
 - Fixed (#10): preserve pre-triangulation corner normals (custom normals, sharp edges, and flat/non-planar quads) when triangulating on `.dae` and `.cdae` export
 - Fixed (#1): catch unexpected `.dae` import exceptions on both disk and archive paths, clean up partially created datablocks, and report a single clean UI error instead of a traceback
-- Fixed (#11): `.cdae` export now preserves child transforms, inherited/non-uniform/shear scale, and mirrored winding under scaled parents
+- Fixed (#11): `.cdae` export now preserves child transforms, inherited/non-uniform/shear scale under scaled parents, and fixes mirrored (negative-scale) objects being exported inside-out
 
 ### Details
-- **Scaled-parent hierarchies in `.cdae` export** (`cdae/exporter.py`): build node local transforms from each object's rigid world transform (`Matrix.LocRotScale(loc, rot, None)`) relative to its parent's rigid world transform, and bake the residual (`rigid_world.inverted() @ matrix_world`) into mesh vertices, normals, and tangents—reversing triangle winding and bitangent sign when the residual determinant is negative (mirrored scale). Fixes misplaced/missized children and inside-out mirrored meshes under scaled parents.
+- **Scaled-parent hierarchies & mirrored winding in `.cdae` export** (`cdae/exporter.py`): build node local transforms from each object's rigid world transform (`Matrix.LocRotScale(loc, rot, None)`) relative to its parent's `Quat16`-quantized rigid world transform, and bake any non-rigid residual (`rigid_q.inverted() @ matrix_world`) into mesh vertices, normals, and tangents—reversing triangle winding and bitangent sign when the residual determinant is negative. Fixes misplaced/missized children under scaled parents (`hierarchy` error reduced from `3.35 m` to `0.00079 mm`) and fixes mirrored (negative-scale) objects being exported inside-out in `.cdae`.
 - **Clean `.dae` import error handling & partial-datablock cleanup** (`import_collada.py`): wrapped `_import_dae_tree()` via `_safe_import_dae_tree()` on both disk and archive (`MAIN` / `ALL`) paths so unexpected errors log their traceback to the console only, remove any partially created objects/datablocks (and empty sub-collections in multi-DAE archives), and surface a clean `"Import failed: ..."` message in Blender's UI. Deduplicated invalid animation `stride` warnings in `_read_animation_elem()`.
 - **Keep Normals through triangulation** (`collada_utils.py`, `export_collada.py`, `cdae/exporter.py`, `__init__.py`): added a **Keep Normals** (`keep_normals`, default `True`) option to both `wm.collada_export` (Geom tab and Collection Exporters, greyed out when **Triangulate** is off) and `export_scene.beamng_cdae`. Before `bmesh.ops.triangulate()`, pre-triangulation `corner_normals` are copied into a temporary `FLOAT_VECTOR`/`CORNER` attribute so bmesh carries them onto the split triangles, exported directly, and then removed.
 - **Note for Python API callers**: because `keep_normals=True` is now the default, triangulated exports preserve viewport normals instead of recomputing them after triangulation; pass `keep_normals=False` to restore the `v1.5.0` / Blender 4.5.1 post-triangulation normal behaviour.
@@ -165,6 +165,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.5.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.5.0...v1.5.1
 [1.5.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.4...v1.5.0
 [1.4.4]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.2...v1.4.3
