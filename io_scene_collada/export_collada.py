@@ -1011,7 +1011,7 @@ class DocumentExporter:
             nor_id, nor_arr_id, len(normals_arr), 3, ("X", "Y", "Z"), fmt_f32_array(normals_arr)
         )
 
-        dedupe_attrs = self.settings.deduplicate_attributes and os.environ.get("COLLADA_DEDUPE_ATTRS", "1") != "0"
+        dedupe_attrs = self.settings.deduplicate_attributes
 
         # 3. UV sources (foreach_get)
         active_uv_idx = 0

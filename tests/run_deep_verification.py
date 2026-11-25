@@ -230,8 +230,7 @@ with open(r"{out_json}", "w", encoding="utf-8") as f:
 
 
 ROUNDTRIP_EXPORT_SCRIPT = """
-import os, bpy
-{pre_export_stmt}
+import bpy
 
 for ob in list(bpy.data.objects):
     bpy.data.objects.remove(ob, do_unlink=True)
@@ -599,7 +598,7 @@ def main() -> int:
         r45 = run_blender(
             BLENDER_45,
             None,
-            ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out45, pre_export_stmt="", extra_export_kw=""),
+            ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out45, extra_export_kw=""),
         )
         r53 = run_blender(
             BLENDER_53,
@@ -607,8 +606,7 @@ def main() -> int:
             ROUNDTRIP_EXPORT_SCRIPT.format(
                 in_dae=in_dae,
                 out_dae=out53,
-                pre_export_stmt="os.environ['COLLADA_DEDUPE_ATTRS'] = '0'",
-                extra_export_kw=", keep_normals=False",
+                extra_export_kw=", keep_normals=False, deduplicate_attributes=False",
             ),
         )
         if r45.returncode != 0 or r53.returncode != 0 or not os.path.exists(out45) or not os.path.exists(out53):

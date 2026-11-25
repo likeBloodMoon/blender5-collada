@@ -6,7 +6,7 @@ Verifies:
      (< n_loops).
   2. Large subdivided Suzanne mesh (~62k tris, matching accuracy kit big_mesh) exports
      under 6 MB with UV float_array count << 2 * n_loops, and round-trips UVs byte-exact.
-  3. COLLADA_DEDUPE_ATTRS=0 restores the legacy per-corner (n_loops) layout for 4.5.1 parity.
+  3. deduplicate_attributes=False restores the legacy per-corner (n_loops) layout for 4.5.1 parity.
 
 Usage:
     python tests/test_uv_color_dedupe.py
@@ -139,15 +139,12 @@ bpy.context.view_layer.update()
 ref1 = snapshot_uv_col(ob)
 
 dae_dedup = os.path.join(workdir, "multi_dedup.dae")
-os.environ.pop("COLLADA_DEDUPE_ATTRS", None)
 assert "FINISHED" in bpy.ops.wm.collada_export(filepath=dae_dedup, triangulate=False)
 counts_dedup = parse_source_counts(dae_dedup)
 
 dae_legacy = os.path.join(workdir, "multi_legacy.dae")
-os.environ["COLLADA_DEDUPE_ATTRS"] = "0"
-assert "FINISHED" in bpy.ops.wm.collada_export(filepath=dae_legacy, triangulate=False)
+assert "FINISHED" in bpy.ops.wm.collada_export(filepath=dae_legacy, triangulate=False, deduplicate_attributes=False)
 counts_legacy = parse_source_counts(dae_legacy)
-os.environ.pop("COLLADA_DEDUPE_ATTRS", None)
 
 clear_scene()
 assert "FINISHED" in bpy.ops.wm.collada_import(filepath=dae_dedup)

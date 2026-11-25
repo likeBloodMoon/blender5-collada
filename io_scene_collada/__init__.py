@@ -245,6 +245,12 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
+    deduplicate_attributes: BoolProperty(
+        name="Deduplicate Attributes",
+        description="Deduplicate UV and vertex color source arrays on export",
+        default=True,
+    )
+
     use_object_instantiation: BoolProperty(
         name="Use Object Instances",
         description="Instantiate multiple Objects from same Data",
@@ -428,6 +434,7 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             use_texture_copies=self.use_texture_copies,
             triangulate=self.triangulate,
             keep_normals=self.keep_normals,
+            deduplicate_attributes=self.deduplicate_attributes,
             use_object_instantiation=self.use_object_instantiation,
             use_blender_profile=self.use_blender_profile,
             sort_by_name=self.sort_by_name,
