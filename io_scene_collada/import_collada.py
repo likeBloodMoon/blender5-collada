@@ -1097,9 +1097,9 @@ class DocumentImporter:
         img = None
         try:
             img = bpy.data.images.new(name, 8, 8)
+            img.filepath = f"//{self._archive_basename}/{norm_entry}"
             img.pack(data=data, data_len=len(data))
             img.source = "FILE"
-            img.filepath = f"//{self._archive_basename}/{norm_entry}"
             # Trigger decode and verify pixels/has_data
             px_len = len(img.pixels)
             if not img.has_data or px_len == 0:
