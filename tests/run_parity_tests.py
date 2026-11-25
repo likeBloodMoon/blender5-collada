@@ -11,6 +11,7 @@ import glob
 import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -537,6 +538,9 @@ def main() -> int:
 
     # Step 1: Generate shared .blend test files in Blender 4.5.1
     reuse_blends = os.environ.get("REUSE_BLENDS", "0") == "1"
+    if not reuse_blends:
+        shutil.rmtree(TEST_WORK, ignore_errors=True)
+        os.makedirs(TEST_WORK, exist_ok=True)
     blend_files: dict[str, str] = {}
     for name, gen_code in SCENE_GENERATORS.items():
         bpath = os.path.join(TEST_WORK, f"{name}.blend")

@@ -419,6 +419,123 @@ def build_cases() -> dict[str, tuple[str, dict]]:
             ),
             {"expect_verts": 4, "expect_polys": 0, "expect_warning": True},
         ),
+        "normals_stride_1": (
+            _make_dae(
+                extra_sources="""
+        <source id="norm-src">
+          <float_array id="norm-arr" count="6">0 0 1  0 0 1</float_array>
+          <technique_common>
+            <accessor source="#norm-arr" count="6" stride="1">
+              <param name="X" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+""",
+                extra_inputs='<input semantic="NORMAL" source="#norm-src" offset="1"/>',
+                p_text="0 0 1 0 2 0  0 1 2 1 3 1",
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "NORMAL source",
+            },
+        ),
+        "uv_stride_1": (
+            _make_dae(
+                extra_sources="""
+        <source id="uv-src">
+          <float_array id="uv-arr" count="4">0 1 0 1</float_array>
+          <technique_common>
+            <accessor source="#uv-arr" count="4" stride="1">
+              <param name="S" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+""",
+                extra_inputs='<input semantic="TEXCOORD" source="#uv-src" offset="1" set="0"/>',
+                p_text="0 0 1 1 2 2  0 0 2 2 3 3",
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "TEXCOORD source",
+            },
+        ),
+        "color_stride_2": (
+            _make_dae(
+                extra_sources="""
+        <source id="col-src">
+          <float_array id="col-arr" count="4">1 0  0 1</float_array>
+          <technique_common>
+            <accessor source="#col-arr" count="2" stride="2">
+              <param name="R" type="float"/><param name="G" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+""",
+                extra_inputs='<input semantic="COLOR" source="#col-src" offset="1" set="0"/>',
+                p_text="0 0 1 1 2 0  0 0 2 0 3 1",
+            ),
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "COLOR source",
+            },
+        ),
+        "skin_vcount_int32_overflow": (
+            """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="SkinMesh" name="SkinMesh">
+      <mesh>
+        <source id="pos-src">
+          <float_array id="pos-arr" count="12">0 0 0 1 0 0 1 1 0 0 1 0</float_array>
+          <technique_common><accessor source="#pos-arr" count="4" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="verts"><input semantic="POSITION" source="#pos-src"/></vertices>
+        <triangles count="2"><input semantic="VERTEX" source="#verts" offset="0"/><p>0 1 2 0 2 3</p></triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_controllers>
+    <controller id="Arm-Skin">
+      <skin source="#SkinMesh">
+        <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+        <source id="j-src"><Name_array id="j-arr" count="1">BoneA</Name_array><technique_common><accessor source="#j-arr" count="1" stride="1"><param name="JOINT" type="name"/></accessor></technique_common></source>
+        <source id="ibm-src"><float_array id="ibm-arr" count="16">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</float_array><technique_common><accessor source="#ibm-arr" count="1" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor></technique_common></source>
+        <source id="w-src"><float_array id="w-arr" count="1">1.0</float_array><technique_common><accessor source="#w-arr" count="1" stride="1"><param name="WEIGHT" type="float"/></accessor></technique_common></source>
+        <joints><input semantic="JOINT" source="#j-src"/><input semantic="INV_BIND_MATRIX" source="#ibm-src"/></joints>
+        <vertex_weights count="4">
+          <input semantic="JOINT" source="#j-src" offset="0"/>
+          <input semantic="WEIGHT" source="#w-src" offset="1"/>
+          <vcount>1 2147483647 1 1</vcount>
+          <v>0 0 0 0</v>
+        </vertex_weights>
+      </skin>
+    </controller>
+  </library_controllers>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="Arm" name="Arm" type="NODE">
+        <node id="BoneA" name="BoneA" sid="BoneA" type="JOINT"><matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix></node>
+        <node id="SkinNode" name="SkinNode" type="NODE"><instance_controller url="#Arm-Skin"/></node>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
+            {
+                "expect_verts": 4,
+                "expect_polys": 2,
+                "expect_warning": True,
+                "expect_warning_substr": "vertex_weights",
+            },
+        ),
     }
 
 

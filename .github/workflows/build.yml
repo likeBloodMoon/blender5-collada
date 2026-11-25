@@ -143,6 +143,8 @@ jobs:
           python3 tests/test_archives.py
           python3 tests/test_cdae_import.py
           python3 tests/test_cdae_export.py
+          python3 tests/test_beamng_parse.py
+          python3 tests/test_beamng_resolve.py
 
       - name: Verify byte-identical output with COLLADA_NATIVE=0 fallback
         env:

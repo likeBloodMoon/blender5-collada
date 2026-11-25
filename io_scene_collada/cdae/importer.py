@@ -36,6 +36,7 @@ from .reader import (
     PRIM_TYPE_MASK,
     PRIM_TYPE_STRIP,
     PRIM_TYPE_TRIANGLES,
+    read_cdae_bytes,
     read_cdae_file,
 )
 
@@ -48,6 +49,9 @@ class CdaeImportSettings:
     normals_mode: str = "EXACT"  # "EXACT", "SHARP", or "UNMERGED"
     merge_distance: float = 1e-5
     sharp_angle_threshold: float = math.radians(1.0)
+    node_filter: set[str] | None = None
+    cdae_bytes: bytes | None = None
+    deselect_existing: bool = True
 
 
 def _quat16_to_blender(q16: np.ndarray) -> Quaternion:
@@ -399,10 +403,16 @@ class CdaeImporter:
         self.errors: list[str] = []
         self.warnings: list[str] = []
         self.infos: list[str] = []
+        self.imported_mesh_objects: list = []
+        self.imported_objects_by_node_name: dict[str, list] = {}
+        self.root_objects: list = []
 
     def import_document(self) -> bool:
         try:
-            shape = read_cdae_file(self.settings.filepath)
+            if self.settings.cdae_bytes is not None:
+                shape = read_cdae_bytes(self.settings.cdae_bytes)
+            else:
+                shape = read_cdae_file(self.settings.filepath)
         except CdaeError as exc:
             self.errors.append(str(exc))
             return False
@@ -417,8 +427,9 @@ class CdaeImporter:
             )
 
         # Deselect existing objects
-        for ob in self.view_layer.objects:
-            ob.select_set(False)
+        if self.settings.deselect_existing:
+            for ob in self.view_layer.objects:
+                ob.select_set(False)
 
         # Compute node local & world matrices
         n_nodes = len(shape.nodes)
@@ -573,6 +584,34 @@ class CdaeImporter:
             for obj_i in range(len(shape.objects)):
                 import_jobs.append((obj_i, 0, self.target_collection))
 
+        # Apply optional node/object name filter (e.g. BeamNG vehicle config import)
+        nf = self.settings.node_filter
+        needed_nodes: set[int] | None = None
+        if nf is not None:
+            filtered_jobs: list[tuple[int, int, object]] = []
+            needed_nodes = set()
+            for obj_i, obj_det, target_coll in import_jobs:
+                obj = shape.objects[obj_i]
+                obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
+                ni = int(obj["node_index"])
+                node_name = (
+                    _safe_name(shape.names, int(shape.nodes[ni]["name_index"]), f"Node_{ni}")
+                    if 0 <= ni < n_nodes
+                    else ""
+                )
+                if obj_name in nf or (node_name and node_name in nf):
+                    filtered_jobs.append((obj_i, obj_det, target_coll))
+                    cur_ni = ni
+                    depth = 0
+                    while 0 <= cur_ni < n_nodes and cur_ni not in needed_nodes and depth <= n_nodes:
+                        needed_nodes.add(cur_ni)
+                        parent_i = int(shape.nodes[cur_ni]["parent_index"])
+                        if parent_i == cur_ni:
+                            break
+                        cur_ni = parent_i
+                        depth += 1
+            import_jobs = filtered_jobs
+
         # Count how many valid non-skin jobs attach to each node and track mesh extents
         node_job_counts: dict[int, int] = {}
         node_extents: dict[int, float] = {}
@@ -625,6 +664,8 @@ class CdaeImporter:
             # Will be filled by mesh object if claimed in direct_node_jobs
             if i in direct_node_indices:
                 continue
+            if needed_nodes is not None and i not in needed_nodes:
+                continue
             node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
             ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
             ob_empty.empty_display_size = _empty_display_size(i)
@@ -648,16 +689,22 @@ class CdaeImporter:
                 local_mats=local_mats,
                 direct_node=is_direct,
             )
-            if ob is not None and not is_direct:
+            if ob is not None:
                 obj = shape.objects[obj_i]
-                mi = int(obj["start_mesh_index"]) + obj_det
-                if shape.meshes[mi].mesh_type != MESH_TYPE_SKIN:
-                    ni = int(obj["node_index"])
-                    if 0 <= ni < n_nodes:
-                        deferred_children.append((ob, ni))
+                obj_name = _safe_name(shape.names, int(obj["name_index"]), f"Object_{obj_i}")
+                self.imported_mesh_objects.append(ob)
+                self.imported_objects_by_node_name.setdefault(obj_name, []).append(ob)
+                if not is_direct:
+                    mi = int(obj["start_mesh_index"]) + obj_det
+                    if shape.meshes[mi].mesh_type != MESH_TYPE_SKIN:
+                        ni = int(obj["node_index"])
+                        if 0 <= ni < n_nodes:
+                            deferred_children.append((ob, ni))
 
         # Ensure any direct node whose mesh was empty still gets an Empty so parenting works
         for i in range(n_nodes):
+            if needed_nodes is not None and i not in needed_nodes:
+                continue
             if node_objects[i] is None:
                 node_name = _safe_name(shape.names, int(shape.nodes[i]["name_index"]), f"Node_{i}")
                 ob_empty = bpy.data.objects.new(name=node_name, object_data=None)
@@ -669,12 +716,19 @@ class CdaeImporter:
 
         # Hook up node hierarchy parenting
         for i in range(n_nodes):
+            if node_objects[i] is None:
+                continue
             parent_idx = int(shape.nodes[i]["parent_index"])
-            if 0 <= parent_idx < n_nodes and parent_idx != i:
+            if 0 <= parent_idx < n_nodes and parent_idx != i and node_objects[parent_idx] is not None:
                 node_objects[i].parent = node_objects[parent_idx]
+            else:
+                self.root_objects.append(node_objects[i])
 
         for ob, ni in deferred_children:
-            ob.parent = node_objects[ni]
+            if node_objects[ni] is not None:
+                ob.parent = node_objects[ni]
+            else:
+                self.root_objects.append(ob)
 
         self.view_layer.update()
         return True

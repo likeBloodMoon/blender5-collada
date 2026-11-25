@@ -33,8 +33,8 @@ The platform-specific release zips include a small, optional C++17 helper librar
 
 ## Usage
 
-- **Menus**: **File → Import → Collada (Default) (.dae, .zae, .kmz)** and **File → Export → Collada (Default) (.dae)**
-- **Drag & Drop**: Drop `.dae`, `.zae`, or `.kmz` files straight into the viewport.
+- **Menus**: **File → Import → Collada (.dae, .zae, .kmz, .zip)** and **File → Export → Collada (Default) (.dae)**
+- **Drag & Drop**: Drop `.dae`, `.zae`, `.kmz`, or `.zip` files straight into the viewport.
 - **Python**:
   ```python
   import bpy
@@ -66,7 +66,7 @@ Automatic sharp-edge reconstruction on a vehicle fender imported from `.dae` (lo
 - **Rigs & Morphs**: Armatures, skinning (`<skin>`, vertex weights, `<bind_shape_matrix>`, `Name_array` and `IDREF_array`), bone collections, shape keys (`<morph>`), OpenSim export, and armature import options (`auto_connect`, `find_chains`, `fix_orientation`, `keep_bind_info`).
 - **Animation**: Object and pose-bone animations (sampled matrices, decomposed transforms, and keyframe curves) using Blender 5.0+'s layered Action / Slot / Channelbag API.
 - **Cameras & Lights**: Perspective/ortho cameras and Point, Sun, Spot, and Area lights with Blender `<extra>` profile data.
-- **Archives**: Direct in-memory import of `.zae`, `.kmz`, and `.zip` archives with `manifest.xml` support, multi-model **Archive Models** modes (**All models (collections)** default or **Main model only** preferring the `.dae` matching the archive name), and automatic texture packing.
+- **Archives & BeamNG Vehicle Configs `[Experimental]`**: Direct in-memory import of `.zae`, `.kmz`, and `.zip` archives with `manifest.xml` support, automatic texture packing, and an interactive **Import BeamNG Archive `[Experimental]`** picker for multi-model archives or vehicle folders containing `.pc` configs — detects `.pc` configurations, resolves parts from sibling `common.zip` / `vehicles/common/`, and imports only the chosen config's meshes (for both `.dae` and `.cdae`).
 - **Performance**: Mesh export and import use `foreach_get` / `foreach_set` with NumPy (~4.2 s export / ~7.0 s import on a 500k-triangle mesh).
 
 ---
