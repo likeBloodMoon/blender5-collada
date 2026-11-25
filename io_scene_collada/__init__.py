@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import math
 import os
+import tomllib
 import bpy
 from bpy.props import (
     BoolProperty,
@@ -1067,7 +1068,90 @@ def menu_func_export(self, context):
     )
 
 
+def _read_manifest_version() -> str:
+    manifest_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "blender_manifest.toml")
+    try:
+        with open(manifest_path, "rb") as fh:
+            data = tomllib.load(fh)
+        return str(data.get("version", ""))
+    except Exception:
+        return ""
+
+
+__version__ = _read_manifest_version()
+
+
+class ColladaAddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = __package__ or "io_scene_collada"
+
+    last_registered_version: StringProperty(
+        name="Last Registered Version",
+        default="",
+        options={"HIDDEN"},
+    )
+
+    def draw(self, context):
+        layout = self.layout
+        box = layout.box()
+        box.label(
+            text="After updating over an existing version, restart Blender to finish.",
+            icon="INFO",
+        )
+
+
+def _check_version_update(prefs, current_version: str) -> str | None:
+    """Compare stored extension version with ``current_version`` and update it.
+
+    Returns a one-time notice string only when upgrading from a different previously
+    registered version (never on fresh install).
+    """
+    if prefs is None or not current_version:
+        return None
+    prev = getattr(prefs, "last_registered_version", "") or ""
+    if prev == current_version:
+        return None
+    try:
+        prefs.last_registered_version = current_version
+    except Exception:
+        pass
+    if prev:
+        return f"blender5-collada was updated ({prev} -> {current_version}) — restart Blender to finish"
+    return None
+
+
+def _maybe_notify_update() -> None:
+    try:
+        addon = bpy.context.preferences.addons.get(__package__ or "io_scene_collada")
+        if addon is None:
+            return
+        msg = _check_version_update(addon.preferences, __version__)
+    except Exception:
+        return
+    if not msg or bpy.app.background:
+        return
+
+    def _show_popup():
+        wm = getattr(bpy.context, "window_manager", None)
+        if wm is None:
+            return None
+
+        def _draw(self, _ctx):
+            self.layout.label(text=msg, icon="INFO")
+
+        try:
+            wm.popup_menu(_draw, title="Collada Import/Export Updated", icon="INFO")
+        except Exception:
+            pass
+        return None
+
+    try:
+        bpy.app.timers.register(_show_popup, first_interval=0.5)
+    except Exception:
+        pass
+
+
 classes = (
+    ColladaAddonPreferences,
     WM_OT_collada_export,
     WM_OT_collada_import,
     IMPORT_SCENE_OT_beamng_cdae,
@@ -1083,6 +1167,7 @@ def register():
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
     bpy.types.TOPBAR_MT_file_export.append(menu_func_export)
+    _maybe_notify_update()
 
 
 def unregister():
