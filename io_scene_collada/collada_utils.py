@@ -570,3 +570,17 @@ def assigned_action_has_keyframes(anim_data: AnimData | None) -> bool:
         if len(fcu.keyframe_points) > 0:
             return True
     return False
+
+
+def report_capped(op, level: str, messages, limit: int = 5, *, fallback: str = "") -> None:
+    """Report up to ``limit`` messages on a Blender operator, summarizing any overflow."""
+    msgs = list(messages) if messages else []
+    if not msgs:
+        if fallback:
+            op.report({level}, fallback)
+        return
+    for msg in msgs[:limit]:
+        op.report({level}, msg)
+    if len(msgs) > limit:
+        noun = level.lower()
+        op.report({level}, f"... and {len(msgs) - limit} more {noun}(s)")
