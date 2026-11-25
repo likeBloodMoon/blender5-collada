@@ -33,8 +33,12 @@ argv = sys.argv[sys.argv.index("--") + 1:]
 repo_root, out_json = argv[0], argv[1]
 sys.path.insert(0, repo_root)
 
+import bpy
 import io_scene_collada
-from io_scene_collada.collada_utils import report_capped
+from io_scene_collada.collada_utils import check_target_collection_visibility, report_capped
+from io_scene_collada.import_collada import DocumentImporter, ImportSettings
+from io_scene_collada.cdae.importer import CdaeImporter, CdaeImportSettings
+from io_scene_collada.cdae.exporter import CdaeExporter, CdaeExportSettings
 
 
 class _DummyOp:
@@ -63,6 +67,72 @@ assert op3.calls[5] == (["WARNING"], "... and 2 more warning(s)"), op3.calls[5]
 op4 = _DummyOp()
 report_capped(op4, "ERROR", [f"e{i}" for i in range(6)], limit=5)
 assert len(op4.calls) == 6 and op4.calls[5] == (["ERROR"], "... and 1 more error(s)"), op4.calls
+
+# Test #8: warn when importing into an excluded or hidden collection (.dae & .cdae)
+workdir = os.path.dirname(out_json)
+dae_p = os.path.join(workdir, "tiny.dae")
+with open(dae_p, "w", encoding="utf-8") as fh:
+    fh.write(
+        '<?xml version="1.0" encoding="utf-8"?>'
+        '<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">'
+        '<asset><up_axis>Z_UP</up_axis></asset>'
+        '<library_geometries><geometry id="M"><mesh>'
+        '<source id="P"><float_array id="Pa" count="9">0 0 0 1 0 0 0 1 0</float_array>'
+        '<technique_common><accessor source="#Pa" count="3" stride="3">'
+        '<param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>'
+        '</accessor></technique_common></source>'
+        '<vertices id="V"><input semantic="POSITION" source="#P"/></vertices>'
+        '<triangles count="1"><input semantic="VERTEX" source="#V" offset="0"/><p>0 1 2</p></triangles>'
+        '</mesh></geometry></library_geometries>'
+        '<library_visual_scenes><visual_scene id="S">'
+        '<node id="N" name="N"><instance_geometry url="#M"/></node>'
+        '</visual_scene></library_visual_scenes>'
+        '<scene><instance_visual_scene url="#S"/></scene></COLLADA>'
+    )
+
+# Export a tiny .cdae for testing .cdae import too
+bpy.ops.wm.read_factory_settings(use_empty=True)
+bpy.ops.mesh.primitive_cube_add()
+cdae_p = os.path.join(workdir, "tiny.cdae")
+assert CdaeExporter(bpy.context, CdaeExportSettings(filepath=cdae_p)).export_document()
+
+# 8a: Normal visible collection -> NO visibility warning
+bpy.ops.wm.read_factory_settings(use_empty=True)
+imp_vis = DocumentImporter(bpy.context, ImportSettings(filepath=dae_p))
+assert imp_vis.import_document()
+assert not any("excluded/hidden" in w for w in imp_vis.warnings), imp_vis.warnings
+
+# 8b: Hidden LayerCollection (hide_viewport) -> WARNING on .dae import, plus exclude check
+bpy.ops.wm.read_factory_settings(use_empty=True)
+c_excl = bpy.data.collections.new("ExcludedColl")
+bpy.context.scene.collection.children.link(c_excl)
+lc_excl = bpy.context.view_layer.layer_collection.children["ExcludedColl"]
+lc_excl.exclude = True
+assert check_target_collection_visibility(bpy.context.view_layer, c_excl) == (
+    "Imported into 'ExcludedColl', which is excluded/hidden in this view layer"
+)
+lc_excl.exclude = False
+lc_excl.hide_viewport = True
+bpy.context.view_layer.active_layer_collection = lc_excl
+imp_excl = DocumentImporter(bpy.context, ImportSettings(filepath=dae_p))
+assert imp_excl.import_document()
+assert any("Imported into 'ExcludedColl', which is excluded/hidden" in w for w in imp_excl.warnings), imp_excl.warnings
+
+# 8c: Hidden Collection / LayerCollection -> WARNING on .cdae import
+bpy.ops.wm.read_factory_settings(use_empty=True)
+c_hid = bpy.data.collections.new("HiddenColl")
+bpy.context.scene.collection.children.link(c_hid)
+lc_hid = bpy.context.view_layer.layer_collection.children["HiddenColl"]
+c_hid.hide_viewport = True
+assert check_target_collection_visibility(bpy.context.view_layer, c_hid) == (
+    "Imported into 'HiddenColl', which is excluded/hidden in this view layer"
+)
+c_hid.hide_viewport = False
+lc_hid.hide_viewport = True
+bpy.context.view_layer.active_layer_collection = lc_hid
+imp_cdae = CdaeImporter(bpy.context, CdaeImportSettings(filepath=cdae_p))
+assert imp_cdae.import_document()
+assert any("Imported into 'HiddenColl', which is excluded/hidden" in w for w in imp_cdae.warnings), imp_cdae.warnings
 
 with open(out_json, "w", encoding="utf-8") as fh:
     json.dump({"ok": True}, fh)

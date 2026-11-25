@@ -731,6 +731,11 @@ class CdaeImporter:
                 self.root_objects.append(ob)
 
         self.view_layer.update()
+        from ..collada_utils import check_target_collection_visibility
+
+        vis_warn = check_target_collection_visibility(self.view_layer, self.target_collection)
+        if vis_warn:
+            self.warnings.append(vis_warn)
         return True
 
     def _select_details(self, shape: CdaeShape) -> list[tuple[int, np.void]]:
