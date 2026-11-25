@@ -24,15 +24,8 @@ import tempfile
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOLS_DIR = os.path.join(REPO_ROOT, ".tools")
 
-# Cases expected to fail strict triangle-count / flip gates until #17 lands.
-# Each entry maps (fmt, case) -> issue tag. If an XFAIL case passes all strict gates,
-# the suite reports XPASS and exits non-zero so stale xfails are removed promptly.
-XFAIL_CASES: dict[tuple[str, str], str] = {
-    ("dae", "monkey_sharp_edges"): "#17",
-    ("cdae", "monkey_sharp_edges"): "#17",
-    ("dae", "big_mesh"): "#17",
-    ("cdae", "big_mesh"): "#17",
-}
+# All 22 round-trip checks (11 cases x .dae/.cdae) must pass strictly.
+XFAIL_CASES: dict[tuple[str, str], str] = {}
 
 MAX_POS_ERR_M = 1e-4       # 0.1 mm
 MAX_NORMAL_ERR_DEG = 0.1   # 0.1 deg
@@ -555,6 +548,7 @@ def main() -> int:
                 xfail_issue = XFAIL_CASES.get((fmt, case))
                 summary = (
                     f"tris={r.get('tris_im')}/{r.get('tris_gt')} "
+                    f"area%={r.get('area_err_pct', 0.0):+.4f}% "
                     f"posMax={r.get('pos_max_err', -1):.2e}m "
                     f"flip={r.get('flipped_tris')} "
                     f"nP99={r.get('normal_p99_deg', -1):.4f}deg "

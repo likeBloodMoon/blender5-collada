@@ -455,14 +455,27 @@ class CdaeExporter:
             if ob.type != "MESH" or ob not in mesh_obs:
                 continue
             ni = ob_to_node_idx[ob]
-            needs_tri = self.settings.apply_modifiers or any(p.loop_total > 3 for p in ob.data.polygons)
-            me_copy, should_remove = get_mesh_copy(
-                depsgraph,
-                ob,
-                apply_modifiers=self.settings.apply_modifiers,
-                triangulate=needs_tri,
-                keep_normals=self.settings.keep_normals,
-            )
+            # On the default keep_normals=True path, keep quads intact for Blender's viewport
+            # loop_triangles tessellator (triangulating only n-gons > 4 so calc_tangents works).
+            # When keep_normals=False (legacy), triangulate all polygons via bmesh SHORT_EDGE.
+            if self.settings.keep_normals:
+                me_copy, should_remove = get_mesh_copy(
+                    depsgraph,
+                    ob,
+                    apply_modifiers=self.settings.apply_modifiers,
+                    triangulate=True,
+                    keep_normals=True,
+                    keep_quads=True,
+                )
+            else:
+                needs_tri = self.settings.apply_modifiers or any(p.loop_total > 3 for p in ob.data.polygons)
+                me_copy, should_remove = get_mesh_copy(
+                    depsgraph,
+                    ob,
+                    apply_modifiers=self.settings.apply_modifiers,
+                    triangulate=needs_tri,
+                    keep_normals=False,
+                )
             try:
                 mdata = _build_gpu_mesh_data(
                     me_copy,
