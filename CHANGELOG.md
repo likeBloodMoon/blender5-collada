@@ -11,6 +11,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Fixed (#2): raise `MsgPackError` for unhashable MsgPack map keys and replace NumPy `DeprecationWarning` control flow in `.dae` array parsing with explicit token-count validation
 - Improved (#3): harden archive and XML imports by capping zip archives at 50,000 entries and rejecting XML `<!DOCTYPE>` / `<!ENTITY>` declarations
 - Added (#22): automated `.dae` and `.cdae` round-trip accuracy CI gate (`tests/test_accuracy_roundtrip.py`) covering 11 synthetic scenes with selfcheck and strict position/normal/flip/UV/color/material assertions
+- Fixed (#16): eliminate `ERROR: Image "" not available. Keeping packed image` stderr noise when importing packed archive textures on Blender 5.0+ by setting `img.filepath` before `img.pack()` and `img.source = "FILE"`
 
 ### Details
 - **Parser & archive hardening** (`cdae/msgpack_lite.py`, `import_collada.py`, `beamng/source.py`): reject unhashable MsgPack map keys (`list`, `dict`, etc.) with `MsgPackError` instead of `TypeError`; replace `warnings.simplefilter("error", DeprecationWarning)` around `np.fromstring` with explicit token-count and last-token validation (`_fromstring_f32_strict` / `_fromstring_i32_strict`) that behaves identically on NumPy 1.26 and 2.x; enforce a 50,000-entry limit on `.zip`/`.zae`/`.kmz` archives in both `DocumentImporter` and `VehicleSource`; reject `<!DOCTYPE>` / `<!ENTITY>` declarations before `ET.parse` in `.dae` and archive `manifest.xml` files.

@@ -234,6 +234,7 @@ state_after = None
 if save_blend and ok:
     bpy.ops.wm.save_as_mainfile(filepath=save_blend)
     bpy.ops.wm.open_mainfile(filepath=save_blend)
+    bpy.ops.file.report_missing_files()
     state_after = snapshot_state()
 
 result = {
@@ -272,8 +273,21 @@ def _run_archive(
             f"Unexpected traceback on {os.path.basename(archive_path)}\n"
             f"STDOUT:\n{proc.stdout[-1500:]}\nSTDERR:\n{proc.stderr[-1500:]}"
         )
+    if "not available. Keeping packed image" in proc.stderr or "not available. Keeping packed image" in proc.stdout:
+        raise AssertionError(
+            f"Unexpected packed-image stderr noise (#16) on {os.path.basename(archive_path)}\n"
+            f"STDERR:\n{proc.stderr[-1500:]}"
+        )
     with open(out_json, "r", encoding="utf-8") as f:
-        return json.load(f)
+        data = json.load(f)
+    if save_blend and data.get("ok"):
+        combined = proc.stdout + "\n" + proc.stderr
+        if "Info: No missing files" not in combined:
+            raise AssertionError(
+                f"Expected 'Info: No missing files' after save/reopen on {os.path.basename(archive_path)}\n"
+                f"STDOUT:\n{proc.stdout[-1500:]}\nSTDERR:\n{proc.stderr[-1500:]}"
+            )
+    return data
 
 
 def main() -> int:
@@ -670,6 +684,9 @@ with open(out_json, "w", encoding="utf-8") as fh:
         )
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         assert proc.returncode == 0, f"Extra archive worker failed:\n{proc.stderr[-1500:]}"
+        assert "not available. Keeping packed image" not in proc.stderr, (
+            f"Unexpected packed-image stderr noise (#16) in extra worker:\n{proc.stderr[-1500:]}"
+        )
         with open(extra_json, "r", encoding="utf-8") as fh:
             ex = json.load(fh)
         assert ex["c10"]["ok"] and ex["c10"]["objects"] == ["KeepNode"] and ex["c10"]["images"] == ["direct.png"], ex["c10"]
