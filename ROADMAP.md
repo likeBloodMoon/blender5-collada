@@ -44,8 +44,8 @@ Products:
 - [ ] Troubleshooting docs: "spiky" meshes, VY node errors, parts at the origin.
 
 **Release and CI (one batch before release)**
-- [ ] #4 Smoke-test native binaries on Windows and macOS
-- [ ] #5 Pin Actions to SHAs, verify Blender downloads, add `SHA256SUMS.txt`
+- [x] #4 Smoke-test native binaries on Windows and macOS
+- [x] #5 Pin Actions to SHAs, verify Blender downloads, add `SHA256SUMS.txt`
 - [ ] #6 Allow-failure CI job against Blender daily builds
 - [ ] #14 Broader ruff rules + mypy on `cdae/`
 - [x] #7 Shared warning-cap helper

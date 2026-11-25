@@ -10,12 +10,14 @@ on:
 
 env:
   BLENDER_45_VER: "4.5.1"
+  BLENDER_45_SHA256: "085a7ed4ed80c3cb66783bad76f236f39897de5d33884abd133e0c6db94c0f14"
+  BLENDER_53_SHA256: "dacb8264197a3f7fda6001285a5a506fc97ee943881261c2c3bd63c882f22e05"
 
 jobs:
   lint:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Run ruff lint check
         run: |
           python3 -m pip install --quiet ruff
@@ -24,15 +26,16 @@ jobs:
   build-native-linux:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Build and fuzz-test native fastfmt (linux-x64, 10M floats)
         run: |
           mkdir -p io_scene_collada/_native
           g++ -O3 -std=c++17 -shared -fPIC -pthread native/fastfmt.cpp -o io_scene_collada/_native/libfastfmt.so
           python3 -m pip install --quiet numpy
+          python3 tests/smoke_fastfmt.py
           python3 tests/fuzz_fastfmt.py
       - name: Upload linux-x64 native binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-linux-x64
           path: io_scene_collada/_native/libfastfmt.so
@@ -40,37 +43,43 @@ jobs:
   build-native-windows:
     runs-on: windows-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
       - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@v1
+        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
       - name: Build native fastfmt (windows-x64)
         shell: cmd
         run: |
           mkdir io_scene_collada\_native
           cl /O2 /std:c++17 /LD /EHsc native\fastfmt.cpp /Fe:io_scene_collada\_native\fastfmt.dll
+      - name: Smoke-test native fastfmt (windows-x64)
+        run: |
+          python -m pip install --quiet numpy
+          python tests/smoke_fastfmt.py
       - name: Upload windows-x64 native binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-windows-x64
           path: io_scene_collada/_native/fastfmt.dll
 
   build-native-macos:
     runs-on: macos-latest
-    continue-on-error: true
     steps:
-      - uses: actions/checkout@v4
-      - name: Build native fastfmt (macos-arm64 and macos-x64)
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - name: Build and smoke-test native fastfmt (macos-arm64 and macos-x64)
         run: |
-          mkdir -p out/macos-arm64 out/macos-x64
+          mkdir -p out/macos-arm64 out/macos-x64 io_scene_collada/_native
           clang++ -O3 -std=c++17 -arch arm64 -shared -fPIC native/fastfmt.cpp -o out/macos-arm64/libfastfmt.dylib
           clang++ -O3 -std=c++17 -arch x86_64 -shared -fPIC native/fastfmt.cpp -o out/macos-x64/libfastfmt.dylib
+          cp out/macos-arm64/libfastfmt.dylib io_scene_collada/_native/libfastfmt.dylib
+          python3 -m pip install --quiet numpy
+          python3 tests/smoke_fastfmt.py
       - name: Upload macos-arm64 native binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-macos-arm64
           path: out/macos-arm64/libfastfmt.dylib
       - name: Upload macos-x64 native binary
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: native-macos-x64
           path: out/macos-x64/libfastfmt.dylib
@@ -84,13 +93,15 @@ jobs:
         include:
           - blender_ver: "5.0.1"
             blender_dir: "Blender5.0"
+            blender_sha256: "8019580ee1b7262e505f4196a00237ccf743c88d205b38d34201510676e60b09"
           - blender_ver: "5.3.0"
             blender_dir: "Blender5.3"
+            blender_sha256: "dacb8264197a3f7fda6001285a5a506fc97ee943881261c2c3bd63c882f22e05"
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download linux-x64 native binary
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           name: native-linux-x64
           path: io_scene_collada/_native
@@ -103,17 +114,22 @@ jobs:
 
       - name: Cache Blender 4.5.1 and ${{ matrix.blender_ver }}
         id: cache-blender
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .tools
           key: blender-linux-${{ env.BLENDER_45_VER }}-${{ matrix.blender_ver }}
 
-      - name: Download Blender 4.5.1 LTS and Blender ${{ matrix.blender_ver }}
+      - name: Download and verify Blender 4.5.1 LTS and Blender ${{ matrix.blender_ver }}
         if: steps.cache-blender.outputs.cache-hit != 'true'
         run: |
-          mkdir -p .tools
-          curl -fsSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_45_VER}-linux-x64.tar.xz" | tar -xJ -C .tools
-          curl -fsSL "https://download.blender.org/release/${{ matrix.blender_dir }}/blender-${{ matrix.blender_ver }}-linux-x64.tar.xz" | tar -xJ -C .tools
+          mkdir -p .tools /tmp/blender_dl
+          curl -fsSL "https://download.blender.org/release/Blender4.5/blender-${BLENDER_45_VER}-linux-x64.tar.xz" -o "/tmp/blender_dl/blender-${BLENDER_45_VER}-linux-x64.tar.xz"
+          echo "${BLENDER_45_SHA256}  /tmp/blender_dl/blender-${BLENDER_45_VER}-linux-x64.tar.xz" | sha256sum -c -
+          tar -xJf "/tmp/blender_dl/blender-${BLENDER_45_VER}-linux-x64.tar.xz" -C .tools
+          curl -fsSL "https://download.blender.org/release/${{ matrix.blender_dir }}/blender-${{ matrix.blender_ver }}-linux-x64.tar.xz" -o "/tmp/blender_dl/blender-${{ matrix.blender_ver }}-linux-x64.tar.xz"
+          echo "${{ matrix.blender_sha256 }}  /tmp/blender_dl/blender-${{ matrix.blender_ver }}-linux-x64.tar.xz" | sha256sum -c -
+          tar -xJf "/tmp/blender_dl/blender-${{ matrix.blender_ver }}-linux-x64.tar.xz" -C .tools
+          rm -rf /tmp/blender_dl
 
       - name: Configure portable Blender ${{ matrix.blender_ver }} and install extension
         run: |
@@ -174,15 +190,14 @@ jobs:
 
   package-and-release:
     needs: [build-native-linux, build-native-windows, build-native-macos, test-parity]
-    if: always() && needs.build-native-linux.result == 'success' && needs.build-native-windows.result == 'success' && needs.test-parity.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
 
       - name: Download all available native binaries
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
         with:
           pattern: native-*
           path: native_bins
@@ -195,16 +210,19 @@ jobs:
 
       - name: Restore cached Blender 5.3.0
         id: cache-blender
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830 # v4
         with:
           path: .tools
           key: blender-linux-${{ env.BLENDER_45_VER }}-5.3.0
 
-      - name: Download Blender 5.3.0 if needed
+      - name: Download and verify Blender 5.3.0 if needed
         if: steps.cache-blender.outputs.cache-hit != 'true'
         run: |
-          mkdir -p .tools
-          curl -fsSL "https://download.blender.org/release/Blender5.3/blender-5.3.0-linux-x64.tar.xz" | tar -xJ -C .tools
+          mkdir -p .tools /tmp/blender_dl
+          curl -fsSL "https://download.blender.org/release/Blender5.3/blender-5.3.0-linux-x64.tar.xz" -o "/tmp/blender_dl/blender-5.3.0-linux-x64.tar.xz"
+          echo "${BLENDER_53_SHA256}  /tmp/blender_dl/blender-5.3.0-linux-x64.tar.xz" | sha256sum -c -
+          tar -xJf "/tmp/blender_dl/blender-5.3.0-linux-x64.tar.xz" -C .tools
+          rm -rf /tmp/blender_dl
 
       - name: Build pure-Python and per-platform accelerated extension zips
         run: |
@@ -235,16 +253,22 @@ jobs:
           done
           cp /tmp/manifest_orig.toml io_scene_collada/blender_manifest.toml
           rm -rf io_scene_collada/_native
+          (cd dist && sha256sum collada_io-*.zip > SHA256SUMS.txt)
+          cat dist/SHA256SUMS.txt
           ls -lh dist/
 
       - name: Upload built extension artifacts
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
           name: collada_io-extensions
-          path: dist/collada_io-*.zip
+          path: |
+            dist/collada_io-*.zip
+            dist/SHA256SUMS.txt
 
       - name: Publish GitHub Release
         if: startsWith(github.ref, 'refs/tags/v')
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         with:
-          files: dist/collada_io-*.zip
+          files: |
+            dist/collada_io-*.zip
+            dist/SHA256SUMS.txt
