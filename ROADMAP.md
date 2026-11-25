@@ -20,7 +20,7 @@ Products:
 **Accuracy (from round-trip tests against Blenux io_beamng_dae 2.1.0)**
 - [x] #10 Keep normals through triangulation: custom normals, non-planar quads, sharp edges *(biggest visible quality issue)*
 - [x] #11 `.cdae` export: children of scaled parents misplaced
-- [ ] #12 `.dae` export: deduplicate UV/color sources (~40% smaller files)
+- [x] #12 `.dae` export: deduplicate UV/color sources (~40% smaller files)
 - [ ] #13 `.cdae` import: read Blenux-written files, with warnings
 
 **Robustness**
