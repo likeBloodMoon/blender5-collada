@@ -21,7 +21,7 @@ from dataclasses import dataclass
 
 import bpy
 import numpy as np
-from mathutils import Matrix, Quaternion
+from mathutils import Matrix, Quaternion, Vector
 
 from ..collada_utils import KEEP_NORMALS_ATTR, get_mesh_copy
 from .msgpack_lite import MsgPackWriter
@@ -136,10 +136,14 @@ def _build_gpu_mesh_data(
         me.corner_normals.foreach_get("vector", lnorms)
         lnorms = lnorms.reshape(n_loops, 3)
 
+    det_sign = 1.0
+    s_np: np.ndarray | None = None
     if scale_mat is not None:
-        s_np = np.array(scale_mat.to_3x3(), dtype=np.float64)
+        r3_mat = scale_mat.to_3x3()
+        det_sign = -1.0 if r3_mat.determinant() < 0.0 else 1.0
+        s_np = np.array(r3_mat, dtype=np.float64)
         co = (co.astype(np.float64) @ s_np.T).astype(np.float32)
-        n_mat = np.array(scale_mat.to_3x3().inverted_safe().transposed(), dtype=np.float64)
+        n_mat = np.array(r3_mat.inverted_safe().transposed(), dtype=np.float64)
         ln = lnorms.astype(np.float64) @ n_mat.T
         nlen = np.linalg.norm(ln, axis=1, keepdims=True)
         lnorms = np.where(nlen > 1e-8, ln / np.maximum(nlen, 1e-8), ln).astype(np.float32)
@@ -185,6 +189,12 @@ def _build_gpu_mesh_data(
             tangents_loops[:, :3] = t_vec.reshape(n_loops, 3)
             tangents_loops[:, 3] = t_sign
             me.free_tangents()
+            if s_np is not None:
+                t3 = tangents_loops[:, :3].astype(np.float64) @ s_np.T
+                tlen = np.linalg.norm(t3, axis=1, keepdims=True)
+                tangents_loops[:, :3] = np.where(tlen > 1e-8, t3 / np.maximum(tlen, 1e-8), t3).astype(np.float32)
+                if det_sign < 0.0:
+                    tangents_loops[:, 3] *= -1.0
         except Exception as exc:
             if warnings is not None:
                 label = mesh_name or me.name
@@ -270,7 +280,10 @@ def _build_gpu_mesh_data(
 
     # Group triangles by material slot into TSDrawPrimitives.
     # Flip Blender CCW front-face winding to Torque3D / BeamNG CW winding (colladaAppMesh.cpp:609-614).
-    tri_gpu = np.ascontiguousarray(corner_to_gpu.reshape(n_tris, 3)[:, ::-1])
+    # When the baked residual transform has negative determinant (mirrored scale), vertex reflection
+    # already converts CCW to CW, so keep the original vertex order.
+    tri_corners = corner_to_gpu.reshape(n_tris, 3)
+    tri_gpu = np.ascontiguousarray(tri_corners if det_sign < 0.0 else tri_corners[:, ::-1])
     unique_slots = np.unique(tri_mat_slots)
     prim_rows: list[tuple[int, int, int]] = []
     idx_chunks: list[np.ndarray] = []
@@ -373,6 +386,7 @@ class CdaeExporter:
         nodes_arr = np.empty(n_nodes, dtype=DTYPE_NODE)
         def_rots = np.empty((n_nodes, 4), dtype="<i2")
         def_trans = np.empty((n_nodes, 3), dtype="<f4")
+        rigid_worlds: dict[int, Matrix] = {}
         node_scales: dict[int, Matrix | None] = {}
 
         # Pre-compute parent/child/sibling links
@@ -391,14 +405,32 @@ class CdaeExporter:
 
         for i, ob in enumerate(node_obs):
             p_idx = ob_to_node_idx[ob.parent] if (ob.parent in ob_to_node_idx) else -1
-            mat = ob.matrix_local if p_idx >= 0 else ob.matrix_world
-            loc, rot, scl = mat.decompose()
-            def_trans[i] = (loc.x, loc.y, loc.z)
-            def_rots[i] = _blender_quat_to_quat16(rot)
-            if any(abs(s - 1.0) > 1e-5 for s in scl):
-                node_scales[i] = Matrix.Diagonal((scl.x, scl.y, scl.z, 1.0))
-            else:
-                node_scales[i] = None
+            mw_full = ob.matrix_world
+            loc_w, rot_w, _scl_w = mw_full.decompose()
+            rigid_w = Matrix.LocRotScale(loc_w, rot_w, None)
+
+            # Express this node's rigid world transform relative to its parent's *quantized*
+            # rigid world transform so Quat16 rounding on a parent doesn't amplify across child offsets.
+            local_rigid = (rigid_worlds[p_idx].inverted() @ rigid_w) if p_idx >= 0 else rigid_w
+            loc_l, rot_l, _ = local_rigid.decompose()
+            def_trans[i] = (loc_l.x, loc_l.y, loc_l.z)
+            q16 = _blender_quat_to_quat16(rot_l)
+            def_rots[i] = q16
+
+            q_rec = Quaternion((q16[3] / 32767.0, -q16[0] / 32767.0, -q16[1] / 32767.0, -q16[2] / 32767.0)).normalized()
+            local_q = Matrix.Translation(Vector((float(def_trans[i][0]), float(def_trans[i][1]), float(def_trans[i][2])))) @ q_rec.to_matrix().to_4x4()
+            rigid_q = (rigid_worlds[p_idx] @ local_q) if p_idx >= 0 else local_q
+            rigid_worlds[i] = rigid_q
+
+            # Only bake a residual transform when the full world matrix actually contains
+            # scale, shear, or reflection (preserve exact untouched local vertices on rigid nodes).
+            pure_res = (rigid_w.inverted() @ mw_full).to_3x3()
+            is_rigid = all(
+                abs(pure_res[r][c] - (1.0 if r == c else 0.0)) <= 1e-5
+                for r in range(3)
+                for c in range(3)
+            )
+            node_scales[i] = None if is_rigid else (rigid_q.inverted() @ mw_full)
 
             nodes_arr[i] = (
                 _add_name(ob.name),
@@ -458,13 +490,9 @@ class CdaeExporter:
             nodes_arr[ni]["first_object"] = obj_idx
             obj_rows.append((_add_name(ob.name), 1, mesh_idx, ni, prev_first, -1))
 
-            # Track world-space shape bounds
-            mw = np.array(ob.matrix_world, dtype=np.float64)
-            # Undo local scale if already baked into verts
-            if node_scales[ni] is not None:
-                loc_w, rot_w, _ = ob.matrix_world.decompose()
-                mw = np.array(Matrix.Translation(loc_w) @ rot_w.to_matrix().to_4x4(), dtype=np.float64)
-            w_pts = (mdata["verts"].astype(np.float64) @ mw[:3, :3].T) + mw[:3, 3]
+            # Track world-space shape bounds (verts already have residual baked in)
+            mw_r = np.array(rigid_worlds[ni], dtype=np.float64)
+            w_pts = (mdata["verts"].astype(np.float64) @ mw_r[:3, :3].T) + mw_r[:3, 3]
             world_mins.append(w_pts.min(axis=0))
             world_maxs.append(w_pts.max(axis=0))
 
