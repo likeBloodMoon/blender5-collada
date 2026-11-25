@@ -9,7 +9,7 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - Added (#18): **Keep Quads** export option (`keep_quads`, default `False`) under **Triangulate** on `.dae` export to triangulate n-gons only and preserve 4-sided quads in `<polylist>` (greyed out for `.cdae`)
 - Improved (#12): deduplicate UV and vertex color sources on `.dae` export (cuts `big_mesh` `.dae` size from `8.96 MB` to `< 6 MB` with byte-exact round-trip and faster export/import)
 - Fixed (#2): raise `MsgPackError` for unhashable MsgPack map keys and replace NumPy `DeprecationWarning` control flow in `.dae` array parsing with explicit token-count validation
-- Improved (#3): harden archive and XML imports by capping zip archives at 50,000 entries and rejecting XML `<!DOCTYPE>` / `<!ENTITY>` declarations
+- Improved (#3): harden archive and XML imports by capping zip archives at 50,000 entries and rejecting XML `<!DOCTYPE>` / `<!ENTITY>` declarations at the expat parser level
 - Added (#22): automated `.dae` and `.cdae` round-trip accuracy CI gate (`tests/test_accuracy_roundtrip.py`) covering 11 synthetic scenes with selfcheck and strict position/normal/flip/UV/color/material assertions
 - Fixed (#16): eliminate `ERROR: Image "" not available. Keeping packed image` stderr noise when importing packed archive textures on Blender 5.0+ by setting `img.filepath` before `img.pack()` and `img.source = "FILE"`
 - Fixed (#17): use Blender's viewport `mesh.loop_triangles` split on the default triangulated export path for `.dae` and `.cdae` (keeping `bmesh` `SHORT_EDGE` behind `keep_normals=False` for 4.5.1 parity), fixing opposite-winding co-vertex triangles on `monkey_sharp_edges`/`big_mesh` and cutting `nonplanar_quads` area error from `-0.32%` to `~0%`
