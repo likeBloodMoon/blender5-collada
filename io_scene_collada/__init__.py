@@ -239,6 +239,15 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
+    keep_quads: BoolProperty(
+        name="Keep Quads",
+        description=(
+            "Triangulate n-gons only and export quads as 4-sided polygons. "
+            "Note: non-planar quads are split by whichever program opens the file, so shading may differ slightly"
+        ),
+        default=False,
+    )
+
     keep_normals: BoolProperty(
         name="Keep Normals",
         description="Preserve pre-triangulation corner normals (custom normals, sharp edges, and non-planar quads) when triangulating",
@@ -355,6 +364,9 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             box.label(text="Export Data Options", icon="MESH_DATA")
             col = box.column(align=False)
             col.prop(self, "triangulate")
+            sub_kq = col.row(align=False)
+            sub_kq.active = self.triangulate
+            sub_kq.prop(self, "keep_quads")
             sub_kn = col.row(align=False)
             sub_kn.active = self.triangulate
             sub_kn.prop(self, "keep_normals")
@@ -433,6 +445,7 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             active_uv_only=self.active_uv_only,
             use_texture_copies=self.use_texture_copies,
             triangulate=self.triangulate,
+            keep_quads=self.keep_quads,
             keep_normals=self.keep_normals,
             deduplicate_attributes=self.deduplicate_attributes,
             use_object_instantiation=self.use_object_instantiation,
@@ -990,6 +1003,11 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         description="Apply modifiers before exporting",
         default=True,
     )
+    keep_quads: BoolProperty(
+        name="Keep Quads",
+        description="Not available for .cdae (Torque3D requires triangles)",
+        default=False,
+    )
     keep_normals: BoolProperty(
         name="Keep Normals",
         description="Preserve pre-triangulation corner normals (custom normals, sharp edges, and non-planar quads) when triangulating",
@@ -1011,6 +1029,9 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         col = box.column(align=False)
         col.prop(self, "use_selection")
         col.prop(self, "apply_modifiers")
+        sub_kq = col.row(align=False)
+        sub_kq.enabled = False
+        sub_kq.prop(self, "keep_quads")
         col.prop(self, "keep_normals")
         sub = col.column()
         sub.enabled = zstd_available()

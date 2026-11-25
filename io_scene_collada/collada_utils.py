@@ -415,12 +415,14 @@ def get_mesh_copy(
     apply_modifiers: bool,
     triangulate: bool,
     keep_normals: bool = True,
+    keep_quads: bool = False,
 ) -> tuple[Mesh, bool]:
     """Return (mesh, needs_free).
 
     If apply_modifiers is True, gets evaluated mesh copy.
     If triangulate is True, triangulates using SHORT_EDGE quad method and BEAUTY ngon method,
-    matching bc_triangulate_mesh() in collada_utils.cpp.
+    matching bc_triangulate_mesh() in collada_utils.cpp. When keep_quads is also True, only
+    n-gons (faces with more than 4 vertices) are triangulated and quads are preserved.
     If keep_normals is True and triangulate is True, preserves pre-triangulation corner normals
     in a temporary FLOAT_VECTOR CORNER attribute (KEEP_NORMALS_ATTR) across bmesh triangulation.
     """
@@ -433,30 +435,45 @@ def get_mesh_copy(
         mesh_copy = ob.data.copy()
 
     if triangulate:
-        if keep_normals:
-            n_loops = len(mesh_copy.loops)
-            if n_loops > 0:
+        need_tri = True
+        if keep_quads:
+            n_polys = len(mesh_copy.polygons)
+            if n_polys == 0:
+                need_tri = False
+            else:
                 import numpy as np
 
-                old_attr = mesh_copy.attributes.get(KEEP_NORMALS_ATTR)
-                if old_attr is not None:
-                    mesh_copy.attributes.remove(old_attr)
-                cn = np.empty(n_loops * 3, dtype=np.float32)
-                mesh_copy.corner_normals.foreach_get("vector", cn)
-                keep_attr = mesh_copy.attributes.new(KEEP_NORMALS_ATTR, "FLOAT_VECTOR", "CORNER")
-                keep_attr.data.foreach_set("vector", cn)
+                loop_totals = np.empty(n_polys, dtype=np.int32)
+                mesh_copy.polygons.foreach_get("loop_total", loop_totals)
+                need_tri = bool((loop_totals > 4).any())
 
-        bm = bmesh.new()
-        bm.from_mesh(mesh_copy)
-        bm.normal_update()
-        bmesh.ops.triangulate(
-            bm,
-            faces=bm.faces[:],
-            quad_method="SHORT_EDGE",
-            ngon_method="BEAUTY",
-        )
-        bm.to_mesh(mesh_copy)
-        bm.free()
+        if need_tri:
+            if keep_normals:
+                n_loops = len(mesh_copy.loops)
+                if n_loops > 0:
+                    import numpy as np
+
+                    old_attr = mesh_copy.attributes.get(KEEP_NORMALS_ATTR)
+                    if old_attr is not None:
+                        mesh_copy.attributes.remove(old_attr)
+                    cn = np.empty(n_loops * 3, dtype=np.float32)
+                    mesh_copy.corner_normals.foreach_get("vector", cn)
+                    keep_attr = mesh_copy.attributes.new(KEEP_NORMALS_ATTR, "FLOAT_VECTOR", "CORNER")
+                    keep_attr.data.foreach_set("vector", cn)
+
+            bm = bmesh.new()
+            bm.from_mesh(mesh_copy)
+            bm.normal_update()
+            faces_to_tri = [f for f in bm.faces if len(f.verts) > 4] if keep_quads else bm.faces[:]
+            if faces_to_tri:
+                bmesh.ops.triangulate(
+                    bm,
+                    faces=faces_to_tri,
+                    quad_method="SHORT_EDGE",
+                    ngon_method="BEAUTY",
+                )
+            bm.to_mesh(mesh_copy)
+            bm.free()
 
     return mesh_copy, True
 
