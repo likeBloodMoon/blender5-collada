@@ -48,7 +48,7 @@ Products:
 - [ ] #5 Pin Actions to SHAs, verify Blender downloads, add `SHA256SUMS.txt`
 - [ ] #6 Allow-failure CI job against Blender daily builds
 - [ ] #14 Broader ruff rules + mypy on `cdae/`
-- [ ] #7 Shared warning-cap helper
+- [x] #7 Shared warning-cap helper
 - [ ] #8 Warn when importing into an excluded or hidden collection
 - [ ] #9 Make "restart after update" visible in Preferences
 - [x] Add the accuracy test kit to CI. Gate: custom-normal, non-planar and hierarchy cases < 0.1° / < 0.1 mm.

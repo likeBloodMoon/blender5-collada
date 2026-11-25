@@ -1098,20 +1098,15 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             base_cdae_settings=base_cdae,
         )
 
-        max_warnings = 5
-        for warn in warnings[:max_warnings]:
-            self.report({"WARNING"}, warn)
-        if len(warnings) > max_warnings:
-            self.report({"WARNING"}, f"... and {len(warnings) - max_warnings} more warning(s)")
+        from ..collada_utils import report_capped
+
+        report_capped(self, "WARNING", warnings)
 
         if ok:
             if summary:
                 self.report({"INFO"}, summary)
             return {"FINISHED"}
-        if errors:
-            self.report({"ERROR"}, "; ".join(errors))
-        else:
-            self.report({"ERROR"}, "BeamNG archive import failed")
+        report_capped(self, "ERROR", errors, fallback="BeamNG archive import failed")
         return {"CANCELLED"}
 
 

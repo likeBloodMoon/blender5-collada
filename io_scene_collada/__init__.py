@@ -31,6 +31,7 @@ from .beamng.picker import execute_beamng_import, register_picker, unregister_pi
 from .beamng.source import load_vehicle_source
 from .cdae.exporter import CdaeExporter, CdaeExportSettings, zstd_available
 from .cdae.importer import CdaeImporter, CdaeImportSettings
+from .collada_utils import report_capped
 from .export_collada import DocumentExporter, ExportSettings
 from .import_collada import DocumentImporter, ImportSettings
 
@@ -718,35 +719,21 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
                 spread_out=self.spread_out,
                 base_dae_settings=settings,
             )
-            max_warnings = 5
-            for warn in warnings[:max_warnings]:
-                self.report({"WARNING"}, warn)
-            if len(warnings) > max_warnings:
-                self.report({"WARNING"}, f"... and {len(warnings) - max_warnings} more warning(s)")
+            report_capped(self, "WARNING", warnings)
             if ok:
                 if summary:
                     self.report({"INFO"}, summary)
                 return {"FINISHED"}
-            self.report({"ERROR"}, "; ".join(errors) if errors else "BeamNG Collada import failed")
+            report_capped(self, "ERROR", errors, fallback="BeamNG Collada import failed")
             return {"CANCELLED"}
 
         importer = DocumentImporter(context, settings)
         ok = importer.import_document()
-        max_warnings = 5
-        for warn in importer.warnings[:max_warnings]:
-            self.report({"WARNING"}, warn)
-        if len(importer.warnings) > max_warnings:
-            self.report(
-                {"WARNING"},
-                f"... and {len(importer.warnings) - max_warnings} more warning(s)",
-            )
+        report_capped(self, "WARNING", importer.warnings)
         if ok:
             return {"FINISHED"}
 
-        if importer.errors:
-            self.report({"ERROR"}, "; ".join(importer.errors))
-        else:
-            self.report({"ERROR"}, "Collada import failed")
+        report_capped(self, "ERROR", importer.errors, fallback="Collada import failed")
         return {"CANCELLED"}
 
 
@@ -947,36 +934,22 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
                 spread_out=self.spread_out,
                 base_cdae_settings=settings,
             )
-            max_warnings = 5
-            for warn in warnings[:max_warnings]:
-                self.report({"WARNING"}, warn)
-            if len(warnings) > max_warnings:
-                self.report({"WARNING"}, f"... and {len(warnings) - max_warnings} more warning(s)")
+            report_capped(self, "WARNING", warnings)
             if ok:
                 if summary:
                     self.report({"INFO"}, summary)
                 return {"FINISHED"}
-            self.report({"ERROR"}, "; ".join(errors) if errors else "BeamNG .cdae import failed")
+            report_capped(self, "ERROR", errors, fallback="BeamNG .cdae import failed")
             return {"CANCELLED"}
 
         importer = CdaeImporter(context, settings)
         ok = importer.import_document()
         for info in importer.infos:
             self.report({"INFO"}, info)
-        max_warnings = 5
-        for warn in importer.warnings[:max_warnings]:
-            self.report({"WARNING"}, warn)
-        if len(importer.warnings) > max_warnings:
-            self.report(
-                {"WARNING"},
-                f"... and {len(importer.warnings) - max_warnings} more warning(s)",
-            )
+        report_capped(self, "WARNING", importer.warnings)
         if ok:
             return {"FINISHED"}
-        if importer.errors:
-            self.report({"ERROR"}, "; ".join(importer.errors))
-        else:
-            self.report({"ERROR"}, "BeamNG .cdae import failed")
+        report_capped(self, "ERROR", importer.errors, fallback="BeamNG .cdae import failed")
         return {"CANCELLED"}
 
 
@@ -1051,20 +1024,10 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         )
         exporter = CdaeExporter(context, settings)
         ok = exporter.export_document()
-        max_warnings = 5
-        for warn in exporter.warnings[:max_warnings]:
-            self.report({"WARNING"}, warn)
-        if len(exporter.warnings) > max_warnings:
-            self.report(
-                {"WARNING"},
-                f"... and {len(exporter.warnings) - max_warnings} more warning(s)",
-            )
+        report_capped(self, "WARNING", exporter.warnings)
         if ok:
             return {"FINISHED"}
-        if exporter.errors:
-            self.report({"ERROR"}, "; ".join(exporter.errors))
-        else:
-            self.report({"ERROR"}, "BeamNG .cdae export failed")
+        report_capped(self, "ERROR", exporter.errors, fallback="BeamNG .cdae export failed")
         return {"CANCELLED"}
 
 
