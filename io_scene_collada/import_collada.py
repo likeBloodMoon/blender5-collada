@@ -13,6 +13,7 @@ import re
 import traceback
 import urllib.parse
 import xml.etree.ElementTree as ET
+import xml.parsers.expat as _expat
 import zipfile
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -45,31 +46,63 @@ _MAX_ZIP_ENTRY_BYTES = 1 * 1024 * 1024 * 1024       # 1 GiB
 _MAX_ZIP_TOTAL_BYTES = 4 * 1024 * 1024 * 1024       # 4 GiB
 _ZIP_RATIO_THRESHOLD_BYTES = 50 * 1024 * 1024       # 50 MB
 _MAX_ZIP_RATIO = 200.0
-_DTD_DECL_RE = re.compile(rb"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
-_DTD_DECL_STR_RE = re.compile(r"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
-_DTD_SCAN_BYTES = 65536
+_DTD_CHUNK_BYTES = 65536
 
 
-def _reject_dtd_bytes(head: bytes) -> None:
-    if _DTD_DECL_RE.search(head):
+class _XmlPrologDone(Exception):
+    pass
+
+
+def _reject_dtd_expat(source: str | bytes) -> None:
+    """Reject DOCTYPE / ENTITY / NOTATION declarations at the expat parser level.
+
+    Feeds only the XML prolog (stopping as soon as the root element starts) so
+    multi-megabyte COLLADA files incur sub-millisecond overhead while arbitrary-length
+    leading comments, processing instructions, and encodings are handled accurately.
+    """
+    parser = _expat.ParserCreate()
+
+    def _forbid(*_args, **_kwargs) -> None:
         raise ValueError("DTDs are not supported in COLLADA files")
-    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
-        try:
-            text_head = head.decode("utf-16", errors="ignore")
-        except Exception:
-            text_head = ""
-        if _DTD_DECL_STR_RE.search(text_head):
-            raise ValueError("DTDs are not supported in COLLADA files")
+
+    def _on_root(*_args, **_kwargs) -> None:
+        raise _XmlPrologDone()
+
+    parser.StartDoctypeDeclHandler = _forbid
+    parser.EntityDeclHandler = _forbid
+    parser.UnparsedEntityDeclHandler = _forbid
+    parser.NotationDeclHandler = _forbid
+    parser.StartElementHandler = _on_root
+
+    try:
+        if isinstance(source, (bytes, bytearray)):
+            mv = memoryview(source)
+            n = len(mv)
+            for off in range(0, n, _DTD_CHUNK_BYTES):
+                end = min(off + _DTD_CHUNK_BYTES, n)
+                parser.Parse(mv[off:end], end == n)
+            if n == 0:
+                parser.Parse(b"", True)
+        else:
+            with open(source, "rb") as fh:
+                while True:
+                    chunk = fh.read(_DTD_CHUNK_BYTES)
+                    if not chunk:
+                        parser.Parse(b"", True)
+                        break
+                    parser.Parse(chunk, False)
+    except _XmlPrologDone:
+        return
+    except _expat.ExpatError:
+        # Let ET.parse report ordinary XML syntax errors uniformly.
+        return
 
 
 def _parse_xml_safe(source: str | bytes) -> ET.ElementTree:
-    """Parse XML from a file path or bytes after rejecting DOCTYPE/ENTITY declarations."""
+    """Parse XML from a file path or bytes after rejecting DTD declarations via expat."""
+    _reject_dtd_expat(source)
     if isinstance(source, (bytes, bytearray)):
-        _reject_dtd_bytes(bytes(source[:_DTD_SCAN_BYTES]))
         return ET.parse(io.BytesIO(source))
-    with open(source, "rb") as fh:
-        head = fh.read(_DTD_SCAN_BYTES)
-    _reject_dtd_bytes(head)
     return ET.parse(source)
 
 

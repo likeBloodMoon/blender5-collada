@@ -607,6 +607,13 @@ def build_cases() -> dict[str, tuple[str, dict]]:
 """,
             {"expect_ok": False, "expect_error_substr": "DTDs are not supported"},
         ),
+        "dtd_after_70kb_comment": (
+            '<?xml version="1.0" encoding="utf-8"?>\n'
+            + "<!--" + ("A" * 72000) + "-->\n"
+            + '<!DOCTYPE COLLADA [<!ENTITY lol "lol">]>\n'
+            + '<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1"/>\n',
+            {"expect_ok": False, "expect_error_substr": "DTDs are not supported"},
+        ),
     }
 
 
