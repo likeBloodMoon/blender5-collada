@@ -4,6 +4,16 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.0] - 2026-11-25
+
+- Added: Experimental BeamNG archive picker, `.pc` vehicle configuration import (`.dae` and `.cdae`), and automatic `common.zip` part lookup
+
+### Details
+- **BeamNG archive & folder picker `[Experimental]`** (`io_scene_collada/beamng/picker.py`, `__init__.py`): opening a multi-model `.zip`/`.zae`/`.kmz` archive, a vehicle archive with `.pc` configs, or a loose `.dae`/`.cdae` inside a vehicle folder with `.pc` configs interactively opens the **Import BeamNG Archive [Experimental]** dialog. Supports vehicle/config selection, **Only this config** / **Config + other parts hidden** / **Everything** part modes, model filtering & selection, optional **Spread selected models out side by side**, and per-archive remembered choices. Added `.zip` to `IO_FH_collada` drag-and-drop and the File → Import menu label (`Collada (.dae, .zae, .kmz, .zip)`).
+- **BeamNG `.pc` configuration resolver & `common.zip` lookup** (`io_scene_collada/beamng/`): unified lenient JSON/jbeam parser (`lenient_json.py`, also shared by `beamng_materials.py`), table parser (`parts.py`, supporting both `slots` and `slots2`), slot-path & legacy `.pc` resolver (`resolve.py`), safe recursive-descent `$=` expression evaluator (`expr.py`), and session-cached archive/folder scanner (`source.py`) with automatic sibling `common.zip` / `vehicles/common/` discovery.
+- **Selective node filtering & scene organization** (`import_collada.py`, `cdae/importer.py`, `picker.py`): added `node_filter` (pruning unreferenced nodes, geometries, materials, and images) and scriptable operator properties (`beamng_config`, `beamng_parts_mode`, `archive_models`, `use_common`, `spread_out`) to both `wm.collada_import` and `import_scene.beamng_cdae`. Imported config objects are tagged with `beamng_part`, `beamng_slot_path`, `beamng_config`, and `beamng_source` custom properties, parts requiring jbeam placement are grouped under `Needs placement`, and an import report text datablock is written to the `.blend`.
+- **Hardening & tests**: added safe numeric/stride/skin `vertex_weights` guards in `import_collada.py`, expanded `tests/fuzz_import.py`, `tests/test_malformed.py`, and `tests/test_archives.py`, added synthetic unit tests (`tests/test_beamng_parse.py`, `tests/test_beamng_resolve.py`) to CI, and cleared stale `tests/_work` artifacts automatically in `tests/run_parity_tests.py`.
+
 ## [1.4.4] - 2026-11-24
 
 - Fixed: multi-`.dae` zip archive import, preserving UVs/colors/normals when dropping duplicate or degenerate triangles, `.dds` fallback & BeamNG `main.materials.json` texture loading, clearer non-`.cdae` file errors, and `compare_cdae.py` oracle accuracy
@@ -143,6 +153,8 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 - **Archive & Drag-and-Drop Support**: `.zae`, `.kmz`, and `.zip` archive import with `manifest.xml` `<dae_root>` resolution, zip-slip protection, automatic image packing, and `IO_FH_collada` FileHandler drag-and-drop.
 - **Automated CI & Verification**: GitHub Actions workflow running all 55 parity & deep verification checks against Blender 4.5.1 LTS on every push, PR, and release tag.
 
+[1.5.0]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.4...v1.5.0
+[1.4.4]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.3...v1.4.4
 [1.4.3]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.2...v1.4.3
 [1.4.2]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.1...v1.4.2
 [1.4.1]: https://github.com/likeBloodMoon/blender5-collada/compare/v1.4.0...v1.4.1

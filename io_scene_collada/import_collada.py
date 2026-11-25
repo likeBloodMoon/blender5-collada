@@ -55,6 +55,8 @@ class ImportSettings:
     sharp_edges_from_normals: bool = False
     sharp_angle_threshold: float = math.radians(1.0)
     archive_mode: str = "ALL"  # "ALL" (all .dae into collections) or "MAIN" (single main .dae)
+    node_filter: set[str] | None = None
+    archive_entry_filter: list[str] | None = None
     find_chains: bool = False
     auto_connect: bool = False
     fix_orientation: bool = False
@@ -130,16 +132,55 @@ def _parse_i32_np(text: str | None, warnings: list[str] | None = None, label: st
         return None
 
 
+def _safe_float(text: str | None, default: float = 0.0) -> float:
+    if not text:
+        return default
+    try:
+        v = float(text.strip())
+        return v if math.isfinite(v) else default
+    except ValueError:
+        return default
+
+
+def _safe_int(text: str | None, default: int = 0) -> int:
+    if not text:
+        return default
+    try:
+        return int(text.strip())
+    except ValueError:
+        return default
+
+
 def _parse_floats(text: str | None) -> list[float]:
     if not text:
         return []
-    return [float(x) for x in text.split()]
+    toks = text.split()
+    try:
+        vals = [float(x) for x in toks]
+    except ValueError:
+        vals = []
+        for x in toks:
+            try:
+                vals.append(float(x))
+            except ValueError:
+                vals.append(0.0)
+    return [v if math.isfinite(v) else 0.0 for v in vals]
 
 
 def _parse_ints(text: str | None) -> list[int]:
     if not text:
         return []
-    return [int(x) for x in text.split()]
+    toks = text.split()
+    try:
+        return [int(x) for x in toks]
+    except ValueError:
+        out: list[int] = []
+        for x in toks:
+            try:
+                out.append(int(x))
+            except ValueError:
+                out.append(0)
+        return out
 
 
 def _parse_strings(text: str | None) -> list[str]:
@@ -278,7 +319,12 @@ class DocumentImporter:
         self.object_by_node_id: dict[str, Object] = {}
         self.object_by_geom_id: dict[str, Object] = {}
         self.imported_mesh_objects: list[Object] = []
+        self.imported_objects_by_node_name: dict[str, list[Object]] = {}
         self.root_objects: list[Object] = []
+        self._kept_nodes: set[int] | None = None
+        self._allowed_geom_ids: set[str] | None = None
+        self._allowed_mat_ids: set[str] | None = None
+        self._allowed_img_ids: set[str] | None = None
 
         # Armature tracking
         self.root_joint_nodes: list[tuple[ET.Element, Object]] = []  # (joint_elem, ob_arm)
@@ -464,6 +510,16 @@ class DocumentImporter:
                         return False
                     self._load_archive_materials_json(zf)
 
+                    if self.settings.archive_entry_filter is not None:
+                        want_ci = {_norm_archive_path(p).lower() for p in self.settings.archive_entry_filter}
+                        dae_entries = [e for e in dae_entries if e[0].lower() in want_ci]
+                        from_manifest = False
+                        if not dae_entries:
+                            self.errors.append(
+                                f"None of the selected .dae entries were found in '{self._archive_basename}'"
+                            )
+                            return False
+
                     if from_manifest or len(dae_entries) == 1 or self.settings.archive_mode == "MAIN":
                         if not from_manifest and len(dae_entries) > 1:
                             skipped = [n for n, _ in dae_entries[1:]]
@@ -541,6 +597,148 @@ class DocumentImporter:
             return False
         return self._import_dae_tree(tree)
 
+    def _compute_node_filter_plan(self, root: ET.Element, node_filter: set[str]) -> None:
+        """Pre-scan visual scenes to determine kept nodes, geometries, materials, and images."""
+        lib_nodes: dict[str, ET.Element] = {}
+        for lib in _find_children(root, "library_nodes"):
+            for n in _find_children(lib, "node"):
+                nid = n.attrib.get("id", "")
+                if nid:
+                    lib_nodes[nid] = n
+
+        kept_nodes: set[int] = set()
+        kept_geoms: set[str] = set()
+        kept_ctrls: set[str] = set()
+        kept_mats: set[str] = set()
+
+        def _collect_bindings(inst_el: ET.Element) -> None:
+            bm = _find_child(inst_el, "bind_material")
+            if bm is None:
+                return
+            tc = _find_child(bm, "technique_common")
+            if tc is None:
+                return
+            for im in _find_children(tc, "instance_material"):
+                tid = _uri_to_local_id(im.attrib.get("target"))
+                if tid:
+                    kept_mats.add(tid)
+
+        def _walk_node(node: ET.Element, visiting: set[int]) -> bool:
+            key = id(node)
+            if key in visiting:
+                return False
+            visiting.add(key)
+            try:
+                node_name = node.attrib.get("name") or node.attrib.get("id") or ""
+                node_id = node.attrib.get("id", "")
+                direct_match = (node_name in node_filter) or (bool(node_id) and node_id in node_filter)
+                if not direct_match:
+                    for ig in _find_children(node, "instance_geometry"):
+                        iname = ig.attrib.get("name", "")
+                        if iname and iname in node_filter:
+                            direct_match = True
+                            break
+
+                child_match = False
+                for ch in _find_children(node, "node"):
+                    if _walk_node(ch, visiting):
+                        child_match = True
+                for ino in _find_children(node, "instance_node"):
+                    src_n = lib_nodes.get(_uri_to_local_id(ino.attrib.get("url")))
+                    if src_n is not None and _walk_node(src_n, visiting):
+                        child_match = True
+
+                if direct_match or child_match:
+                    kept_nodes.add(key)
+                    if direct_match:
+                        for ig in _find_children(node, "instance_geometry"):
+                            gid = _uri_to_local_id(ig.attrib.get("url"))
+                            if gid:
+                                kept_geoms.add(gid)
+                            _collect_bindings(ig)
+                        for ic in _find_children(node, "instance_controller"):
+                            cid = _uri_to_local_id(ic.attrib.get("url"))
+                            if cid:
+                                kept_ctrls.add(cid)
+                            _collect_bindings(ic)
+                    return True
+                return False
+            finally:
+                visiting.discard(key)
+
+        for lib in _find_children(root, "library_visual_scenes"):
+            for vscene in _find_children(lib, "visual_scene"):
+                for node in _find_children(vscene, "node"):
+                    _walk_node(node, set())
+
+        # Resolve geometry IDs referenced by kept controllers (skin / morph)
+        if kept_ctrls:
+            for lib in _find_children(root, "library_controllers"):
+                for ctrl in _find_children(lib, "controller"):
+                    cid = ctrl.attrib.get("id", "")
+                    if cid not in kept_ctrls:
+                        continue
+                    skin = _find_child(ctrl, "skin")
+                    if skin is not None:
+                        gid = _uri_to_local_id(skin.attrib.get("source"))
+                        if gid:
+                            kept_geoms.add(gid)
+                    morph = _find_child(ctrl, "morph")
+                    if morph is not None:
+                        gid = _uri_to_local_id(morph.attrib.get("source"))
+                        if gid:
+                            kept_geoms.add(gid)
+
+        # Resolve image IDs referenced by kept materials -> effects
+        kept_effs: set[str] = set()
+        for lib in _find_children(root, "library_materials"):
+            for mat_elem in _find_children(lib, "material"):
+                if mat_elem.attrib.get("id", "") in kept_mats:
+                    ie = _find_child(mat_elem, "instance_effect")
+                    if ie is not None:
+                        eid = _uri_to_local_id(ie.attrib.get("url"))
+                        if eid:
+                            kept_effs.add(eid)
+        kept_imgs: set[str] = set()
+        for lib in _find_children(root, "library_effects"):
+            for eff_elem in _find_children(lib, "effect"):
+                if eff_elem.attrib.get("id", "") not in kept_effs:
+                    continue
+                profile = _find_child(eff_elem, "profile_COMMON")
+                if profile is None:
+                    continue
+                surface_to_img: dict[str, str] = {}
+                sampler_to_surface: dict[str, str] = {}
+                for np_el in _find_children(profile, "newparam"):
+                    sid = np_el.attrib.get("sid", "")
+                    surf = _find_child(np_el, "surface")
+                    if surf is not None:
+                        init_f = _find_child(surf, "init_from")
+                        if init_f is not None and init_f.text:
+                            img_ref = init_f.text.strip()
+                            kept_imgs.add(img_ref)
+                            if sid:
+                                surface_to_img[sid] = img_ref
+                    samp = _find_child(np_el, "sampler2D")
+                    if samp is not None:
+                        src = _find_child(samp, "source")
+                        if src is not None and src.text and sid:
+                            sampler_to_surface[sid] = src.text.strip()
+                # Also keep images referenced directly via <texture texture="img_id"/>
+                for el in profile.iter():
+                    if _strip_ns(el.tag) == "texture":
+                        tex_ref = el.attrib.get("texture", "").strip()
+                        if tex_ref:
+                            surf_ref = sampler_to_surface.get(tex_ref, tex_ref)
+                            img_ref = surface_to_img.get(surf_ref, surf_ref)
+                            if img_ref:
+                                kept_imgs.add(img_ref)
+
+        self._kept_nodes = kept_nodes
+        self._allowed_geom_ids = kept_geoms
+        self._allowed_mat_ids = kept_mats
+        self._allowed_img_ids = kept_imgs
+
     def _import_dae_tree(self, tree: ET.ElementTree, *, deselect_existing: bool = True) -> bool:
 
         root = tree.getroot()
@@ -552,6 +750,14 @@ class DocumentImporter:
         if deselect_existing:
             for ob in self.view_layer.objects:
                 ob.select_set(False)
+
+        if self.settings.node_filter is not None:
+            self._compute_node_filter_plan(root, self.settings.node_filter)
+        else:
+            self._kept_nodes = None
+            self._allowed_geom_ids = None
+            self._allowed_mat_ids = None
+            self._allowed_img_ids = None
 
         # 1. Asset
         asset_elem = _find_child(root, "asset")
@@ -796,6 +1002,8 @@ class DocumentImporter:
     def _read_library_images(self, lib: ET.Element) -> None:
         for img_elem in _find_children(lib, "image"):
             img_id = img_elem.attrib.get("id", "")
+            if self._allowed_img_ids is not None and img_id not in self._allowed_img_ids:
+                continue
             init_from = _find_child(img_elem, "init_from")
             if init_from is None or not init_from.text:
                 continue
@@ -829,6 +1037,8 @@ class DocumentImporter:
     def _read_library_materials(self, lib: ET.Element) -> None:
         for mat_elem in _find_children(lib, "material"):
             mat_id = mat_elem.attrib.get("id", "")
+            if self._allowed_mat_ids is not None and mat_id not in self._allowed_mat_ids:
+                continue
             mat_name = mat_elem.attrib.get("name") or mat_id
             ma = bpy.data.materials.new(name=mat_name)
             self.materials_by_id[mat_id] = ma
@@ -1021,7 +1231,7 @@ class DocumentImporter:
         if ior_el is not None:
             fl = _find_child(ior_el, "float")
             if fl is not None and fl.text:
-                ior_val = float(fl.text.strip())
+                ior_val = _safe_float(fl.text, -1.0)
                 if ior_val >= 0.0:
                     ior_sock = shader_node.inputs.get("IOR")
                     if ior_sock is not None:
@@ -1049,7 +1259,7 @@ class DocumentImporter:
                 if transp_el is not None:
                     fl = _find_child(transp_el, "float")
                     if fl is not None and fl.text:
-                        val = float(fl.text.strip())
+                        val = _safe_float(fl.text, -1.0)
                         if val >= 0.0:
                             tr_alpha = val
                 alpha = t_alpha * tr_alpha
@@ -1065,7 +1275,7 @@ class DocumentImporter:
         if refl_el is not None:
             fl = _find_child(refl_el, "float")
             if fl is not None and fl.text:
-                rval = float(fl.text.strip())
+                rval = _safe_float(fl.text, -1.0)
                 if rval >= 0.0:
                     met_sock = shader_node.inputs.get("Metallic")
                     if met_sock is not None:
@@ -1114,11 +1324,11 @@ class DocumentImporter:
 
             extras = _parse_extra_blender(cam_elem)
             if "shiftx" in extras:
-                cam.shift_x = float(extras["shiftx"])
+                cam.shift_x = _safe_float(extras["shiftx"])
             if "shifty" in extras:
-                cam.shift_y = float(extras["shifty"])
+                cam.shift_y = _safe_float(extras["shifty"])
             if "dof_distance" in extras:
-                cam.dof.focus_distance = float(extras["dof_distance"])
+                cam.dof.focus_distance = _safe_float(extras["dof_distance"])
 
             optics = _find_child(cam_elem, "optics")
             if optics is not None:
@@ -1131,41 +1341,46 @@ class DocumentImporter:
                         zn = _find_child(persp, "znear")
                         zf = _find_child(persp, "zfar")
                         if zn is not None and zn.text:
-                            cam.clip_start = float(zn.text)
+                            cam.clip_start = max(1e-6, _safe_float(zn.text, cam.clip_start))
                         if zf is not None and zf.text:
-                            cam.clip_end = float(zf.text)
+                            cam.clip_end = max(1e-6, _safe_float(zf.text, cam.clip_end))
                         xfov_el = _find_child(persp, "xfov")
                         yfov_el = _find_child(persp, "yfov")
                         ar_el = _find_child(persp, "aspect_ratio")
                         if xfov_el is not None and xfov_el.text:
-                            cam.lens = fov_to_focallength(math.radians(float(xfov_el.text)), cam.sensor_width)
+                            xfv = _safe_float(xfov_el.text, 0.0)
+                            if 0.0 < xfv < 180.0:
+                                cam.lens = fov_to_focallength(math.radians(xfv), cam.sensor_width)
                         elif yfov_el is not None and yfov_el.text:
-                            yfov = math.radians(float(yfov_el.text))
-                            if ar_el is not None and ar_el.text:
-                                aspect = float(ar_el.text)
-                                xfov = 2.0 * math.atan(aspect * math.tan(yfov * 0.5))
-                                cam.lens = fov_to_focallength(xfov, cam.sensor_width)
-                            else:
-                                cam.lens = fov_to_focallength(yfov, cam.sensor_width)
+                            yfv = _safe_float(yfov_el.text, 0.0)
+                            if 0.0 < yfv < 180.0:
+                                yfov = math.radians(yfv)
+                                if ar_el is not None and ar_el.text:
+                                    aspect = _safe_float(ar_el.text, 1.0)
+                                    if aspect > 0.0:
+                                        xfov = 2.0 * math.atan(aspect * math.tan(yfov * 0.5))
+                                        cam.lens = fov_to_focallength(xfov, cam.sensor_width)
+                                else:
+                                    cam.lens = fov_to_focallength(yfov, cam.sensor_width)
                     elif ortho is not None:
                         cam.type = "ORTHO"
                         zn = _find_child(ortho, "znear")
                         zf = _find_child(ortho, "zfar")
                         if zn is not None and zn.text:
-                            cam.clip_start = float(zn.text)
+                            cam.clip_start = max(1e-6, _safe_float(zn.text, cam.clip_start))
                         if zf is not None and zf.text:
-                            cam.clip_end = float(zf.text)
+                            cam.clip_end = max(1e-6, _safe_float(zf.text, cam.clip_end))
                         xmag_el = _find_child(ortho, "xmag")
                         ymag_el = _find_child(ortho, "ymag")
                         ar_el = _find_child(ortho, "aspect_ratio")
                         if xmag_el is not None and xmag_el.text:
-                            cam.ortho_scale = float(xmag_el.text) * 2.0
+                            cam.ortho_scale = max(1e-6, _safe_float(xmag_el.text, 3.0) * 2.0)
                         elif ymag_el is not None and ymag_el.text:
-                            ymag = float(ymag_el.text)
+                            ymag = _safe_float(ymag_el.text, 3.0)
                             if ar_el is not None and ar_el.text:
-                                cam.ortho_scale = 2.0 * ymag * float(ar_el.text)
+                                cam.ortho_scale = max(1e-6, 2.0 * ymag * _safe_float(ar_el.text, 1.0))
                             else:
-                                cam.ortho_scale = ymag
+                                cam.ortho_scale = max(1e-6, ymag)
 
             self.cameras_by_id[cam_id] = cam
 
@@ -1183,25 +1398,25 @@ class DocumentImporter:
             extras = _parse_extra_blender(la_elem)
 
             if extras and "type" in extras:
-                la_type = int_to_type.get(int(extras["type"]), "POINT")
+                la_type = int_to_type.get(_safe_int(extras["type"], 0), "POINT")
                 la = bpy.data.lights.new(name=la_name, type=la_type)
                 la_key = la.name
                 la.color = (
-                    float(extras.get("red", 1.0)),
-                    float(extras.get("green", 1.0)),
-                    float(extras.get("blue", 1.0)),
+                    _safe_float(extras.get("red"), 1.0),
+                    _safe_float(extras.get("green"), 1.0),
+                    _safe_float(extras.get("blue"), 1.0),
                 )
                 if "energy" in extras:
-                    la.energy = float(extras["energy"])
+                    la.energy = _safe_float(extras["energy"], la.energy)
                 if "mode" in extras:
-                    mode = int(extras["mode"])
+                    mode = _safe_int(extras["mode"], 0)
                     la.use_shadow = bool(mode & 1)
                     if hasattr(la, "normalize"):
                         la.normalize = not bool(mode & (1 << 22))
                 if "radius" in extras and hasattr(la, "shadow_soft_size"):
-                    la.shadow_soft_size = float(extras["radius"])
+                    la.shadow_soft_size = _safe_float(extras["radius"], la.shadow_soft_size)
                 if "clipend" in extras and hasattr(la, "cutoff_distance"):
-                    la.cutoff_distance = float(extras["clipend"])
+                    la.cutoff_distance = _safe_float(extras["clipend"], la.cutoff_distance)
                 # Match DocumentImporter.cpp:999-1008: write spot & area DNA fields
                 # regardless of final light type so round-trips preserve DNA values.
                 if "spotsize" in extras or "spotblend" in extras:
@@ -1209,19 +1424,19 @@ class DocumentImporter:
                         la.type = "SPOT"
                         la = bpy.data.lights[la_key]
                     if "spotsize" in extras:
-                        la.spot_size = math.radians(float(extras["spotsize"]))
+                        la.spot_size = math.radians(_safe_float(extras["spotsize"], 45.0))
                     if "spotblend" in extras:
-                        la.spot_blend = float(extras["spotblend"])
+                        la.spot_blend = _safe_float(extras["spotblend"], la.spot_blend)
                 if "area_shape" in extras or "area_size" in extras or "area_sizey" in extras:
                     if la.type != "AREA":
                         la.type = "AREA"
                         la = bpy.data.lights[la_key]
                     if "area_shape" in extras:
-                        la.shape = int_to_shape.get(int(extras["area_shape"]), "RECTANGLE")
+                        la.shape = int_to_shape.get(_safe_int(extras["area_shape"], 1), "RECTANGLE")
                     if "area_size" in extras:
-                        la.size = float(extras["area_size"])
+                        la.size = _safe_float(extras["area_size"], la.size)
                     if "area_sizey" in extras and la.shape in ("RECTANGLE", "ELLIPSE"):
-                        la.size_y = float(extras["area_sizey"])
+                        la.size_y = _safe_float(extras["area_sizey"], la.size_y)
                 if la.type != la_type:
                     la.type = la_type
                     la = bpy.data.lights[la_key]
@@ -1252,9 +1467,9 @@ class DocumentImporter:
                         fa = _find_child(sub, "falloff_angle")
                         fe = _find_child(sub, "falloff_exponent")
                         if fa is not None and fa.text:
-                            la.spot_size = math.radians(float(fa.text))
+                            la.spot_size = math.radians(_safe_float(fa.text, 45.0))
                         if fe is not None and fe.text:
-                            la.spot_blend = float(fe.text)
+                            la.spot_blend = _safe_float(fe.text, la.spot_blend)
 
             self.lights_by_id[la_id] = la
 
@@ -1265,6 +1480,8 @@ class DocumentImporter:
     def _read_library_geometries(self, lib: ET.Element) -> None:
         for geom_elem in _find_children(lib, "geometry"):
             geom_id = geom_elem.attrib.get("id", "")
+            if self._allowed_geom_ids is not None and geom_id not in self._allowed_geom_ids:
+                continue
             geom_name = geom_elem.attrib.get("name") or geom_id
             mesh_elem = _find_child(geom_elem, "mesh")
             if mesh_elem is None:
@@ -1326,10 +1543,15 @@ class DocumentImporter:
         pos_vals, pos_stride, _ = sources.get(pos_source_id, (np.empty(0, dtype=np.float32), 3, ""))
         if pos_stride <= 0:
             pos_stride = 3
+        elif pos_vals.size > 0 and pos_stride < 3:
+            self.warnings.append(
+                f"Geometry '{geom_name}': POSITION source '{pos_source_id}' has stride {pos_stride} < 3; zero-padding missing axes"
+            )
         num_verts = pos_vals.size // pos_stride
         if pos_vals.size > 0 and not np.isfinite(pos_vals).all():
             pos_vals = np.where(np.isfinite(pos_vals), pos_vals, np.float32(0.0))
             self.warnings.append(f"Geometry '{geom_name}': replaced non-finite vertex positions with 0.0")
+        warned_bad_strides: set[tuple[str, str]] = set()
 
         # Collect per-primitive vectorized chunks
         vcount_chunks: list[np.ndarray] = []
@@ -1588,10 +1810,17 @@ class DocumentImporter:
 
             # Vectorized bounds check: drop only faces with out-of-range VERTEX/NORMAL/TEXCOORD/COLOR indices
             norm_vals, norm_stride, _ = sources.get(norm_src_id, (np.empty(0, dtype=np.float32), 3, ""))
-            if norm_stride <= 0:
-                norm_stride = 3
-            n_norm_elems = norm_vals.size // norm_stride
-            has_norm_src = (norm_off >= 0 or bool(vert_normal_src_id)) and n_norm_elems > 0
+            if norm_stride < 3:
+                if (norm_off >= 0 or vert_normal_src_id) and ("NORMAL", norm_src_id) not in warned_bad_strides:
+                    warned_bad_strides.add(("NORMAL", norm_src_id))
+                    self.warnings.append(
+                        f"Geometry '{geom_name}': NORMAL source '{norm_src_id}' has stride {norm_stride} < 3; skipping normals"
+                    )
+                n_norm_elems = 0
+                has_norm_src = False
+            else:
+                n_norm_elems = norm_vals.size // norm_stride
+                has_norm_src = (norm_off >= 0 or bool(vert_normal_src_id)) and n_norm_elems > 0
 
             v_col = prim_p[:, vert_off]
             loop_ok = (v_col >= 0) & (v_col < num_verts)
@@ -1600,16 +1829,26 @@ class DocumentImporter:
                 loop_ok &= (n_col >= 0) & (n_col < n_norm_elems)
             for u_id, u_off in uv_inputs:
                 u_vals_chk, u_stride_chk, _ = sources.get(u_id, (np.empty(0, dtype=np.float32), 2, ""))
-                if u_stride_chk <= 0:
-                    u_stride_chk = 2
+                if u_stride_chk < 2:
+                    if ("TEXCOORD", u_id) not in warned_bad_strides:
+                        warned_bad_strides.add(("TEXCOORD", u_id))
+                        self.warnings.append(
+                            f"Geometry '{geom_name}': TEXCOORD source '{u_id}' has stride {u_stride_chk} < 2; skipping UV values"
+                        )
+                    continue
                 n_u_chk = u_vals_chk.size // u_stride_chk
                 if n_u_chk > 0:
                     u_col = prim_p[:, u_off]
                     loop_ok &= (u_col >= 0) & (u_col < n_u_chk)
             for _cn, c_src_id, c_off in col_inputs:
                 c_vals_chk, c_stride_chk, _ = sources.get(c_src_id, (np.empty(0, dtype=np.float32), 3, ""))
-                if c_stride_chk <= 0:
-                    c_stride_chk = 3
+                if c_stride_chk < 3:
+                    if ("COLOR", c_src_id) not in warned_bad_strides:
+                        warned_bad_strides.add(("COLOR", c_src_id))
+                        self.warnings.append(
+                            f"Geometry '{geom_name}': COLOR source '{c_src_id}' has stride {c_stride_chk} < 3; skipping color values"
+                        )
+                    continue
                 n_c_chk = c_vals_chk.size // c_stride_chk
                 if n_c_chk > 0:
                     c_col = prim_p[:, c_off]
@@ -2077,12 +2316,25 @@ class DocumentImporter:
     def _read_skin_controller(self, cid: str, skin: ET.Element) -> None:
         geom_id = _uri_to_local_id(skin.attrib.get("source"))
         bsm_el = _find_child(skin, "bind_shape_matrix")
-        bsm = dae_flat_to_matrix(_parse_floats(bsm_el.text)) if bsm_el is not None else Matrix.Identity(4)
+        bsm_vals = _parse_floats(bsm_el.text) if bsm_el is not None else []
+        bsm = dae_flat_to_matrix(bsm_vals) if len(bsm_vals) >= 16 else Matrix.Identity(4)
 
         name_sources: dict[str, list[str]] = {}
-        float_sources: dict[str, list[float]] = {}
+        float_sources: dict[str, tuple[list[float], int | None]] = {}
         for src in _find_children(skin, "source"):
             sid = src.attrib.get("id", "")
+            stride_val: int | None = None
+            tc = _find_child(src, "technique_common")
+            if tc is not None:
+                acc = _find_child(tc, "accessor")
+                if acc is not None and "stride" in acc.attrib:
+                    try:
+                        stride_val = int(acc.attrib["stride"])
+                    except ValueError:
+                        self.warnings.append(
+                            f"Invalid stride '{acc.attrib['stride']}' in skin '{cid}' source '{sid}'"
+                        )
+                        stride_val = 0
             na = _find_child(src, "Name_array")
             if na is None:
                 na = _find_child(src, "IDREF_array")
@@ -2090,7 +2342,7 @@ class DocumentImporter:
                 name_sources[sid] = _parse_strings(na.text)
             fa = _find_child(src, "float_array")
             if fa is not None:
-                float_sources[sid] = _parse_floats(fa.text)
+                float_sources[sid] = (_parse_floats(fa.text), stride_val)
 
         joint_names: list[str] = []
         inv_bind_mats: list[Matrix] = []
@@ -2102,21 +2354,35 @@ class DocumentImporter:
                 if sem == "JOINT":
                     joint_names = name_sources.get(sid, [])
                 elif sem == "INV_BIND_MATRIX":
-                    floats = float_sources.get(sid, [])
-                    for i in range(len(floats) // 16):
-                        inv_bind_mats.append(dae_flat_to_matrix(floats[i * 16:(i + 1) * 16]))
+                    floats, s_stride = float_sources.get(sid, ([], None))
+                    if s_stride is not None and s_stride < 16:
+                        self.warnings.append(
+                            f"Skin '{cid}': INV_BIND_MATRIX source '{sid}' has stride {s_stride} < 16; skipping bind matrices"
+                        )
+                    else:
+                        step = s_stride if (s_stride is not None and s_stride >= 16) else 16
+                        for i in range(len(floats) // step):
+                            inv_bind_mats.append(dae_flat_to_matrix(floats[i * step:i * step + 16]))
 
         vcounts: list[int] = []
         v_pairs: list[tuple[int, float]] = []
         vw_el = _find_child(skin, "vertex_weights")
         if vw_el is not None:
-            j_off = 0
-            w_off = 1
+            j_off = -1
+            w_off = -1
             w_src = ""
-            max_off = 0
+            max_off = -1
             for inp in _find_children(vw_el, "input"):
                 sem = inp.attrib.get("semantic", "")
-                off = int(inp.attrib.get("offset", "0"))
+                raw_off = inp.attrib.get("offset", "0")
+                try:
+                    off = int(raw_off)
+                except ValueError:
+                    self.warnings.append(f"Skin '{cid}': invalid vertex_weights offset '{raw_off}'")
+                    continue
+                if off < 0:
+                    self.warnings.append(f"Skin '{cid}': negative vertex_weights offset {off}")
+                    continue
                 if off > max_off:
                     max_off = off
                 if sem == "JOINT":
@@ -2124,16 +2390,49 @@ class DocumentImporter:
                 elif sem == "WEIGHT":
                     w_off = off
                     w_src = _uri_to_local_id(inp.attrib.get("source"))
-            stride = max_off + 1
-            weights = float_sources.get(w_src, [])
+            stride = max_off + 1 if max_off >= 0 else 0
+            weights, w_stride = float_sources.get(w_src, ([], None))
+            if w_stride is not None and w_stride <= 0:
+                self.warnings.append(
+                    f"Skin '{cid}': WEIGHT source '{w_src}' has invalid stride {w_stride}; skipping weights"
+                )
+                weights = []
+            elif w_stride is not None and w_stride > 1 and weights:
+                weights = weights[::w_stride]
             vc_el = _find_child(vw_el, "vcount")
             v_el = _find_child(vw_el, "v")
-            vcounts = _parse_ints(vc_el.text) if vc_el is not None else []
+            raw_vcounts = _parse_ints(vc_el.text) if vc_el is not None else []
             v_ints = _parse_ints(v_el.text) if v_el is not None else []
-            total_pairs = sum(vcounts)
-            for i in range(total_pairs):
-                base = i * stride
-                if base + max_off < len(v_ints):
+            if stride > 0 and j_off >= 0 and w_off >= 0:
+                max_pairs = len(v_ints) // stride
+                neg_vc = 0
+                truncated = False
+                used_pairs = 0
+                for vc in raw_vcounts:
+                    if vc < 0:
+                        neg_vc += 1
+                        vcounts.append(0)
+                        continue
+                    rem = max_pairs - used_pairs
+                    if rem <= 0:
+                        if vc > 0:
+                            truncated = True
+                        break
+                    if vc > rem:
+                        vcounts.append(rem)
+                        used_pairs += rem
+                        truncated = True
+                        break
+                    vcounts.append(vc)
+                    used_pairs += vc
+                if neg_vc > 0:
+                    self.warnings.append(f"Skin '{cid}': clamped {neg_vc} negative <vcount> entries to 0")
+                if truncated:
+                    self.warnings.append(
+                        f"Skin '{cid}': <vertex_weights>/<vcount> exceeds <v> pairs ({max_pairs}); truncated"
+                    )
+                for i in range(used_pairs):
+                    base = i * stride
                     ji = v_ints[base + j_off]
                     wi = v_ints[base + w_off]
                     w = weights[wi] if 0 <= wi < len(weights) else 0.0
@@ -2260,6 +2559,8 @@ class DocumentImporter:
     def _process_node(
         self, node: ET.Element, parent_node: ET.Element | None, parent_ob: Object | None
     ) -> None:
+        if self._kept_nodes is not None and id(node) not in self._kept_nodes:
+            return
         node_id = node.attrib.get("id", "")
         node_name = node.attrib.get("name") or node_id or "Node"
         node_type = node.attrib.get("type", "NODE").upper()
@@ -2278,10 +2579,20 @@ class DocumentImporter:
                     self.root_joint_nodes.append((node, parent_ob))
             return
 
+        # When node_filter is active, only instantiate geometries on directly matched nodes
+        # (ancestor nodes that were kept only for hierarchy become Empties carrying transforms).
+        nf = self.settings.node_filter
+        direct_node_match = (
+            nf is None
+            or (node_name in nf)
+            or (bool(node_id) and node_id in nf)
+        )
         inst_geoms = _find_children(node, "instance_geometry")
-        inst_ctrls = _find_children(node, "instance_controller")
-        inst_cams = _find_children(node, "instance_camera")
-        inst_lights = _find_children(node, "instance_light")
+        if nf is not None and not direct_node_match:
+            inst_geoms = [ig for ig in inst_geoms if ig.attrib.get("name", "") in nf]
+        inst_ctrls = _find_children(node, "instance_controller") if direct_node_match else []
+        inst_cams = _find_children(node, "instance_camera") if nf is None else []
+        inst_lights = _find_children(node, "instance_light") if nf is None else []
         inst_nodes = _find_children(node, "instance_node")
 
         created: list[Object] = []
@@ -2294,6 +2605,7 @@ class DocumentImporter:
                 self._apply_material_bindings(ig, ob, gid)
                 self.object_by_geom_id[gid] = ob
                 self.imported_mesh_objects.append(ob)
+                self.imported_objects_by_node_name.setdefault(node_name, []).append(ob)
                 created.append(ob)
 
         for ic in inst_ctrls:
@@ -2309,6 +2621,7 @@ class DocumentImporter:
                 self._apply_material_bindings(ic, ob, gid)
                 self.object_by_geom_id[gid] = ob
                 self.imported_mesh_objects.append(ob)
+                self.imported_objects_by_node_name.setdefault(node_name, []).append(ob)
                 created.append(ob)
 
         for icam in inst_cams:
@@ -2458,12 +2771,15 @@ class DocumentImporter:
                 bname = (je.attrib.get("name") or je.attrib.get("id") or jname) if je is not None else jname
                 vgroups.append(ob_mesh.vertex_groups.new(name=bname))
 
+            n_mesh_verts = len(ob_mesh.data.vertices)
             cursor = 0
             for vi, vc in enumerate(skin.vcounts):
+                if vi >= n_mesh_verts or cursor >= len(skin.v_pairs):
+                    break
                 for _ in range(vc):
                     if cursor < len(skin.v_pairs):
                         ji, w = skin.v_pairs[cursor]
-                        if 0 <= ji < len(vgroups) and w > 0.0:
+                        if 0 <= ji < len(vgroups) and math.isfinite(w) and w > 0.0:
                             vgroups[ji].add([vi], w, "REPLACE")
                     cursor += 1
 
@@ -2473,7 +2789,10 @@ class DocumentImporter:
         self.view_layer.objects.active = ob_arm
         bpy.ops.object.mode_set(mode="EDIT")
         arm = ob_arm.data
-        arm_world_inv = ob_arm.matrix_world.inverted()
+        try:
+            arm_world_inv = ob_arm.matrix_world.inverted()
+        except ValueError:
+            arm_world_inv = Matrix.Identity(4)
 
         leaf_bone_length = float("inf")
         ebone_extras: dict[str, dict[str, str]] = {}
@@ -2488,15 +2807,19 @@ class DocumentImporter:
             ebone_extras[eb.name] = extras
 
             ibm = joint_inv_bind.get(id(jnode))
+            bone_is_skinned = False
             if ibm is not None:
-                joint_bind_mat = ibm.inverted()
-                mat = arm_world_inv @ joint_bind_mat
-                bone_is_skinned = True
-            else:
+                try:
+                    joint_bind_mat = ibm.inverted()
+                    mat = arm_world_inv @ joint_bind_mat
+                    bone_is_skinned = True
+                except ValueError:
+                    self.warnings.append(f"Bone '{bname}': singular inverse bind matrix; falling back to node transform")
+                    ibm = None
+            if ibm is None:
                 local_m = self._read_node_matrix(jnode)
                 mat = (parent_mat @ local_m) if parent_mat is not None else local_m
                 joint_bind_mat = mat
-                bone_is_skinned = False
 
             if parent_eb is not None:
                 eb.parent = parent_eb
@@ -2521,15 +2844,22 @@ class DocumentImporter:
             # Head & Tail
             eb.head = mat.translation
             if has_tail:
-                tip = Vector((float(extras["tip_x"]), float(extras["tip_y"]), float(extras["tip_z"])))
-                eb.tail = eb.head + tip
-                ebone_has_tail.add(eb.name)
+                tip = Vector((
+                    _safe_float(extras["tip_x"]),
+                    _safe_float(extras["tip_y"]),
+                    _safe_float(extras["tip_z"]),
+                ))
+                if tip.length_squared > 0.0:
+                    eb.tail = eb.head + tip
+                    ebone_has_tail.add(eb.name)
+                else:
+                    eb.tail = eb.head + Vector((0.0, 0.5, 0.0))
             else:
                 eb.tail = eb.head + Vector((0.0, 0.5, 0.0))
 
             # Roll
             if "roll" in extras:
-                eb.roll = float(extras["roll"])
+                eb.roll = _safe_float(extras["roll"])
             else:
                 _, roll = bpy.types.Bone.AxisRollFromMatrix(mat.to_3x3())
                 eb.roll = roll
@@ -2669,7 +2999,16 @@ class DocumentImporter:
             if tc is not None:
                 acc = _find_child(tc, "accessor")
                 if acc is not None and "stride" in acc.attrib:
-                    stride = int(acc.attrib["stride"])
+                    try:
+                        stride = int(acc.attrib["stride"])
+                    except ValueError:
+                        self.warnings.append(
+                            f"Invalid stride '{acc.attrib['stride']}' in animation source '{sid}'"
+                        )
+                        stride = 0
+            if stride <= 0:
+                self.warnings.append(f"Invalid stride {stride} in animation source '{sid}'")
+                continue
             fa = _find_child(src, "float_array")
             if fa is not None:
                 float_sources[sid] = (_parse_floats(fa.text), stride)
@@ -2815,12 +3154,16 @@ class DocumentImporter:
         fcu.update()
 
     def _apply_object_matrix_animation(self, ob: Object, ch: _AnimChannelData, fps: float) -> None:
+        count = min(len(ch.times), len(ch.values) // 16)
+        if count == 0:
+            return
         _, cbag = ensure_action_and_channelbag(ob)
         ob.rotation_mode = "QUATERNION"
         locs: list[list[float]] = [[], [], []]
         quats: list[list[float]] = [[], [], [], []]
         scales: list[list[float]] = [[], [], []]
-        for i in range(len(ch.times)):
+        times = ch.times[:count]
+        for i in range(count):
             m = dae_flat_to_matrix(ch.values[i * 16:(i + 1) * 16])
             loc, quat, scale = m.decompose()
             for a in range(3):
@@ -2831,17 +3174,20 @@ class DocumentImporter:
 
         for a in range(4):
             fcu = create_fcurve_on_channelbag(cbag, "rotation_quaternion", a)
-            self._populate_fcurve(fcu, ch.times, quats[a], ch.interps, fps)
+            self._populate_fcurve(fcu, times, quats[a], ch.interps, fps)
         for a in range(3):
             fcu = create_fcurve_on_channelbag(cbag, "location", a)
-            self._populate_fcurve(fcu, ch.times, locs[a], ch.interps, fps)
+            self._populate_fcurve(fcu, times, locs[a], ch.interps, fps)
         for a in range(3):
             fcu = create_fcurve_on_channelbag(cbag, "scale", a)
-            self._populate_fcurve(fcu, ch.times, scales[a], ch.interps, fps)
+            self._populate_fcurve(fcu, times, scales[a], ch.interps, fps)
 
     def _apply_joint_matrix_animation(
         self, ob_arm: Object, bname: str, jnode: ET.Element, ch: _AnimChannelData, fps: float
     ) -> None:
+        count = min(len(ch.times), len(ch.values) // 16)
+        if count == 0:
+            return
         bone = ob_arm.data.bones.get(bname)
         pchan = ob_arm.pose.bones.get(bname)
         if bone is None or pchan is None:
@@ -2852,20 +3198,24 @@ class DocumentImporter:
         # Compute rest matrices (AnimationImporter::apply_matrix_curves formula: iR @ M @ iR_dae @ R)
         rest_local = self._read_node_matrix(jnode)
         rest = bone.matrix_local.copy()
-        irest = rest.inverted()
+        parent_rest = bone.parent.matrix_local.copy() if bone.parent else Matrix.Identity(4)
+        try:
+            irest = rest.inverted()
+            iparent_rest_local = (parent_rest @ rest_local).inverted()
+        except ValueError:
+            self.warnings.append(f"Bone '{bname}': singular rest matrix in matrix animation; skipped")
+            return
 
         prefix = f'pose.bones["{bname}"].'
         locs: list[list[float]] = [[], [], []]
         quats: list[list[float]] = [[], [], [], []]
         scales: list[list[float]] = [[], [], []]
+        times = ch.times[:count]
 
-        # Parent rest matrix
-        parent_rest = bone.parent.matrix_local.copy() if bone.parent else Matrix.Identity(4)
-
-        for i in range(len(ch.times)):
+        for i in range(count):
             matfra = dae_flat_to_matrix(ch.values[i * 16:(i + 1) * 16])
             temp = parent_rest @ matfra
-            mat = irest @ temp @ (parent_rest @ rest_local).inverted() @ rest
+            mat = irest @ temp @ iparent_rest_local @ rest
             loc, quat, scale = mat.decompose()
             for a in range(3):
                 locs[a].append(loc[a])
@@ -2875,13 +3225,13 @@ class DocumentImporter:
 
         for a in range(4):
             fcu = create_fcurve_on_channelbag(cbag, f"{prefix}rotation_quaternion", a)
-            self._populate_fcurve(fcu, ch.times, quats[a], ch.interps, fps)
+            self._populate_fcurve(fcu, times, quats[a], ch.interps, fps)
         for a in range(3):
             fcu = create_fcurve_on_channelbag(cbag, f"{prefix}location", a)
-            self._populate_fcurve(fcu, ch.times, locs[a], ch.interps, fps)
+            self._populate_fcurve(fcu, times, locs[a], ch.interps, fps)
         for a in range(3):
             fcu = create_fcurve_on_channelbag(cbag, f"{prefix}scale", a)
-            self._populate_fcurve(fcu, ch.times, scales[a], ch.interps, fps)
+            self._populate_fcurve(fcu, times, scales[a], ch.interps, fps)
 
     def _resolve_transform_sid(self, node_elem: ET.Element | None, prop_name: str) -> tuple[str, int]:
         """Resolve a transform sid on node_elem to (kind, rot_axis_idx) for third-party DCCs."""
@@ -2930,10 +3280,12 @@ class DocumentImporter:
         kind, rot_axis = self._resolve_transform_sid(node_elem, prop_name)
         if kind == "location":
             if ch.stride == 3:
+                count3 = min(len(ch.times), len(ch.values) // 3)
+                times3 = ch.times[:count3]
                 for a in range(3):
-                    vals = [ch.values[i * 3 + a] for i in range(len(ch.times))]
+                    vals = [ch.values[i * 3 + a] for i in range(count3)]
                     fcu = create_fcurve_on_channelbag(cbag, f"{prefix}location", a)
-                    self._populate_fcurve(fcu, ch.times, vals, ch.interps, fps)
+                    self._populate_fcurve(fcu, times3, vals, ch.interps, fps)
             else:
                 a = axis_map.get(axis_part.upper(), 0)
                 fcu = create_fcurve_on_channelbag(cbag, f"{prefix}location", a)
@@ -2942,10 +3294,12 @@ class DocumentImporter:
                 )
         elif kind == "scale":
             if ch.stride == 3:
+                count3 = min(len(ch.times), len(ch.values) // 3)
+                times3 = ch.times[:count3]
                 for a in range(3):
-                    vals = [ch.values[i * 3 + a] for i in range(len(ch.times))]
+                    vals = [ch.values[i * 3 + a] for i in range(count3)]
                     fcu = create_fcurve_on_channelbag(cbag, f"{prefix}scale", a)
-                    self._populate_fcurve(fcu, ch.times, vals, ch.interps, fps)
+                    self._populate_fcurve(fcu, times3, vals, ch.interps, fps)
             else:
                 a = axis_map.get(axis_part.upper(), 0)
                 fcu = create_fcurve_on_channelbag(cbag, f"{prefix}scale", a)

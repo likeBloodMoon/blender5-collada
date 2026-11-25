@@ -470,7 +470,198 @@ def main() -> int:
         assert set(r9["before"]["collections"].keys()) == {"wigeon", "decals", "common_part"}, r9["before"]["collections"]
         print("  PASS case9_beamng_materials_json_lenient_and_dds")
 
-        print("\nAll 9 archive tests passed!")
+        # Case 10: node_filter keeps directly referenced <texture texture="img_id"/> images (no <newparam>)
+        c10_zip = os.path.join(workdir, "case10_direct_tex.zip")
+        c10_dae = """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_images>
+    <image id="DirectTex-img" name="DirectTex-img"><init_from>direct.png</init_from></image>
+    <image id="UnusedTex-img" name="UnusedTex-img"><init_from>unused.png</init_from></image>
+  </library_images>
+  <library_effects>
+    <effect id="Keep-fx"><profile_COMMON><technique sid="common">
+      <lambert><diffuse><texture texture="DirectTex-img" texcoord="UVMap"/></diffuse></lambert>
+    </technique></profile_COMMON></effect>
+    <effect id="Skip-fx"><profile_COMMON><technique sid="common">
+      <lambert><diffuse><texture texture="UnusedTex-img" texcoord="UVMap"/></diffuse></lambert>
+    </technique></profile_COMMON></effect>
+  </library_effects>
+  <library_materials>
+    <material id="Keep-mat" name="KeepMat"><instance_effect url="#Keep-fx"/></material>
+    <material id="Skip-mat" name="SkipMat"><instance_effect url="#Skip-fx"/></material>
+  </library_materials>
+  <library_geometries>
+    <geometry id="Keep-mesh" name="Keep"><mesh>
+      <source id="k-pos"><float_array id="k-pos-arr" count="9">0 0 0 1 0 0 0 1 0</float_array>
+        <technique_common><accessor source="#k-pos-arr" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+      <vertices id="k-v"><input semantic="POSITION" source="#k-pos"/></vertices>
+      <triangles material="Keep-mat" count="1"><input semantic="VERTEX" source="#k-v" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+    <geometry id="Skip-mesh" name="Skip"><mesh>
+      <source id="s-pos"><float_array id="s-pos-arr" count="9">0 0 0 1 0 0 0 1 0</float_array>
+        <technique_common><accessor source="#s-pos-arr" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+      <vertices id="s-v"><input semantic="POSITION" source="#s-pos"/></vertices>
+      <triangles material="Skip-mat" count="1"><input semantic="VERTEX" source="#s-v" offset="0"/><p>0 1 2</p></triangles>
+    </mesh></geometry>
+  </library_geometries>
+  <library_visual_scenes><visual_scene id="Scene">
+    <node id="KeepNode" name="KeepNode" type="NODE"><instance_geometry url="#Keep-mesh">
+      <bind_material><technique_common><instance_material symbol="Keep-mat" target="#Keep-mat"/></technique_common></bind_material>
+    </instance_geometry></node>
+    <node id="SkipNode" name="SkipNode" type="NODE"><instance_geometry url="#Skip-mesh">
+      <bind_material><technique_common><instance_material symbol="Skip-mat" target="#Skip-mat"/></technique_common></bind_material>
+    </instance_geometry></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+"""
+        with zipfile.ZipFile(c10_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("model.dae", c10_dae)
+            zf.writestr("direct.png", red_png)
+            zf.writestr("unused.png", green_png)
+
+        # Case 11: BeamNG execute_beamng_import error handling (config not found + empty CONFIG selection)
+        c11_zip = os.path.join(workdir, "minicar.zip")
+        with zipfile.ZipFile(c11_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr("vehicles/minicar/minicar.jbeam", '{"minicar": {"slotType": "main", "flexbodies": [["mesh", "[group]:"], ["MiniBody", ["b"]]]}}')
+            zf.writestr("vehicles/minicar/base.pc", '{"format": 2, "parts": {}}')
+            zf.writestr("vehicles/minicar/minicar.dae", _make_textured_dae("MiniBody", None))
+            zf.writestr("vehicles/minicar/other.dae", _make_textured_dae("OtherPart", None))
+
+        # Case 12: Loose vehicle folder + sibling common/ folder + has_picker_choices guard
+        c12_root = os.path.join(workdir, "loose_beamng", "vehicles")
+        c12_veh = os.path.join(c12_root, "minicar")
+        c12_com = os.path.join(c12_root, "common")
+        c12_plain = os.path.join(workdir, "plain_folder")
+        os.makedirs(c12_veh, exist_ok=True)
+        os.makedirs(c12_com, exist_ok=True)
+        os.makedirs(c12_plain, exist_ok=True)
+        with open(os.path.join(c12_veh, "minicar.jbeam"), "w", encoding="utf-8") as fh:
+            fh.write(
+                '{"minicar": {"slotType": "main", "slots": [["type","default","description"], ["wheel_slot","com_wheel","Wheel"]], '
+                '"flexbodies": [["mesh","[group]:"], ["MiniBody",["b"]]]}}'
+            )
+        with open(os.path.join(c12_veh, "base.pc"), "w", encoding="utf-8") as fh:
+            fh.write('{"format": 2, "parts": {"wheel_slot": "com_wheel"}}')
+        with open(os.path.join(c12_veh, "minicar.dae"), "w", encoding="utf-8") as fh:
+            fh.write(_make_textured_dae("MiniBody", None))
+        with open(os.path.join(c12_com, "wheels.jbeam"), "w", encoding="utf-8") as fh:
+            fh.write('{"com_wheel": {"slotType": "wheel_slot", "flexbodies": [["mesh","[group]:"], ["CommonWheel",["w"]]]}}')
+        with open(os.path.join(c12_com, "wheels.dae"), "w", encoding="utf-8") as fh:
+            fh.write(_make_textured_dae("CommonWheel", None))
+        with open(os.path.join(c12_plain, "a.dae"), "w", encoding="utf-8") as fh:
+            fh.write(_make_textured_dae("A", None))
+        with open(os.path.join(c12_plain, "b.dae"), "w", encoding="utf-8") as fh:
+            fh.write(_make_textured_dae("B", None))
+
+        # Case 13: Loose folder with a plain .dae and a stray .pc but NO .jbeam must NOT open the picker
+        c13_stray = os.path.join(workdir, "stray_pc_folder")
+        os.makedirs(c13_stray, exist_ok=True)
+        with open(os.path.join(c13_stray, "plain.dae"), "w", encoding="utf-8") as fh:
+            fh.write(_make_textured_dae("Plain", None))
+        with open(os.path.join(c13_stray, "stray.pc"), "w", encoding="utf-8") as fh:
+            fh.write('{"format": 2, "parts": {"main": "something"}}')
+
+        extra_worker = os.path.join(workdir, "_extra_worker.py")
+        extra_json = os.path.join(workdir, "_extra_result.json")
+        with open(extra_worker, "w", encoding="utf-8") as f:
+            f.write(r'''
+import json, os, sys
+argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
+repo_root, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, out_json = (
+    argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]
+)
+sys.path.insert(0, repo_root)
+import bpy, io_scene_collada
+from io_scene_collada.import_collada import DocumentImporter, ImportSettings
+from io_scene_collada.beamng.picker import execute_beamng_import
+from io_scene_collada.beamng.source import load_vehicle_source
+
+# Case 10: node_filter with direct <texture texture="DirectTex-img"/>
+bpy.ops.wm.read_factory_settings(use_empty=True)
+imp = DocumentImporter(bpy.context, ImportSettings(filepath=c10_zip, node_filter={"KeepNode"}))
+ok10 = imp.import_document()
+c10_res = {
+    "ok": bool(ok10),
+    "objects": sorted(o.name for o in bpy.data.objects),
+    "images": sorted(i.name for i in bpy.data.images),
+}
+
+# Case 11a: nonexistent beamng_config must error, not silently fall back to ALL
+bpy.ops.wm.read_factory_settings(use_empty=True)
+ok11a, sum11a, warn11a, err11a = execute_beamng_import(
+    bpy.context, filepath=c11_zip, beamng_config="does_not_exist", beamng_parts_mode="CONFIG", use_common=False
+)
+c11a_res = {"ok": ok11a, "errors": err11a, "objects": len(bpy.data.objects), "colls": len(bpy.data.collections)}
+
+# Case 11b: CONFIG mode selecting a model with zero matching config meshes must clean up empty root collection
+bpy.ops.wm.read_factory_settings(use_empty=True)
+ok11b, sum11b, warn11b, err11b = execute_beamng_import(
+    bpy.context,
+    filepath=c11_zip,
+    beamng_config="base",
+    beamng_parts_mode="CONFIG",
+    archive_models="vehicles/minicar/other.dae",
+    use_common=False,
+)
+c11b_res = {"ok": ok11b, "errors": err11b, "objects": len(bpy.data.objects), "colls": len(bpy.data.collections)}
+
+# Case 12: Loose vehicle folder + sibling common/ + plain folder guard
+src_veh = load_vehicle_source(c12_dae, index_dae_nodes=False)
+src_plain = load_vehicle_source(c12_plain_dae, index_dae_nodes=False)
+bpy.ops.wm.read_factory_settings(use_empty=True)
+ok12, sum12, warn12, err12 = execute_beamng_import(
+    bpy.context, filepath=c12_dae, beamng_config="base", beamng_parts_mode="CONFIG", use_common=True
+)
+c12_res = {
+    "veh_picker": src_veh.has_picker_choices(cdae_mode=False),
+    "plain_picker": src_plain.has_picker_choices(cdae_mode=False),
+    "ok": ok12,
+    "errors": err12,
+    "objects": sorted(o.name for o in bpy.data.objects),
+    "colls": sorted(c.name for c in bpy.data.collections),
+    "parts": {o.name: o.get("beamng_part", "") for o in bpy.data.objects},
+}
+
+# Case 13: Plain .dae + stray .pc with no .jbeam must NOT open picker
+src_stray = load_vehicle_source(c13_stray_dae, index_dae_nodes=False)
+c13_res = {
+    "stray_picker_dae": src_stray.has_picker_choices(cdae_mode=False),
+    "stray_picker_cdae": src_stray.has_picker_choices(cdae_mode=True),
+}
+
+with open(out_json, "w", encoding="utf-8") as fh:
+    json.dump({"c10": c10_res, "c11a": c11a_res, "c11b": c11b_res, "c12": c12_res, "c13": c13_res}, fh)
+''')
+        c12_dae = os.path.join(c12_veh, "minicar.dae")
+        c12_plain_dae = os.path.join(c12_plain, "a.dae")
+        c13_stray_dae = os.path.join(c13_stray, "plain.dae")
+        cmd = (
+            [runner[0], extra_worker, REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, extra_json]
+            if runner[0] == sys.executable
+            else [*runner, extra_worker, "--", REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, extra_json]
+        )
+        proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+        assert proc.returncode == 0, f"Extra archive worker failed:\n{proc.stderr[-1500:]}"
+        with open(extra_json, "r", encoding="utf-8") as fh:
+            ex = json.load(fh)
+        assert ex["c10"]["ok"] and ex["c10"]["objects"] == ["KeepNode"] and ex["c10"]["images"] == ["direct.png"], ex["c10"]
+        print("  PASS case10_node_filter_direct_texture_image")
+        assert not ex["c11a"]["ok"] and any("not found" in e.lower() for e in ex["c11a"]["errors"]), ex["c11a"]
+        assert ex["c11a"]["objects"] == 0 and ex["c11a"]["colls"] == 0, ex["c11a"]
+        assert not ex["c11b"]["ok"] and any("no matching meshes" in e.lower() for e in ex["c11b"]["errors"]), ex["c11b"]
+        assert ex["c11b"]["objects"] == 0 and ex["c11b"]["colls"] == 0, ex["c11b"]
+        print("  PASS case11_beamng_config_errors_and_empty_selection")
+        assert ex["c12"]["veh_picker"] is True and ex["c12"]["plain_picker"] is False, ex["c12"]
+        assert ex["c12"]["ok"] and ex["c12"]["objects"] == ["CommonWheel", "MiniBody"], ex["c12"]
+        assert ex["c12"]["parts"] == {"CommonWheel": "com_wheel", "MiniBody": "minicar"}, ex["c12"]
+        assert "Needs placement" in ex["c12"]["colls"], ex["c12"]
+        print("  PASS case12_loose_vehicle_folder_with_common")
+        assert ex["c13"]["stray_picker_dae"] is False and ex["c13"]["stray_picker_cdae"] is False, ex["c13"]
+        print("  PASS case13_stray_pc_without_jbeam_no_picker")
+
+        print("\nAll 13 archive tests passed!")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

@@ -6,19 +6,10 @@
 
 from __future__ import annotations
 
-import json
 import os
-import re
 from typing import Any
 
-# Match JSON string literals first (kept verbatim), or // line comments and /* block comments */
-_JSON_COMMENT_RE = re.compile(
-    r'("(?:\\.|[^"\\])*")|//[^\r\n]*|/\*[\s\S]*?\*/'
-)
-# Match JSON string literals first (kept verbatim), or trailing commas before } or ]
-_JSON_TRAILING_COMMA_RE = re.compile(
-    r'("(?:\\.|[^"\\])*")|,(\s*[}\]])'
-)
+from .beamng.lenient_json import parse as loads_lenient_json
 
 _RASTER_EXTS_FOR_DDS_FALLBACK = frozenset({
     ".png",
@@ -47,25 +38,6 @@ def alt_image_refs(raw_ref: str) -> list[str]:
     elif not ext_low:
         out.extend((root + ".dds", root + ".png", root + ".jpg", root + ".tga"))
     return out
-
-
-def loads_lenient_json(text: str) -> Any:
-    """Parse JSON tolerating UTF-8 BOM, // or /* */ comments, and trailing commas."""
-    if text.startswith("\ufeff"):
-        text = text[1:]
-    try:
-        return json.loads(text)
-    except json.JSONDecodeError:
-        pass
-
-    # Strip comments outside string literals
-    cleaned = _JSON_COMMENT_RE.sub(lambda m: m.group(1) if m.group(1) is not None else "", text)
-    # Strip trailing commas before } or ] outside string literals
-    cleaned = _JSON_TRAILING_COMMA_RE.sub(
-        lambda m: m.group(1) if m.group(1) is not None else m.group(2),
-        cleaned,
-    )
-    return json.loads(cleaned)
 
 
 def _extract_map_strings(val: Any) -> list[str]:

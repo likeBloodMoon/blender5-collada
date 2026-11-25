@@ -1,9 +1,10 @@
 """Seeded fuzzer for COLLADA (.dae) import crash & invalid-mesh detection (Part A8).
 
-Takes existing generated test .dae files (plus built-in seed templates), randomly
-corrupts numbers, indices, attributes, and structure, and runs imports inside
-subprocesses. On every imported mesh it runs bmesh.from_mesh() and asserts
-me.validate() == False.
+Uses a deterministic built-in seed corpus covering triangles/normals/UVs, polylists/
+vertex colors/materials, skinned armatures (<vertex_weights>), morph targets, and
+animations/cameras/lights, randomly corrupts numbers, indices, attributes, and
+structure, and runs imports inside subprocesses. On every imported mesh it runs
+bmesh.from_mesh() and asserts me.validate() == False.
 
 Batches iterations per subprocess for speed; if a batch crashes, automatically
 re-runs each file in that batch individually to pinpoint the exact failing seed.
@@ -15,7 +16,6 @@ Usage:
 
 from __future__ import annotations
 
-import glob
 import os
 import random
 import re
@@ -147,22 +147,187 @@ BUILTIN_SEEDS: list[str] = [
   <scene><instance_visual_scene url="#Scene"/></scene>
 </COLLADA>
 """,
+    # Skinned mesh with armature, inv_bind_matrix, and vertex_weights
+    """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="Skin-mesh" name="Skin">
+      <mesh>
+        <source id="Skin-pos">
+          <float_array id="Skin-pos-arr" count="12">0 0 0 1 0 0 1 1 0 0 1 0</float_array>
+          <technique_common>
+            <accessor source="#Skin-pos-arr" count="4" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <source id="Skin-norm">
+          <float_array id="Skin-norm-arr" count="6">0 0 1 0 0 1</float_array>
+          <technique_common>
+            <accessor source="#Skin-norm-arr" count="2" stride="3">
+              <param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/>
+            </accessor>
+          </technique_common>
+        </source>
+        <vertices id="Skin-verts"><input semantic="POSITION" source="#Skin-pos"/></vertices>
+        <triangles count="2">
+          <input semantic="VERTEX" source="#Skin-verts" offset="0"/>
+          <input semantic="NORMAL" source="#Skin-norm" offset="1"/>
+          <p>0 0 1 0 2 0 0 1 2 1 3 1</p>
+        </triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_controllers>
+    <controller id="Arm-Skin" name="Arm">
+      <skin source="#Skin-mesh">
+        <bind_shape_matrix>1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</bind_shape_matrix>
+        <source id="Skin-joints">
+          <Name_array id="Skin-joints-arr" count="2">BoneA BoneB</Name_array>
+          <technique_common><accessor source="#Skin-joints-arr" count="2" stride="1"><param name="JOINT" type="name"/></accessor></technique_common>
+        </source>
+        <source id="Skin-ibm">
+          <float_array id="Skin-ibm-arr" count="32">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 0 0 1 0 -1 0 0 1 0 0 0 0 1</float_array>
+          <technique_common><accessor source="#Skin-ibm-arr" count="2" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor></technique_common>
+        </source>
+        <source id="Skin-weights">
+          <float_array id="Skin-weights-arr" count="3">1.0 0.5 0.5</float_array>
+          <technique_common><accessor source="#Skin-weights-arr" count="3" stride="1"><param name="WEIGHT" type="float"/></accessor></technique_common>
+        </source>
+        <joints>
+          <input semantic="JOINT" source="#Skin-joints"/>
+          <input semantic="INV_BIND_MATRIX" source="#Skin-ibm"/>
+        </joints>
+        <vertex_weights count="4">
+          <input semantic="JOINT" source="#Skin-joints" offset="0"/>
+          <input semantic="WEIGHT" source="#Skin-weights" offset="1"/>
+          <vcount>1 2 2 1</vcount>
+          <v>0 0 0 1 1 2 0 1 1 2 1 0</v>
+        </vertex_weights>
+      </skin>
+    </controller>
+  </library_controllers>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="Armature" name="Armature" type="NODE">
+        <node id="BoneA" name="BoneA" sid="BoneA" type="JOINT">
+          <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+          <node id="BoneB" name="BoneB" sid="BoneB" type="JOINT">
+            <matrix sid="transform">1 0 0 0 0 1 0 1 0 0 1 0 0 0 0 1</matrix>
+          </node>
+        </node>
+        <node id="SkinObj" name="SkinObj" type="NODE">
+          <instance_controller url="#Arm-Skin"><skeleton>#BoneA</skeleton></instance_controller>
+        </node>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
+    # Morph targets (shape keys) + decomposed transforms
+    """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="Base-mesh" name="Base">
+      <mesh>
+        <source id="Base-pos">
+          <float_array id="Base-pos-arr" count="9">0 0 0 1 0 0 0 1 0</float_array>
+          <technique_common><accessor source="#Base-pos-arr" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="Base-verts"><input semantic="POSITION" source="#Base-pos"/></vertices>
+        <triangles count="1"><input semantic="VERTEX" source="#Base-verts" offset="0"/><p>0 1 2</p></triangles>
+      </mesh>
+    </geometry>
+    <geometry id="Key1-mesh" name="Key1">
+      <mesh>
+        <source id="Key1-pos">
+          <float_array id="Key1-pos-arr" count="9">0 0 1 1 0 1 0 1 1</float_array>
+          <technique_common><accessor source="#Key1-pos-arr" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="Key1-verts"><input semantic="POSITION" source="#Key1-pos"/></vertices>
+        <triangles count="1"><input semantic="VERTEX" source="#Key1-verts" offset="0"/><p>0 1 2</p></triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_controllers>
+    <controller id="Base-morph">
+      <morph source="#Base-mesh" method="NORMALIZED">
+        <source id="Morph-tgts"><IDREF_array id="Morph-tgts-arr" count="1">Key1-mesh</IDREF_array><technique_common><accessor source="#Morph-tgts-arr" count="1" stride="1"><param name="IDREF" type="IDREF"/></accessor></technique_common></source>
+        <source id="Morph-wts"><float_array id="Morph-wts-arr" count="1">0.5</float_array><technique_common><accessor source="#Morph-wts-arr" count="1" stride="1"><param name="MORPH_WEIGHT" type="float"/></accessor></technique_common></source>
+        <targets><input semantic="MORPH_TARGET" source="#Morph-tgts"/><input semantic="MORPH_WEIGHT" source="#Morph-wts"/></targets>
+      </morph>
+    </controller>
+  </library_controllers>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="MorphObj" name="MorphObj" type="NODE">
+        <translate sid="location">1 2 3</translate>
+        <rotate sid="rotationZ">0 0 1 45</rotate>
+        <scale sid="scale">1 1 1</scale>
+        <instance_controller url="#Base-morph"/>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
+    # Animations (matrix + decomposed) with camera and light
+    """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_cameras>
+    <camera id="Cam-cam" name="Cam"><optics><technique_common><perspective><xfov>49.13</xfov><znear>0.1</znear><zfar>100</zfar></perspective></technique_common></optics></camera>
+  </library_cameras>
+  <library_lights>
+    <light id="Sun-light" name="Sun"><technique_common><directional><color>1 0.9 0.8</color></directional></technique_common></light>
+  </library_lights>
+  <library_geometries>
+    <geometry id="Tri-mesh" name="Tri">
+      <mesh>
+        <source id="Tri-pos">
+          <float_array id="Tri-pos-arr" count="9">0 0 0 1 0 0 0 1 0</float_array>
+          <technique_common><accessor source="#Tri-pos-arr" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="Tri-verts"><input semantic="POSITION" source="#Tri-pos"/></vertices>
+        <triangles count="1"><input semantic="VERTEX" source="#Tri-verts" offset="0"/><p>0 1 2</p></triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_animations>
+    <animation id="Tri-anim">
+      <source id="Tri-in"><float_array id="Tri-in-arr" count="2">0.0 1.0</float_array><technique_common><accessor source="#Tri-in-arr" count="2" stride="1"><param name="TIME" type="float"/></accessor></technique_common></source>
+      <source id="Tri-out"><float_array id="Tri-out-arr" count="32">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1 1 0 0 2 0 1 0 0 0 0 1 0 0 0 0 1</float_array><technique_common><accessor source="#Tri-out-arr" count="2" stride="16"><param name="TRANSFORM" type="float4x4"/></accessor></technique_common></source>
+      <source id="Tri-interp"><Name_array id="Tri-interp-arr" count="2">LINEAR LINEAR</Name_array><technique_common><accessor source="#Tri-interp-arr" count="2" stride="1"><param name="INTERPOLATION" type="name"/></accessor></technique_common></source>
+      <sampler id="Tri-samp">
+        <input semantic="INPUT" source="#Tri-in"/>
+        <input semantic="OUTPUT" source="#Tri-out"/>
+        <input semantic="INTERPOLATION" source="#Tri-interp"/>
+      </sampler>
+      <channel source="#Tri-samp" target="TriNode/transform"/>
+    </animation>
+  </library_animations>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="TriNode" name="TriNode" type="NODE">
+        <matrix sid="transform">1 0 0 0 0 1 0 0 0 0 1 0 0 0 0 1</matrix>
+        <instance_geometry url="#Tri-mesh"/>
+      </node>
+      <node id="CamNode" name="CamNode" type="NODE"><instance_camera url="#Cam-cam"/></node>
+      <node id="SunNode" name="SunNode" type="NODE"><instance_light url="#Sun-light"/></node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
 ]
 
 
 def _load_seed_corpus() -> list[str]:
-    corpus = list(BUILTIN_SEEDS)
-    work_dir = os.path.join(REPO_ROOT, "tests", "_work")
-    if os.path.isdir(work_dir):
-        found = sorted(glob.glob(os.path.join(work_dir, "**", "*.dae"), recursive=True))
-        for path in found[:12]:
-            try:
-                if os.path.getsize(path) <= 200_000:
-                    with open(path, "r", encoding="utf-8", errors="ignore") as f:
-                        corpus.append(f.read())
-            except OSError:
-                pass
-    return corpus
+    """Return the deterministic built-in fuzz seed corpus (never reads tests/_work)."""
+    return list(BUILTIN_SEEDS)
 
 
 _BAD_FLOAT_TOKENS = ["NaN", "inf", "-inf", "1.#QNAN", "-1.#IND", "x", "1e999", "+1.5", "", "999999999"]

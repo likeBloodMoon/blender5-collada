@@ -27,6 +27,8 @@ from bpy_extras.io_utils import (
     poll_file_object_drop,
 )
 
+from .beamng.picker import execute_beamng_import, register_picker, unregister_picker
+from .beamng.source import load_vehicle_source
 from .cdae.exporter import CdaeExporter, CdaeExportSettings, zstd_available
 from .cdae.importer import CdaeImporter, CdaeImportSettings
 from .export_collada import DocumentExporter, ExportSettings
@@ -41,6 +43,29 @@ _AXIS_ITEMS = (
     ("-Y", "-Y", "Negative Y Axis"),
     ("-Z", "-Z", "Negative Z Axis"),
 )
+
+
+def _has_nearby_beamng_pc(filepath: str) -> bool:
+    """Fast check for sibling .pc configs next to a loose .dae/.cdae (avoids scanning unrelated folders)."""
+    base_dir = os.path.dirname(os.path.abspath(filepath))
+    if not base_dir or not os.path.isdir(base_dir):
+        return False
+    cur = base_dir
+    for _ in range(4):
+        try:
+            with os.scandir(cur) as it:
+                for entry in it:
+                    if entry.is_file(follow_symlinks=False) and entry.name.lower().endswith(".pc"):
+                        return True
+        except OSError:
+            return False
+        parent = os.path.dirname(cur)
+        if os.path.basename(parent).lower() == "vehicles":
+            break
+        if not parent or parent == cur:
+            break
+        cur = parent
+    return False
 
 
 class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
@@ -489,6 +514,52 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         default="ALL",
     )
 
+    beamng_config: StringProperty(
+        name="BeamNG Config",
+        description="BeamNG .pc path (or name) inside the archive/folder to resolve and import",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    beamng_parts_mode: EnumProperty(
+        name="BeamNG Parts Mode",
+        description="Which parts to import when a BeamNG .pc config is specified",
+        items=(
+            ("CONFIG", "Only this config", "Import only meshes used by the resolved config"),
+            (
+                "CONFIG_PLUS_HIDDEN",
+                "Config + other parts hidden",
+                "Import all meshes, putting non-config meshes into excluded Alternatives collections",
+            ),
+            ("ALL", "Everything", "Import all selected models without config filtering"),
+        ),
+        default="ALL",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    archive_models: StringProperty(
+        name="Archive Models Filter",
+        description="Semicolon-separated list of .dae paths inside the archive to import",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    use_common: BoolProperty(
+        name="Use common.zip",
+        description="Use sibling common.zip for BeamNG slot resolution and shared meshes",
+        default=True,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    spread_out: BoolProperty(
+        name="Spread Out Models",
+        description="Place multiple imported models side by side on a grid",
+        default=False,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
+    interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
     fix_orientation: BoolProperty(
         name="Fix Leaf Bones",
         description="Fix Orientation of Leaf Bones (Collada does only support Joints)",
@@ -547,10 +618,47 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         box = layout.box()
         box.prop(self, "keep_bind_info")
 
+    def invoke(self, context, event):
+        self.interactive_picker = True
+        if self.properties.is_property_set("filepath") and os.path.isfile(self.filepath):
+            return self.execute(context)
+        return super().invoke(context, event)
+
     def execute(self, context):
         if not self.filepath or not os.path.exists(self.filepath):
             self.report({"ERROR"}, "No filepath given or file does not exist")
             return {"CANCELLED"}
+
+        ext = os.path.splitext(self.filepath)[1].lower()
+        is_archive = ext in (".zip", ".zae", ".kmz")
+
+        # Interactive UI path: open BeamNG picker when archive has >1 .dae or any .pc,
+        # or when a loose .dae sits inside a BeamNG vehicle folder containing .pc configs.
+        if (
+            self.interactive_picker
+            and not bpy.app.background
+            and not self.beamng_config
+            and not self.archive_models
+            and (is_archive or _has_nearby_beamng_pc(self.filepath))
+        ):
+            try:
+                src = load_vehicle_source(self.filepath, index_dae_nodes=False)
+                if src.has_picker_choices(cdae_mode=False):
+                    return bpy.ops.wm.collada_beamng_picker(
+                        "INVOKE_DEFAULT",
+                        filepath=self.filepath,
+                        cdae_mode=False,
+                        import_units=self.import_units,
+                        custom_normals=self.custom_normals,
+                        fast_exact_normals=self.fast_exact_normals,
+                        sharp_edges_from_normals=self.sharp_edges_from_normals,
+                        sharp_angle_threshold=self.sharp_angle_threshold,
+                    )
+            except Exception as exc:
+                self.report(
+                    {"WARNING"},
+                    f"Could not open BeamNG archive picker ({exc}); falling back to direct import",
+                )
 
         settings = ImportSettings(
             filepath=self.filepath,
@@ -566,6 +674,31 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
             min_chain_length=self.min_chain_length,
             keep_bind_info=self.keep_bind_info,
         )
+
+        # Scripted BeamNG config or explicit archive_models / spread_out path
+        if self.beamng_config or self.archive_models or self.spread_out:
+            ok, summary, warnings, errors = execute_beamng_import(
+                context,
+                filepath=self.filepath,
+                cdae_mode=False,
+                beamng_config=self.beamng_config,
+                beamng_parts_mode=self.beamng_parts_mode,
+                archive_models=self.archive_models,
+                use_common=self.use_common,
+                spread_out=self.spread_out,
+                base_dae_settings=settings,
+            )
+            max_warnings = 5
+            for warn in warnings[:max_warnings]:
+                self.report({"WARNING"}, warn)
+            if len(warnings) > max_warnings:
+                self.report({"WARNING"}, f"... and {len(warnings) - max_warnings} more warning(s)")
+            if ok:
+                if summary:
+                    self.report({"INFO"}, summary)
+                return {"FINISHED"}
+            self.report({"ERROR"}, "; ".join(errors) if errors else "BeamNG Collada import failed")
+            return {"CANCELLED"}
 
         importer = DocumentImporter(context, settings)
         ok = importer.import_document()
@@ -596,7 +729,7 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
 
     filename_ext = ".cdae"
     filter_glob: StringProperty(
-        default="*.cdae",
+        default="*.cdae;*.zip",
         options={"HIDDEN"},
     )
 
@@ -661,6 +794,52 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         max=math.pi,
         subtype="ANGLE",
     )
+    beamng_config: StringProperty(
+        name="BeamNG Config",
+        description="BeamNG .pc path (or name) inside the archive/folder to resolve and import",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    beamng_parts_mode: EnumProperty(
+        name="BeamNG Parts Mode",
+        description="Which parts to import when a BeamNG .pc config is specified",
+        items=(
+            ("CONFIG", "Only this config", "Import only meshes used by the resolved config"),
+            (
+                "CONFIG_PLUS_HIDDEN",
+                "Config + other parts hidden",
+                "Import all meshes, putting non-config meshes into excluded Alternatives collections",
+            ),
+            ("ALL", "Everything", "Import all selected models without config filtering"),
+        ),
+        default="ALL",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    archive_models: StringProperty(
+        name="Archive Models Filter",
+        description="Semicolon-separated list of .cdae paths inside the archive to import",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    use_common: BoolProperty(
+        name="Use common.zip",
+        description="Use sibling common.zip for BeamNG slot resolution and shared meshes",
+        default=True,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    spread_out: BoolProperty(
+        name="Spread Out Models",
+        description="Place multiple imported models side by side on a grid",
+        default=False,
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+    interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+
+    def invoke(self, context, event):
+        self.interactive_picker = True
+        if self.properties.is_property_set("filepath") and os.path.isfile(self.filepath):
+            return self.execute(context)
+        return super().invoke(context, event)
 
     def draw(self, context):
         layout = self.layout
@@ -687,6 +866,35 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
             self.report({"ERROR"}, "No filepath given or file does not exist")
             return {"CANCELLED"}
 
+        ext = os.path.splitext(self.filepath)[1].lower()
+        is_zip = ext == ".zip"
+
+        if (
+            self.interactive_picker
+            and not bpy.app.background
+            and not self.beamng_config
+            and not self.archive_models
+            and (is_zip or _has_nearby_beamng_pc(self.filepath))
+        ):
+            try:
+                src = load_vehicle_source(self.filepath, index_dae_nodes=False)
+                if src.has_picker_choices(cdae_mode=True):
+                    return bpy.ops.wm.collada_beamng_picker(
+                        "INVOKE_DEFAULT",
+                        filepath=self.filepath,
+                        cdae_mode=True,
+                        cdae_lod_mode=self.lod_mode,
+                        cdae_import_collision=self.import_collision,
+                        cdae_normals_mode=self.normals_mode,
+                        cdae_merge_distance=self.merge_distance,
+                        sharp_angle_threshold=self.sharp_angle_threshold,
+                    )
+            except Exception as exc:
+                self.report(
+                    {"WARNING"},
+                    f"Could not open BeamNG archive picker ({exc}); falling back to direct import",
+                )
+
         settings = CdaeImportSettings(
             filepath=self.filepath,
             lod_mode=self.lod_mode,
@@ -695,6 +903,32 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
             merge_distance=self.merge_distance,
             sharp_angle_threshold=self.sharp_angle_threshold,
         )
+
+        # Scripted BeamNG config / archive_models path for .cdae (or .cdae inside .zip)
+        if self.beamng_config or self.archive_models or self.spread_out:
+            ok, summary, warnings, errors = execute_beamng_import(
+                context,
+                filepath=self.filepath,
+                cdae_mode=True,
+                beamng_config=self.beamng_config,
+                beamng_parts_mode=self.beamng_parts_mode,
+                archive_models=self.archive_models,
+                use_common=self.use_common,
+                spread_out=self.spread_out,
+                base_cdae_settings=settings,
+            )
+            max_warnings = 5
+            for warn in warnings[:max_warnings]:
+                self.report({"WARNING"}, warn)
+            if len(warnings) > max_warnings:
+                self.report({"WARNING"}, f"... and {len(warnings) - max_warnings} more warning(s)")
+            if ok:
+                if summary:
+                    self.report({"INFO"}, summary)
+                return {"FINISHED"}
+            self.report({"ERROR"}, "; ".join(errors) if errors else "BeamNG .cdae import failed")
+            return {"CANCELLED"}
+
         importer = CdaeImporter(context, settings)
         ok = importer.import_document()
         for info in importer.infos:
@@ -794,7 +1028,7 @@ class IO_FH_collada(bpy.types.FileHandler):
     bl_label = "Collada"
     bl_import_operator = "wm.collada_import"
     bl_export_operator = "wm.collada_export"
-    bl_file_extensions = ".dae;.zae;.kmz"
+    bl_file_extensions = ".dae;.zae;.kmz;.zip"
 
     @classmethod
     def poll_drop(cls, context):
@@ -813,7 +1047,7 @@ class IO_FH_beamng_cdae(bpy.types.FileHandler):
 
 
 def menu_func_import(self, context):
-    self.layout.operator(WM_OT_collada_import.bl_idname, text="Collada (Default) (.dae, .zae, .kmz)")
+    self.layout.operator(WM_OT_collada_import.bl_idname, text="Collada (.dae, .zae, .kmz, .zip)")
     self.layout.operator(IMPORT_SCENE_OT_beamng_cdae.bl_idname, text="BeamNG Cached Collada (.cdae)")
 
 
@@ -836,6 +1070,7 @@ classes = (
 
 
 def register():
+    register_picker()
     for cls in classes:
         bpy.utils.register_class(cls)
     bpy.types.TOPBAR_MT_file_import.append(menu_func_import)
@@ -847,3 +1082,4 @@ def unregister():
     bpy.types.TOPBAR_MT_file_import.remove(menu_func_import)
     for cls in reversed(classes):
         bpy.utils.unregister_class(cls)
+    unregister_picker()
