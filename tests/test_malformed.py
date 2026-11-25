@@ -18,6 +18,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import zipfile
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
@@ -536,7 +537,234 @@ def build_cases() -> dict[str, tuple[str, dict]]:
                 "expect_warning_substr": "vertex_weights",
             },
         ),
+        "anim_accessor_stride_oops": (
+            """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="TriMesh" name="TriMesh">
+      <mesh>
+        <source id="pos-src">
+          <float_array id="pos-arr" count="9">0 0 0 1 0 0 0 1 0</float_array>
+          <technique_common><accessor source="#pos-arr" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common>
+        </source>
+        <vertices id="verts"><input semantic="POSITION" source="#pos-src"/></vertices>
+        <triangles count="1"><input semantic="VERTEX" source="#verts" offset="0"/><p>0 1 2</p></triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_animations>
+    <animation id="Anim1">
+      <source id="Anim1-in">
+        <float_array id="Anim1-in-arr" count="2">0.0 1.0</float_array>
+        <technique_common><accessor source="#Anim1-in-arr" count="2" stride="oops"><param name="TIME" type="float"/></accessor></technique_common>
+      </source>
+      <source id="Anim1-out">
+        <float_array id="Anim1-out-arr" count="2">0.0 5.0</float_array>
+        <technique_common><accessor source="#Anim1-out-arr" count="2" stride="1"><param name="X" type="float"/></accessor></technique_common>
+      </source>
+      <sampler id="Anim1-samp">
+        <input semantic="INPUT" source="#Anim1-in"/>
+        <input semantic="OUTPUT" source="#Anim1-out"/>
+      </sampler>
+      <channel source="#Anim1-samp" target="TriNode/location.X"/>
+    </animation>
+  </library_animations>
+  <library_visual_scenes>
+    <visual_scene id="Scene">
+      <node id="TriNode" name="TriNode" type="NODE">
+        <translate sid="location">0 0 0</translate>
+        <instance_geometry url="#TriMesh"/>
+      </node>
+    </visual_scene>
+  </library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
+            {
+                "expect_verts": 3,
+                "expect_polys": 1,
+                "expect_warning": True,
+                "expect_warning_substr": "animation source",
+            },
+        ),
     }
+
+
+EXCEPTION_GUARD_WORKER = r'''
+import json
+import os
+import sys
+
+argv = sys.argv
+argv = argv[argv.index("--") + 1:] if "--" in argv else argv[1:]
+repo_root, dae_path, zip_main_path, zip_all_path, out_json = argv[0], argv[1], argv[2], argv[3], argv[4]
+sys.path.insert(0, repo_root)
+
+import bpy
+import io_scene_collada
+from io_scene_collada.import_collada import DocumentImporter, ImportSettings
+
+if not hasattr(bpy.ops.wm, "collada_import"):
+    io_scene_collada.register()
+
+
+def _reset_with_existing_cube():
+    bpy.ops.wm.read_factory_settings(use_empty=True)
+    bpy.ops.mesh.primitive_cube_add()
+    bpy.context.active_object.name = "ExistingCube"
+    bpy.context.active_object.data.name = "ExistingCubeMesh"
+
+
+out = {}
+
+# 1. Disk .dae path: mid-import exception must return False, record clean error, and remove partial objects
+_reset_with_existing_cube()
+imp = DocumentImporter(bpy.context, ImportSettings(filepath=dae_path))
+def _boom_disk(lib):
+    raise RuntimeError("boom_disk")
+imp._read_library_animations = _boom_disk
+try:
+    ok = imp.import_document()
+    out["disk"] = {
+        "raised": False,
+        "ok": bool(ok),
+        "errors": list(imp.errors),
+        "objects": sorted(o.name for o in bpy.data.objects),
+        "meshes": sorted(m.name for m in bpy.data.meshes),
+    }
+except Exception as e:
+    out["disk"] = {"raised": True, "exc": repr(e)}
+
+# 2. Archive MAIN mode: mid-import exception must return False, record clean error, and remove partial objects
+_reset_with_existing_cube()
+imp2 = DocumentImporter(bpy.context, ImportSettings(filepath=zip_main_path, archive_mode="MAIN"))
+def _boom_zip_main(lib):
+    raise RuntimeError("boom_zip_main")
+imp2._read_library_animations = _boom_zip_main
+try:
+    ok2 = imp2.import_document()
+    out["zip_main"] = {
+        "raised": False,
+        "ok": bool(ok2),
+        "errors": list(imp2.errors),
+        "objects": sorted(o.name for o in bpy.data.objects),
+        "meshes": sorted(m.name for m in bpy.data.meshes),
+    }
+except Exception as e:
+    out["zip_main"] = {"raised": True, "exc": repr(e)}
+
+# 3. Archive ALL mode (good.dae + bad.dae): bad.dae failure cleaned up (including sub-collection), good.dae succeeds
+_reset_with_existing_cube()
+imp3 = DocumentImporter(bpy.context, ImportSettings(filepath=zip_all_path, archive_mode="ALL"))
+orig_read_anim = imp3._read_library_animations
+def _boom_on_bad(lib):
+    if any(a.attrib.get("id") == "BadAnim" for a in lib):
+        raise RuntimeError("boom_zip_all")
+    return orig_read_anim(lib)
+imp3._read_library_animations = _boom_on_bad
+try:
+    ok3 = imp3.import_document()
+    out["zip_all"] = {
+        "raised": False,
+        "ok": bool(ok3),
+        "errors": list(imp3.errors),
+        "warnings": list(imp3.warnings),
+        "objects": sorted(o.name for o in bpy.data.objects),
+        "meshes": sorted(m.name for m in bpy.data.meshes),
+        "collections": sorted(c.name for c in bpy.data.collections),
+    }
+except Exception as e:
+    out["zip_all"] = {"raised": True, "exc": repr(e)}
+
+with open(out_json, "w", encoding="utf-8") as fh:
+    json.dump(out, fh)
+'''
+
+
+def _run_exception_guard_tests(runner: list[str], workdir: str) -> None:
+    good_dae = """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="GoodMesh" name="GoodMesh">
+      <mesh>
+        <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+          <technique_common><accessor source="#pa" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+        <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+        <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_visual_scenes><visual_scene id="Scene">
+    <node id="GoodNode" name="GoodNode" type="NODE"><instance_geometry url="#GoodMesh"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>"""
+    bad_dae = """<?xml version="1.0" encoding="utf-8"?>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_geometries>
+    <geometry id="BadMesh" name="BadMesh">
+      <mesh>
+        <source id="p"><float_array id="pa" count="9">0 0 0 1 0 0 0 1 0</float_array>
+          <technique_common><accessor source="#pa" count="3" stride="3"><param name="X" type="float"/><param name="Y" type="float"/><param name="Z" type="float"/></accessor></technique_common></source>
+        <vertices id="v"><input semantic="POSITION" source="#p"/></vertices>
+        <triangles count="1"><input semantic="VERTEX" source="#v" offset="0"/><p>0 1 2</p></triangles>
+      </mesh>
+    </geometry>
+  </library_geometries>
+  <library_animations><animation id="BadAnim"/></library_animations>
+  <library_visual_scenes><visual_scene id="Scene">
+    <node id="BadNode" name="BadNode" type="NODE"><instance_geometry url="#BadMesh"/></node>
+  </visual_scene></library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>"""
+    dae_p = os.path.join(workdir, "guard_bad.dae")
+    with open(dae_p, "w", encoding="utf-8") as fh:
+        fh.write(bad_dae)
+    zip_main = os.path.join(workdir, "guard_main.zip")
+    with zipfile.ZipFile(zip_main, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("bad.dae", bad_dae)
+    zip_all = os.path.join(workdir, "guard_all.zip")
+    with zipfile.ZipFile(zip_all, "w", zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("good.dae", good_dae)
+        zf.writestr("bad.dae", bad_dae)
+
+    wpath = os.path.join(workdir, "_guard_worker.py")
+    out_json = os.path.join(workdir, "_guard_out.json")
+    with open(wpath, "w", encoding="utf-8") as fh:
+        fh.write(EXCEPTION_GUARD_WORKER)
+
+    cmd = (
+        [runner[0], wpath, REPO_ROOT, dae_p, zip_main, zip_all, out_json]
+        if runner[0] == sys.executable
+        else [*runner, wpath, "--", REPO_ROOT, dae_p, zip_main, zip_all, out_json]
+    )
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+    assert proc.returncode == 0, f"Guard worker failed:\n{proc.stderr[-1500:]}"
+    res = json.load(open(out_json, "r", encoding="utf-8"))
+
+    # Disk check
+    d = res["disk"]
+    assert d["raised"] is False and d["ok"] is False, d
+    assert d["errors"] == ["Import failed: boom_disk"], d
+    assert d["objects"] == ["ExistingCube"] and d["meshes"] == ["ExistingCubeMesh"], d
+
+    # Archive MAIN check
+    zm = res["zip_main"]
+    assert zm["raised"] is False and zm["ok"] is False, zm
+    assert zm["errors"] == ["Import failed: boom_zip_main"], zm
+    assert zm["objects"] == ["ExistingCube"] and zm["meshes"] == ["ExistingCubeMesh"], zm
+
+    # Archive ALL check
+    za = res["zip_all"]
+    assert za["raised"] is False and za["ok"] is True, za
+    assert any("boom_zip_all" in w for w in za["warnings"]), za
+    assert za["objects"] == ["ExistingCube", "GoodNode"], za
+    assert za["meshes"] == ["ExistingCubeMesh", "GoodMesh"], za
+    assert za["collections"] == ["good"], za
+    print("  PASS import_tree_exception_guard_and_cleanup (disk, zip MAIN, zip ALL)")
 
 
 def main() -> int:
@@ -613,7 +841,8 @@ def main() -> int:
         if failures:
             print("\n".join(failures))
             return 1
-        print(f"\nAll {len(cases)} malformed .dae test cases passed (COLLADA_NATIVE=1 & 0)!")
+        _run_exception_guard_tests(runner, workdir)
+        print(f"\nAll {len(cases)} malformed .dae test cases + exception guard passed (COLLADA_NATIVE=1 & 0)!")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
