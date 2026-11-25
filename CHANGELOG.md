@@ -4,6 +4,14 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Fixed (#10): preserve pre-triangulation corner normals (custom normals, sharp edges, and flat/non-planar quads) when triangulating on `.dae` and `.cdae` export
+
+### Details
+- **Keep Normals through triangulation** (`collada_utils.py`, `export_collada.py`, `cdae/exporter.py`, `__init__.py`): added a **Keep Normals** (`keep_normals`, default `True`) option to both `wm.collada_export` (Geom tab and Collection Exporters, greyed out when **Triangulate** is off) and `export_scene.beamng_cdae`. Before `bmesh.ops.triangulate()`, pre-triangulation `corner_normals` are copied into a temporary `FLOAT_VECTOR`/`CORNER` attribute so bmesh carries them onto the split triangles, exported directly, and then removed.
+- **Note for Python API callers**: because `keep_normals=True` is now the default, triangulated exports preserve viewport normals instead of recomputing them after triangulation; pass `keep_normals=False` to restore the `v1.5.0` / Blender 4.5.1 post-triangulation normal behaviour.
+
 ## [1.5.0] - 2026-11-25
 
 - Added: Experimental BeamNG archive picker, `.pc` vehicle configuration import (`.dae` and `.cdae`), and automatic `common.zip` part lookup

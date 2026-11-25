@@ -23,7 +23,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion
 
-from ..collada_utils import get_mesh_copy
+from ..collada_utils import KEEP_NORMALS_ATTR, get_mesh_copy
 from .msgpack_lite import MsgPackWriter
 from .reader import (
     DTYPE_DETAIL,
@@ -60,6 +60,7 @@ class CdaeExportSettings:
     filepath: str = ""
     use_selection: bool = False
     apply_modifiers: bool = True
+    keep_normals: bool = True
     compress: bool = False
 
 
@@ -115,10 +116,25 @@ def _build_gpu_mesh_data(
     me.vertices.foreach_get("co", co)
     co = co.reshape(n_verts, 3)
 
-    # Corner normals (respects custom normals, sharp edges, flat/smooth faces)
-    lnorms = np.empty(n_loops * 3, dtype=np.float32)
-    me.corner_normals.foreach_get("vector", lnorms)
-    lnorms = lnorms.reshape(n_loops, 3)
+    # Corner normals (prefer pre-triangulation kept normals if present)
+    keep_attr = me.attributes.get(KEEP_NORMALS_ATTR)
+    if (
+        keep_attr is not None
+        and keep_attr.domain == "CORNER"
+        and keep_attr.data_type == "FLOAT_VECTOR"
+        and len(keep_attr.data) == n_loops
+    ):
+        lnorms = np.empty(n_loops * 3, dtype=np.float32)
+        keep_attr.data.foreach_get("vector", lnorms)
+        lnorms = lnorms.reshape(n_loops, 3)
+        me.attributes.remove(keep_attr)
+        ln64 = lnorms.astype(np.float64)
+        nlen = np.linalg.norm(ln64, axis=1, keepdims=True)
+        lnorms = np.where(nlen > 1e-8, ln64 / np.maximum(nlen, 1e-8), ln64).astype(np.float32)
+    else:
+        lnorms = np.empty(n_loops * 3, dtype=np.float32)
+        me.corner_normals.foreach_get("vector", lnorms)
+        lnorms = lnorms.reshape(n_loops, 3)
 
     if scale_mat is not None:
         s_np = np.array(scale_mat.to_3x3(), dtype=np.float64)
@@ -413,6 +429,7 @@ class CdaeExporter:
                 ob,
                 apply_modifiers=self.settings.apply_modifiers,
                 triangulate=needs_tri,
+                keep_normals=self.settings.keep_normals,
             )
             try:
                 mdata = _build_gpu_mesh_data(

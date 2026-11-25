@@ -406,17 +406,23 @@ def set_editbone_property_matrix(ebone, key: str, mat: Matrix) -> None:
 # Mesh Helpers (Triangulation matching bc_triangulate_mesh)
 # ---------------------------------------------------------------------------
 
+KEEP_NORMALS_ATTR = "__collada_keep_normals__"
+
+
 def get_mesh_copy(
     depsgraph,
     ob: Object,
     apply_modifiers: bool,
     triangulate: bool,
+    keep_normals: bool = True,
 ) -> tuple[Mesh, bool]:
     """Return (mesh, needs_free).
 
     If apply_modifiers is True, gets evaluated mesh copy.
     If triangulate is True, triangulates using SHORT_EDGE quad method and BEAUTY ngon method,
     matching bc_triangulate_mesh() in collada_utils.cpp.
+    If keep_normals is True and triangulate is True, preserves pre-triangulation corner normals
+    in a temporary FLOAT_VECTOR CORNER attribute (KEEP_NORMALS_ATTR) across bmesh triangulation.
     """
     if apply_modifiers:
         ob_eval = ob.evaluated_get(depsgraph)
@@ -427,6 +433,19 @@ def get_mesh_copy(
         mesh_copy = ob.data.copy()
 
     if triangulate:
+        if keep_normals:
+            n_loops = len(mesh_copy.loops)
+            if n_loops > 0:
+                import numpy as np
+
+                old_attr = mesh_copy.attributes.get(KEEP_NORMALS_ATTR)
+                if old_attr is not None:
+                    mesh_copy.attributes.remove(old_attr)
+                cn = np.empty(n_loops * 3, dtype=np.float32)
+                mesh_copy.corner_normals.foreach_get("vector", cn)
+                keep_attr = mesh_copy.attributes.new(KEEP_NORMALS_ATTR, "FLOAT_VECTOR", "CORNER")
+                keep_attr.data.foreach_set("vector", cn)
+
         bm = bmesh.new()
         bm.from_mesh(mesh_copy)
         bm.normal_update()

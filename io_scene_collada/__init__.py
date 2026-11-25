@@ -239,6 +239,12 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
         default=True,
     )
 
+    keep_normals: BoolProperty(
+        name="Keep Normals",
+        description="Preserve pre-triangulation corner normals (custom normals, sharp edges, and non-planar quads) when triangulating",
+        default=True,
+    )
+
     use_object_instantiation: BoolProperty(
         name="Use Object Instances",
         description="Instantiate multiple Objects from same Data",
@@ -343,6 +349,9 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             box.label(text="Export Data Options", icon="MESH_DATA")
             col = box.column(align=False)
             col.prop(self, "triangulate")
+            sub_kn = col.row(align=False)
+            sub_kn.active = self.triangulate
+            sub_kn.prop(self, "keep_normals")
             row = col.row(align=True)
             row.prop(self, "apply_modifiers")
             sub = row.column(align=False)
@@ -418,6 +427,7 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             active_uv_only=self.active_uv_only,
             use_texture_copies=self.use_texture_copies,
             triangulate=self.triangulate,
+            keep_normals=self.keep_normals,
             use_object_instantiation=self.use_object_instantiation,
             use_blender_profile=self.use_blender_profile,
             sort_by_name=self.sort_by_name,
@@ -973,6 +983,11 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         description="Apply modifiers before exporting",
         default=True,
     )
+    keep_normals: BoolProperty(
+        name="Keep Normals",
+        description="Preserve pre-triangulation corner normals (custom normals, sharp edges, and non-planar quads) when triangulating",
+        default=True,
+    )
     compress: BoolProperty(
         name="Compress (Zstandard)",
         description="Compress the .cdae body with Zstandard (requires zstandard in Blender's Python)",
@@ -989,6 +1004,7 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         col = box.column(align=False)
         col.prop(self, "use_selection")
         col.prop(self, "apply_modifiers")
+        col.prop(self, "keep_normals")
         sub = col.column()
         sub.enabled = zstd_available()
         sub.prop(self, "compress")
@@ -1002,6 +1018,7 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
             filepath=self.filepath,
             use_selection=self.use_selection,
             apply_modifiers=self.apply_modifiers,
+            keep_normals=self.keep_normals,
             compress=self.compress and zstd_available(),
         )
         exporter = CdaeExporter(context, settings)

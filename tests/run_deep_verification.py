@@ -248,7 +248,7 @@ for col in (
 
 res1 = bpy.ops.wm.collada_import(filepath=r"{in_dae}")
 assert "FINISHED" in res1, f"Import failed: {{res1}}"
-res2 = bpy.ops.wm.collada_export(filepath=r"{out_dae}", check_existing=False)
+res2 = bpy.ops.wm.collada_export(filepath=r"{out_dae}", check_existing=False{extra_export_kw})
 assert "FINISHED" in res2, f"Re-export failed: {{res2}}"
 """
 
@@ -595,8 +595,16 @@ def main() -> int:
         in_dae = os.path.join(TEST_WORK, f"{tc}_45.dae")
         out45 = os.path.join(DEEP_WORK, f"rt_{tc}_45.dae")
         out53 = os.path.join(DEEP_WORK, f"rt_{tc}_53.dae")
-        r45 = run_blender(BLENDER_45, None, ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out45))
-        r53 = run_blender(BLENDER_53, None, ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out53))
+        r45 = run_blender(
+            BLENDER_45,
+            None,
+            ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out45, extra_export_kw=""),
+        )
+        r53 = run_blender(
+            BLENDER_53,
+            None,
+            ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out53, extra_export_kw=", keep_normals=False"),
+        )
         if r45.returncode != 0 or r53.returncode != 0 or not os.path.exists(out45) or not os.path.exists(out53):
             print(f"[FAIL] roundtrip {tc}: failed")
             record(False)
