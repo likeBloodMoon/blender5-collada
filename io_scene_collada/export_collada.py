@@ -91,6 +91,7 @@ class ExportSettings:
     use_texture_copies: bool = True
     triangulate: bool = True
     keep_normals: bool = True
+    deduplicate_attributes: bool = True
     use_object_instantiation: bool = True
     use_blender_profile: bool = True
     sort_by_name: bool = False
@@ -101,6 +102,30 @@ class ExportSettings:
     keep_bind_info: bool = False
     collection: str = ""
     global_transform: Matrix = field(default_factory=lambda: Matrix.Identity(4))
+
+
+def _dedup_float_rows(arr_2d):
+    """Exact float32 bit-level row deduplication preserving first-seen order."""
+    import numpy as np
+
+    n, stride = arr_2d.shape
+    if n == 0:
+        return arr_2d, np.empty(0, dtype=np.int32)
+    a = np.ascontiguousarray(arr_2d, dtype="<f4")
+    if (a == 0.0).any():
+        a = a.copy()
+        a[a == 0.0] = 0.0
+    if stride == 2:
+        keys = a.view(np.uint64).ravel()
+    else:
+        keys = a.view(np.dtype((np.void, stride * 4))).ravel()
+    _, first_idx, inv = np.unique(keys, return_index=True, return_inverse=True)
+    order = np.argsort(first_idx)
+    inv_map = np.empty_like(order)
+    inv_map[order] = np.arange(len(order), dtype=order.dtype)
+    uniq_vals = np.ascontiguousarray(a[first_idx[order]], dtype=np.float32)
+    loop_idx = inv_map[inv].astype(np.int32)
+    return uniq_vals, loop_idx
 
 
 # Channel mapping tables from AnimationExporter.cpp
@@ -986,8 +1011,11 @@ class DocumentExporter:
             nor_id, nor_arr_id, len(normals_arr), 3, ("X", "Y", "Z"), fmt_f32_array(normals_arr)
         )
 
+        dedupe_attrs = self.settings.deduplicate_attributes
+
         # 3. UV sources (foreach_get)
         active_uv_idx = 0
+        uv_layer_indices: list[tuple[str, int, np.ndarray]] = []
         if has_uvs:
             for i, uvl in enumerate(mesh.uv_layers):
                 if uvl.active:
@@ -997,29 +1025,51 @@ class DocumentExporter:
                 if self.settings.active_uv_only and i != active_uv_idx:
                     continue
                 layer_id = f"{geom_id}-map" if self.settings.active_uv_only else f"{geom_id}-map-{i}"
+                set_idx = 0 if self.settings.active_uv_only else i
                 uv_arr = np.empty(n_loops * 2, dtype=np.float32)
                 if n_loops > 0:
                     uvl.data.foreach_get("uv", uv_arr)
-                self._write_float_source_raw(
-                    layer_id, f"{layer_id}-array", n_loops, 2, ("S", "T"), fmt_f32_array(uv_arr)
-                )
+                if dedupe_attrs and n_loops > 0:
+                    uniq_uv, uv_idx = _dedup_float_rows(uv_arr.reshape(n_loops, 2))
+                    self._write_float_source_raw(
+                        layer_id, f"{layer_id}-array", len(uniq_uv), 2, ("S", "T"), fmt_f32_array(uniq_uv)
+                    )
+                    uv_layer_indices.append((layer_id, set_idx, uv_idx))
+                else:
+                    self._write_float_source_raw(
+                        layer_id, f"{layer_id}-array", n_loops, 2, ("S", "T"), fmt_f32_array(uv_arr)
+                    )
 
         # 4. Vertex color sources (foreach_get)
+        col_layer_indices: list[tuple[str, int, np.ndarray]] = []
         if has_color:
-            for attr in byte_color_attrs:
+            for idx, attr in enumerate(byte_color_attrs):
                 layer_id = f"{geom_id}-colors-{attr.name}"
                 col_arr = np.empty(n_loops * 4, dtype=np.float32)
                 if n_loops > 0:
                     attr.data.foreach_get("color_srgb", col_arr)
-                self._write_float_source_raw(
-                    layer_id,
-                    f"{layer_id}-array",
-                    n_loops,
-                    4,
-                    ("R", "G", "B", "A"),
-                    fmt_f32_array(col_arr),
-                    source_name=attr.name,
-                )
+                if dedupe_attrs and n_loops > 0:
+                    uniq_col, col_idx = _dedup_float_rows(col_arr.reshape(n_loops, 4))
+                    self._write_float_source_raw(
+                        layer_id,
+                        f"{layer_id}-array",
+                        len(uniq_col),
+                        4,
+                        ("R", "G", "B", "A"),
+                        fmt_f32_array(uniq_col),
+                        source_name=attr.name,
+                    )
+                    col_layer_indices.append((layer_id, idx, col_idx))
+                else:
+                    self._write_float_source_raw(
+                        layer_id,
+                        f"{layer_id}-array",
+                        n_loops,
+                        4,
+                        ("R", "G", "B", "A"),
+                        fmt_f32_array(col_arr),
+                        source_name=attr.name,
+                    )
 
         # 5. <vertices>
         verts_id = f"{geom_id}-vertices"
@@ -1050,7 +1100,7 @@ class DocumentExporter:
         if n_polys > 0:
             mat_count = len(ob.material_slots)
             loop_mat = np.repeat(mat_indices, loop_totals)
-            tex_indices = np.arange(n_loops, dtype=np.int32)
+            tex_indices = None if dedupe_attrs else np.arange(n_loops, dtype=np.int32)
             if mat_count > 0:
                 for a in range(mat_count):
                     self._write_primitive_list(
@@ -1067,6 +1117,8 @@ class DocumentExporter:
                         loop_vidx,
                         loop_norm_idx,
                         tex_indices,
+                        uv_layer_indices if dedupe_attrs else None,
+                        col_layer_indices if dedupe_attrs else None,
                     )
             else:
                 self._write_primitive_list(
@@ -1083,6 +1135,8 @@ class DocumentExporter:
                     loop_vidx,
                     loop_norm_idx,
                     tex_indices,
+                    uv_layer_indices if dedupe_attrs else None,
+                    col_layer_indices if dedupe_attrs else None,
                 )
 
         self.sw.close_element()  # mesh
@@ -1148,6 +1202,8 @@ class DocumentExporter:
         loop_vidx,
         loop_norm_idx,
         tex_indices,
+        uv_layer_indices=None,
+        col_layer_indices=None,
     ) -> None:
         import numpy as np
 
@@ -1173,38 +1229,66 @@ class DocumentExporter:
             "input", None, [("semantic", "NORMAL"), ("source", f"#{geom_id}-normals"), ("offset", "1")]
         )
 
-        if has_uvs:
-            for i in range(len(mesh.uv_layers)):
-                if self.settings.active_uv_only and i != active_uv_idx:
-                    continue
-                layer_id = f"{geom_id}-map" if self.settings.active_uv_only else f"{geom_id}-map-{i}"
-                set_idx = 0 if self.settings.active_uv_only else i
+        use_dedup_cols = uv_layer_indices is not None or col_layer_indices is not None
+        if use_dedup_cols:
+            cur_offset = 2
+            for layer_id, set_idx, _idx_arr in (uv_layer_indices or ()):
                 self.sw.write_element(
                     "input",
                     None,
                     [
                         ("semantic", "TEXCOORD"),
                         ("source", f"#{layer_id}"),
-                        ("offset", "2"),
+                        ("offset", fmt_int(cur_offset)),
                         ("set", fmt_int(set_idx)),
                     ],
                 )
-
-        has_color = len(byte_color_attrs) > 0
-        if has_color:
-            col_offset = "3" if has_uvs else "2"
-            for idx, attr in enumerate(byte_color_attrs):
-                layer_id = f"{geom_id}-colors-{attr.name}"
+                cur_offset += 1
+            for layer_id, set_idx, _idx_arr in (col_layer_indices or ()):
                 self.sw.write_element(
                     "input",
                     None,
                     [
                         ("semantic", "COLOR"),
                         ("source", f"#{layer_id}"),
-                        ("offset", col_offset),
-                        ("set", fmt_int(idx)),
+                        ("offset", fmt_int(cur_offset)),
+                        ("set", fmt_int(set_idx)),
                     ],
                 )
+                cur_offset += 1
+        else:
+            if has_uvs:
+                for i in range(len(mesh.uv_layers)):
+                    if self.settings.active_uv_only and i != active_uv_idx:
+                        continue
+                    layer_id = f"{geom_id}-map" if self.settings.active_uv_only else f"{geom_id}-map-{i}"
+                    set_idx = 0 if self.settings.active_uv_only else i
+                    self.sw.write_element(
+                        "input",
+                        None,
+                        [
+                            ("semantic", "TEXCOORD"),
+                            ("source", f"#{layer_id}"),
+                            ("offset", "2"),
+                            ("set", fmt_int(set_idx)),
+                        ],
+                    )
+
+            has_color = len(byte_color_attrs) > 0
+            if has_color:
+                col_offset = "3" if has_uvs else "2"
+                for idx, attr in enumerate(byte_color_attrs):
+                    layer_id = f"{geom_id}-colors-{attr.name}"
+                    self.sw.write_element(
+                        "input",
+                        None,
+                        [
+                            ("semantic", "COLOR"),
+                            ("source", f"#{layer_id}"),
+                            ("offset", col_offset),
+                            ("set", fmt_int(idx)),
+                        ],
+                    )
 
         if not is_triangulated:
             self.sw.open_element("vcount")
@@ -1214,17 +1298,29 @@ class DocumentExporter:
         # Vectorized <p> assembly
         if poly_mask.all():
             cols = [loop_vidx, loop_norm_idx]
-            if has_uvs:
-                cols.append(tex_indices)
-            if has_color:
-                cols.append(tex_indices)
+            if use_dedup_cols:
+                for _lid, _sidx, idx_arr in (uv_layer_indices or ()):
+                    cols.append(idx_arr)
+                for _lid, _sidx, idx_arr in (col_layer_indices or ()):
+                    cols.append(idx_arr)
+            else:
+                if has_uvs:
+                    cols.append(tex_indices)
+                if len(byte_color_attrs) > 0:
+                    cols.append(tex_indices)
         else:
             lmask = loop_mat == material_index
             cols = [loop_vidx[lmask], loop_norm_idx[lmask]]
-            if has_uvs:
-                cols.append(tex_indices[lmask])
-            if has_color:
-                cols.append(tex_indices[lmask])
+            if use_dedup_cols:
+                for _lid, _sidx, idx_arr in (uv_layer_indices or ()):
+                    cols.append(idx_arr[lmask])
+                for _lid, _sidx, idx_arr in (col_layer_indices or ()):
+                    cols.append(idx_arr[lmask])
+            else:
+                if has_uvs:
+                    cols.append(tex_indices[lmask])
+                if len(byte_color_attrs) > 0:
+                    cols.append(tex_indices[lmask])
         p_arr = np.column_stack(cols)
 
         self.sw.open_element("p")

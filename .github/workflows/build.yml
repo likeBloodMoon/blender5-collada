@@ -144,6 +144,7 @@ jobs:
           python3 tests/test_cdae_import.py
           python3 tests/test_cdae_export.py
           python3 tests/test_keep_normals.py
+          python3 tests/test_uv_color_dedupe.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
 

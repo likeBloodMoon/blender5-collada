@@ -4,6 +4,13 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+- Improved (#12): deduplicate UV and vertex color sources on `.dae` export (cuts `big_mesh` `.dae` size from `8.96 MB` to `< 6 MB` with byte-exact round-trip and faster export/import)
+
+### Details
+- **UV & vertex color deduplication** (`export_collada.py`, `__init__.py`): added exact float32 bit-level deduplication (`_dedup_float_rows`) preserving first-seen order for all UV maps and `BYTE_COLOR` vertex color attributes, assigning per-layer `<input>` offsets in `<triangles>`/`<polylist>` and indexing unique values in `<p>`. Pass `deduplicate_attributes=False` to `wm.collada_export` to keep the legacy per-corner layout for Blender 4.5.1 byte-parity testing.
+
 ## [1.5.1] - 2026-11-25
 
 - Fixed (#10): preserve pre-triangulation corner normals (custom normals, sharp edges, and flat/non-planar quads) when triangulating on `.dae` and `.cdae` export

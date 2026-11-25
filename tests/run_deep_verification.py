@@ -603,7 +603,11 @@ def main() -> int:
         r53 = run_blender(
             BLENDER_53,
             None,
-            ROUNDTRIP_EXPORT_SCRIPT.format(in_dae=in_dae, out_dae=out53, extra_export_kw=", keep_normals=False"),
+            ROUNDTRIP_EXPORT_SCRIPT.format(
+                in_dae=in_dae,
+                out_dae=out53,
+                extra_export_kw=", keep_normals=False, deduplicate_attributes=False",
+            ),
         )
         if r45.returncode != 0 or r53.returncode != 0 or not os.path.exists(out45) or not os.path.exists(out53):
             print(f"[FAIL] roundtrip {tc}: failed")
