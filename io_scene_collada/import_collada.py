@@ -274,6 +274,50 @@ def _parse_strings(text: str | None) -> list[str]:
     return text.split()
 
 
+def _slice_accessor_array(vals, acc: ET.Element | None, stride: int, warnings: list[str], label: str):
+    """Apply COLLADA <accessor> offset and count to a float/string source array."""
+    if acc is None:
+        return vals
+    offset = 0
+    if "offset" in acc.attrib:
+        try:
+            offset = int(acc.attrib["offset"])
+        except ValueError:
+            warnings.append(f"Invalid accessor offset '{acc.attrib['offset']}' in {label}; using 0")
+            offset = 0
+        if offset < 0:
+            warnings.append(f"Negative accessor offset {offset} in {label}; clamping to 0")
+            offset = 0
+
+    count: int | None = None
+    if "count" in acc.attrib:
+        try:
+            count = int(acc.attrib["count"])
+        except ValueError:
+            warnings.append(f"Invalid accessor count '{acc.attrib['count']}' in {label}")
+            count = None
+        else:
+            if count < 0:
+                warnings.append(f"Negative accessor count {count} in {label}; clamping to 0")
+                count = 0
+
+    if offset == 0 and count is None:
+        return vals
+
+    n = len(vals)
+    if offset > n:
+        warnings.append(f"Accessor offset {offset} exceeds array length {n} in {label}; clamped")
+        return vals[:0]
+    if count is None:
+        return vals[offset:]
+    step = stride if stride > 0 else 1
+    end = offset + count * step
+    if end > n:
+        warnings.append(f"Accessor range [{offset}:{end}] exceeds array length {n} in {label}; clamped")
+        end = n
+    return vals[offset:end]
+
+
 def _parse_extra_blender(elem: ET.Element) -> dict[str, str]:
     """Extract all <extra><technique profile="blender"> child elements as tag->text."""
     result: dict[str, str] = {}
@@ -1673,6 +1717,7 @@ class DocumentImporter:
             else:
                 vals = np.empty(0, dtype=np.float32)
             stride = 3
+            acc = None
             tc = _find_child(src, "technique_common")
             if tc is not None:
                 acc = _find_child(tc, "accessor")
@@ -1690,6 +1735,10 @@ class DocumentImporter:
                 )
                 vals = np.empty(0, dtype=np.float32)
                 stride = 3
+            else:
+                vals = _slice_accessor_array(
+                    vals, acc, stride, self.warnings, f"source '{sid}' of geometry '{geom_name}'"
+                )
             sources[sid] = (vals, stride, sname)
 
         # Parse <vertices>
@@ -2488,6 +2537,7 @@ class DocumentImporter:
         for src in _find_children(skin, "source"):
             sid = src.attrib.get("id", "")
             stride_val: int | None = None
+            acc = None
             tc = _find_child(src, "technique_common")
             if tc is not None:
                 acc = _find_child(tc, "accessor")
@@ -2499,14 +2549,22 @@ class DocumentImporter:
                             f"Invalid stride '{acc.attrib['stride']}' in skin '{cid}' source '{sid}'"
                         )
                         stride_val = 0
+            eff_stride = stride_val if (stride_val is not None and stride_val > 0) else 1
             na = _find_child(src, "Name_array")
             if na is None:
                 na = _find_child(src, "IDREF_array")
             if na is not None:
-                name_sources[sid] = _parse_strings(na.text)
+                names_raw = _parse_strings(na.text)
+                name_sources[sid] = _slice_accessor_array(
+                    names_raw, acc, eff_stride, self.warnings, f"skin '{cid}' source '{sid}'"
+                )
             fa = _find_child(src, "float_array")
             if fa is not None:
-                float_sources[sid] = (_parse_floats(fa.text), stride_val)
+                floats_raw = _parse_floats(fa.text)
+                floats_sliced = _slice_accessor_array(
+                    floats_raw, acc, eff_stride, self.warnings, f"skin '{cid}' source '{sid}'"
+                )
+                float_sources[sid] = (floats_sliced, stride_val)
 
         joint_names: list[str] = []
         inv_bind_mats: list[Matrix] = []
@@ -3159,6 +3217,7 @@ class DocumentImporter:
         for src in _find_children(anim, "source"):
             sid = src.attrib.get("id", "")
             stride = 1
+            acc = None
             tc = _find_child(src, "technique_common")
             if tc is not None:
                 acc = _find_child(tc, "accessor")
@@ -3175,10 +3234,19 @@ class DocumentImporter:
                 continue
             fa = _find_child(src, "float_array")
             if fa is not None:
-                float_sources[sid] = (_parse_floats(fa.text), stride)
+                floats_raw = _parse_floats(fa.text)
+                float_sources[sid] = (
+                    _slice_accessor_array(floats_raw, acc, stride, self.warnings, f"animation source '{sid}'"),
+                    stride,
+                )
             na = _find_child(src, "Name_array")
+            if na is None:
+                na = _find_child(src, "IDREF_array")
             if na is not None:
-                name_sources[sid] = _parse_strings(na.text)
+                names_raw = _parse_strings(na.text)
+                name_sources[sid] = _slice_accessor_array(
+                    names_raw, acc, stride, self.warnings, f"animation source '{sid}'"
+                )
 
         samplers: dict[str, dict[str, str]] = {}
         for samp in _find_children(anim, "sampler"):
