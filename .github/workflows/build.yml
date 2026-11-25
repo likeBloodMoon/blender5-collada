@@ -71,8 +71,9 @@ jobs:
           clang++ -O3 -std=c++17 -arch arm64 -shared -fPIC native/fastfmt.cpp -o out/macos-arm64/libfastfmt.dylib
           clang++ -O3 -std=c++17 -arch x86_64 -shared -fPIC native/fastfmt.cpp -o out/macos-x64/libfastfmt.dylib
           cp out/macos-arm64/libfastfmt.dylib io_scene_collada/_native/libfastfmt.dylib
-          python3 -m pip install --quiet numpy
-          python3 tests/smoke_fastfmt.py
+          python3 -m venv /tmp/smoke_venv
+          /tmp/smoke_venv/bin/pip install --quiet numpy
+          /tmp/smoke_venv/bin/python tests/smoke_fastfmt.py
       - name: Upload macos-arm64 native binary
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
