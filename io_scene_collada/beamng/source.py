@@ -450,10 +450,11 @@ class VehicleSource:
 
     def has_picker_choices(self, *, cdae_mode: bool = False) -> bool:
         """True when an interactive import should open the BeamNG picker dialog (spec 3.1)."""
+        has_valid_configs = len(self.all_configs) > 0 and self.part_index.jbeam_ok > 0
         if not self.is_zip:
-            return len(self.all_configs) > 0
+            return has_valid_configs
         models = self.cdae_models if cdae_mode else self.dae_models
-        return len(models) > 1 or len(self.all_configs) > 0
+        return len(models) > 1 or has_valid_configs
 
 
 # Session cache keyed by (abs_path, size, mtime_ns, index_dae_nodes)

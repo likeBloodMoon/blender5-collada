@@ -555,13 +555,23 @@ def main() -> int:
         with open(os.path.join(c12_plain, "b.dae"), "w", encoding="utf-8") as fh:
             fh.write(_make_textured_dae("B", None))
 
+        # Case 13: Loose folder with a plain .dae and a stray .pc but NO .jbeam must NOT open the picker
+        c13_stray = os.path.join(workdir, "stray_pc_folder")
+        os.makedirs(c13_stray, exist_ok=True)
+        with open(os.path.join(c13_stray, "plain.dae"), "w", encoding="utf-8") as fh:
+            fh.write(_make_textured_dae("Plain", None))
+        with open(os.path.join(c13_stray, "stray.pc"), "w", encoding="utf-8") as fh:
+            fh.write('{"format": 2, "parts": {"main": "something"}}')
+
         extra_worker = os.path.join(workdir, "_extra_worker.py")
         extra_json = os.path.join(workdir, "_extra_result.json")
         with open(extra_worker, "w", encoding="utf-8") as f:
             f.write(r'''
 import json, os, sys
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-repo_root, c10_zip, c11_zip, c12_dae, c12_plain_dae, out_json = argv[0], argv[1], argv[2], argv[3], argv[4], argv[5]
+repo_root, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, out_json = (
+    argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]
+)
 sys.path.insert(0, repo_root)
 import bpy, io_scene_collada
 from io_scene_collada.import_collada import DocumentImporter, ImportSettings
@@ -614,15 +624,23 @@ c12_res = {
     "parts": {o.name: o.get("beamng_part", "") for o in bpy.data.objects},
 }
 
+# Case 13: Plain .dae + stray .pc with no .jbeam must NOT open picker
+src_stray = load_vehicle_source(c13_stray_dae, index_dae_nodes=False)
+c13_res = {
+    "stray_picker_dae": src_stray.has_picker_choices(cdae_mode=False),
+    "stray_picker_cdae": src_stray.has_picker_choices(cdae_mode=True),
+}
+
 with open(out_json, "w", encoding="utf-8") as fh:
-    json.dump({"c10": c10_res, "c11a": c11a_res, "c11b": c11b_res, "c12": c12_res}, fh)
+    json.dump({"c10": c10_res, "c11a": c11a_res, "c11b": c11b_res, "c12": c12_res, "c13": c13_res}, fh)
 ''')
         c12_dae = os.path.join(c12_veh, "minicar.dae")
         c12_plain_dae = os.path.join(c12_plain, "a.dae")
+        c13_stray_dae = os.path.join(c13_stray, "plain.dae")
         cmd = (
-            [runner[0], extra_worker, REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, extra_json]
+            [runner[0], extra_worker, REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, extra_json]
             if runner[0] == sys.executable
-            else [*runner, extra_worker, "--", REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, extra_json]
+            else [*runner, extra_worker, "--", REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, extra_json]
         )
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         assert proc.returncode == 0, f"Extra archive worker failed:\n{proc.stderr[-1500:]}"
@@ -640,8 +658,10 @@ with open(out_json, "w", encoding="utf-8") as fh:
         assert ex["c12"]["parts"] == {"CommonWheel": "com_wheel", "MiniBody": "minicar"}, ex["c12"]
         assert "Needs placement" in ex["c12"]["colls"], ex["c12"]
         print("  PASS case12_loose_vehicle_folder_with_common")
+        assert ex["c13"]["stray_picker_dae"] is False and ex["c13"]["stray_picker_cdae"] is False, ex["c13"]
+        print("  PASS case13_stray_pc_without_jbeam_no_picker")
 
-        print("\nAll 12 archive tests passed!")
+        print("\nAll 13 archive tests passed!")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
