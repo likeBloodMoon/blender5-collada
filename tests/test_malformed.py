@@ -293,7 +293,7 @@ def build_cases() -> dict[str, tuple[str, dict]]:
         "lying_counts_too_small": (
             _make_dae(
                 pos_count=1,
-                pos_accessor_count=1,
+                pos_accessor_count=4,
                 prim_count=1,
                 p_text="0 1 2  0 2 3",
             ),
