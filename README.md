@@ -42,6 +42,7 @@ The platform-specific release zips include a small, optional C++17 helper librar
   bpy.ops.wm.collada_import(filepath="/path/to/model.dae")
   bpy.ops.wm.collada_export(filepath="/path/to/output.dae", triangulate=True)
   ```
+- **Keep Quads** (`keep_quads=True`, off by default): under **Geom → Triangulate** in the `.dae` export dialog, triangulates only n-gons (`> 4` sides) and exports quads as 4-sided `<polylist>` entries (works with **Keep Normals**; greyed out for `.cdae`, which requires triangles). *Trade-off:* non-planar quads are split by whichever program opens the file, so shading on strongly twisted quads may differ slightly compared to triangulated export.
 
 ### Tip: Clean Sharp Edges on Import
 

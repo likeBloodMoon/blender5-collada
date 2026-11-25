@@ -90,6 +90,7 @@ class ExportSettings:
     active_uv_only: bool = False
     use_texture_copies: bool = True
     triangulate: bool = True
+    keep_quads: bool = False
     keep_normals: bool = True
     deduplicate_attributes: bool = True
     use_object_instantiation: bool = True
@@ -1342,6 +1343,7 @@ class DocumentExporter:
             self.settings.apply_modifiers,
             self.settings.triangulate,
             keep_normals=self.settings.keep_normals,
+            keep_quads=self.settings.keep_quads,
         )
         try:
             self._write_mesh_xml(ob, mesh, geom_id, geom_name, include_loose_edges=True)
@@ -1391,6 +1393,7 @@ class DocumentExporter:
             self.settings.apply_modifiers,
             self.settings.triangulate,
             keep_normals=False,
+            keep_quads=self.settings.keep_quads,
         )
         try:
             has_any_weights = any(len(v.groups) > 0 for v in mesh.vertices)

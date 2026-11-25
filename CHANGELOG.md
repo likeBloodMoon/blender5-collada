@@ -6,9 +6,11 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [Unreleased]
 
+- Added (#18): **Keep Quads** export option (`keep_quads`, default `False`) under **Triangulate** on `.dae` export to triangulate n-gons only and preserve 4-sided quads in `<polylist>` (greyed out for `.cdae`)
 - Improved (#12): deduplicate UV and vertex color sources on `.dae` export (cuts `big_mesh` `.dae` size from `8.96 MB` to `< 6 MB` with byte-exact round-trip and faster export/import)
 
 ### Details
+- **Keep Quads export option** (`collada_utils.py`, `export_collada.py`, `__init__.py`): added `keep_quads: BoolProperty(default=False)` to `wm.collada_export` (under **Triangulate**, greyed out when **Triangulate** is off) and greyed out on `export_scene.beamng_cdae` (Torque3D requires triangles). When enabled with **Triangulate**, `get_mesh_copy()` saves pre-triangulation corner normals (when **Keep Normals** is on) and triangulates only faces with more than 4 vertices (`len(f.verts) > 4`), writing mixed 3- and 4-sided `<polylist>` entries. Note: non-planar quads are split by whichever program opens the file, so shading may differ slightly.
 - **UV & vertex color deduplication** (`export_collada.py`, `__init__.py`): added exact float32 bit-level deduplication (`_dedup_float_rows`) preserving first-seen order for all UV maps and `BYTE_COLOR` vertex color attributes, assigning per-layer `<input>` offsets in `<triangles>`/`<polylist>` and indexing unique values in `<p>`. Pass `deduplicate_attributes=False` to `wm.collada_export` to keep the legacy per-corner layout for Blender 4.5.1 byte-parity testing.
 
 ## [1.5.1] - 2026-11-25
