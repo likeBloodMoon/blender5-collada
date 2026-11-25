@@ -25,8 +25,8 @@ Products:
 
 **Robustness**
 - [x] #1 Malformed `.dae` → clean error, not a traceback
-- [ ] #2 msgpack unhashable keys + NumPy warning control flow
-- [ ] #3 Archive hardening: entry-count cap, reject DTDs
+- [x] #2 msgpack unhashable keys + NumPy warning control flow
+- [x] #3 Archive hardening: entry-count cap, reject DTDs
 
 **New, small**
 - [x] **Keep Quads** export option: triangulate n-gons only, keep quads; greyed out for `.cdae`.

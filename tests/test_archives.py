@@ -563,20 +563,39 @@ def main() -> int:
         with open(os.path.join(c13_stray, "stray.pc"), "w", encoding="utf-8") as fh:
             fh.write('{"format": 2, "parts": {"main": "something"}}')
 
+        # Case 14: Entry-count cap (> 50,000 entries) and DTD rejection in archive .dae / manifest.xml (#3)
+        c14_many_zip = os.path.join(workdir, "case14_many_entries.zip")
+        with zipfile.ZipFile(c14_many_zip, "w", zipfile.ZIP_STORED) as zf:
+            for i in range(50_001):
+                zf.writestr(f"e/{i}.txt", b"")
+        c14_dtd_dae_zip = os.path.join(workdir, "case14_dtd_dae.zae")
+        with zipfile.ZipFile(c14_dtd_dae_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "evil.dae",
+                '<?xml version="1.0"?><!DOCTYPE COLLADA [<!ENTITY x "y">]><COLLADA version="1.4.1"/>',
+            )
+        c14_dtd_man_zip = os.path.join(workdir, "case14_dtd_manifest.zae")
+        with zipfile.ZipFile(c14_dtd_man_zip, "w", zipfile.ZIP_DEFLATED) as zf:
+            zf.writestr(
+                "manifest.xml",
+                '<?xml version="1.0"?><!DOCTYPE dae_root [<!ENTITY x "y">]><dae_root>model.dae</dae_root>',
+            )
+            zf.writestr("model.dae", _make_textured_dae("ModelCube", None))
+
         extra_worker = os.path.join(workdir, "_extra_worker.py")
         extra_json = os.path.join(workdir, "_extra_result.json")
         with open(extra_worker, "w", encoding="utf-8") as f:
             f.write(r'''
 import json, os, sys
 argv = sys.argv[sys.argv.index("--") + 1:] if "--" in sys.argv else sys.argv[1:]
-repo_root, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, out_json = (
-    argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6]
+repo_root, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, c14_many_zip, out_json = (
+    argv[0], argv[1], argv[2], argv[3], argv[4], argv[5], argv[6], argv[7]
 )
 sys.path.insert(0, repo_root)
 import bpy, io_scene_collada
 from io_scene_collada.import_collada import DocumentImporter, ImportSettings
 from io_scene_collada.beamng.picker import execute_beamng_import
-from io_scene_collada.beamng.source import load_vehicle_source
+from io_scene_collada.beamng.source import VehicleSource, load_vehicle_source
 
 # Case 10: node_filter with direct <texture texture="DirectTex-img"/>
 bpy.ops.wm.read_factory_settings(use_empty=True)
@@ -631,16 +650,23 @@ c13_res = {
     "stray_picker_cdae": src_stray.has_picker_choices(cdae_mode=True),
 }
 
+# Case 14 (VehicleSource entry-count cap)
+c14_vs_err = ""
+try:
+    VehicleSource(c14_many_zip, is_zip=True).scan(index_dae_nodes=False)
+except ValueError as exc:
+    c14_vs_err = str(exc)
+
 with open(out_json, "w", encoding="utf-8") as fh:
-    json.dump({"c10": c10_res, "c11a": c11a_res, "c11b": c11b_res, "c12": c12_res, "c13": c13_res}, fh)
+    json.dump({"c10": c10_res, "c11a": c11a_res, "c11b": c11b_res, "c12": c12_res, "c13": c13_res, "c14_vs_err": c14_vs_err}, fh)
 ''')
         c12_dae = os.path.join(c12_veh, "minicar.dae")
         c12_plain_dae = os.path.join(c12_plain, "a.dae")
         c13_stray_dae = os.path.join(c13_stray, "plain.dae")
         cmd = (
-            [runner[0], extra_worker, REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, extra_json]
+            [runner[0], extra_worker, REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, c14_many_zip, extra_json]
             if runner[0] == sys.executable
-            else [*runner, extra_worker, "--", REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, extra_json]
+            else [*runner, extra_worker, "--", REPO_ROOT, c10_zip, c11_zip, c12_dae, c12_plain_dae, c13_stray_dae, c14_many_zip, extra_json]
         )
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
         assert proc.returncode == 0, f"Extra archive worker failed:\n{proc.stderr[-1500:]}"
@@ -661,7 +687,17 @@ with open(out_json, "w", encoding="utf-8") as fh:
         assert ex["c13"]["stray_picker_dae"] is False and ex["c13"]["stray_picker_cdae"] is False, ex["c13"]
         print("  PASS case13_stray_pc_without_jbeam_no_picker")
 
-        print("\nAll 13 archive tests passed!")
+        # Case 14 assertions (run via standard archive worker + VehicleSource)
+        r14_many = _run_archive(runner, worker_path, c14_many_zip, "MAIN")
+        assert not r14_many["ok"] and any("50000-entry limit" in e for e in r14_many["errors"]), r14_many
+        assert "50000-entry limit" in ex["c14_vs_err"], ex["c14_vs_err"]
+        r14_dtd_dae = _run_archive(runner, worker_path, c14_dtd_dae_zip, "MAIN")
+        assert not r14_dtd_dae["ok"] and any("DTDs are not supported" in e for e in r14_dtd_dae["errors"]), r14_dtd_dae
+        r14_dtd_man = _run_archive(runner, worker_path, c14_dtd_man_zip, "MAIN")
+        assert not r14_dtd_man["ok"] and any("DTDs are not supported" in e for e in r14_dtd_man["errors"]), r14_dtd_man
+        print("  PASS case14_entry_count_cap_and_dtd_rejection")
+
+        print("\nAll 14 archive tests passed!")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

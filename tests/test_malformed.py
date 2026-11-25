@@ -588,6 +588,25 @@ def build_cases() -> dict[str, tuple[str, dict]]:
                 "expect_warning_substr": "animation source",
             },
         ),
+        "trailing_garbage_last_token": (
+            _make_dae(
+                pos_text="0 0 0 1 0 0 0 1 0x",
+                p_text="0 1 2",
+                prim_count=1,
+            ),
+            {"expect_warning": True, "compare_native": True},
+        ),
+        "dtd_rejected": (
+            """<?xml version="1.0" encoding="utf-8"?>
+<!DOCTYPE COLLADA [<!ENTITY lol "lol">]>
+<COLLADA xmlns="http://www.collada.org/2005/11/COLLADASchema" version="1.4.1">
+  <asset><up_axis>Z_UP</up_axis></asset>
+  <library_visual_scenes><visual_scene id="Scene"/></library_visual_scenes>
+  <scene><instance_visual_scene url="#Scene"/></scene>
+</COLLADA>
+""",
+            {"expect_ok": False, "expect_error_substr": "DTDs are not supported"},
+        ),
     }
 
 
@@ -789,6 +808,16 @@ def main() -> int:
                 try:
                     res = _run_case(runner, worker_path, dae_path, native)
                     results[native] = res
+                    if "expect_ok" in exp and res["ok"] is not exp["expect_ok"]:
+                        raise AssertionError(
+                            f"{name} (native={native}): expected ok={exp['expect_ok']}, got {res['ok']} (errors={res['errors']})"
+                        )
+                    if "expect_error_substr" in exp:
+                        esub = exp["expect_error_substr"]
+                        if not any(esub in e for e in res["errors"]):
+                            raise AssertionError(
+                                f"{name} (native={native}): expected error containing {esub!r}, got {res['errors']}"
+                            )
                     if exp.get("expect_warning") and not res["warnings"]:
                         raise AssertionError(f"Expected warning for {name} (native={native}), got none")
                     if "expect_warning_substr" in exp:

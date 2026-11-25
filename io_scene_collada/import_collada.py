@@ -12,7 +12,6 @@ import os
 import re
 import traceback
 import urllib.parse
-import warnings as _warnings_mod
 import xml.etree.ElementTree as ET
 import zipfile
 from dataclasses import dataclass
@@ -41,10 +40,37 @@ if TYPE_CHECKING:
 
 
 MINIMUM_BONE_LENGTH = 0.000001
+_MAX_ZIP_ENTRIES = 50_000
 _MAX_ZIP_ENTRY_BYTES = 1 * 1024 * 1024 * 1024       # 1 GiB
 _MAX_ZIP_TOTAL_BYTES = 4 * 1024 * 1024 * 1024       # 4 GiB
 _ZIP_RATIO_THRESHOLD_BYTES = 50 * 1024 * 1024       # 50 MB
 _MAX_ZIP_RATIO = 200.0
+_DTD_DECL_RE = re.compile(rb"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
+_DTD_DECL_STR_RE = re.compile(r"<!(?:DOCTYPE|ENTITY)\b", re.IGNORECASE)
+_DTD_SCAN_BYTES = 65536
+
+
+def _reject_dtd_bytes(head: bytes) -> None:
+    if _DTD_DECL_RE.search(head):
+        raise ValueError("DTDs are not supported in COLLADA files")
+    if head.startswith((b"\xff\xfe", b"\xfe\xff")):
+        try:
+            text_head = head.decode("utf-16", errors="ignore")
+        except Exception:
+            text_head = ""
+        if _DTD_DECL_STR_RE.search(text_head):
+            raise ValueError("DTDs are not supported in COLLADA files")
+
+
+def _parse_xml_safe(source: str | bytes) -> ET.ElementTree:
+    """Parse XML from a file path or bytes after rejecting DOCTYPE/ENTITY declarations."""
+    if isinstance(source, (bytes, bytearray)):
+        _reject_dtd_bytes(bytes(source[:_DTD_SCAN_BYTES]))
+        return ET.parse(io.BytesIO(source))
+    with open(source, "rb") as fh:
+        head = fh.read(_DTD_SCAN_BYTES)
+    _reject_dtd_bytes(head)
+    return ET.parse(source)
 
 
 @dataclass
@@ -85,6 +111,36 @@ def _find_children(elem: ET.Element, name: str) -> list[ET.Element]:
 _LEGACY_NONFINITE_RE = re.compile(r"[+-]?\d+\.#(?:QNAN|SNAN|IND|INF)\d*", re.IGNORECASE)
 
 
+def _fromstring_f32_strict(text: str):
+    """Parse whitespace-separated float32 values without relying on NumPy DeprecationWarning."""
+    import numpy as np
+
+    toks = text.split()
+    if not toks:
+        return np.empty(0, dtype=np.float32)
+    # Validate last token explicitly: NumPy 1.26's fromstring stops mid-token on trailing
+    # garbage (e.g. "1.0 2.0 3.0x" or "1.0 2.0 1.#QNAN") while still returning len(toks) items.
+    float(toks[-1])
+    arr = np.fromstring(text, sep=" ", dtype=np.float32)
+    if len(arr) != len(toks):
+        raise ValueError("Unmatched data in float array")
+    return arr
+
+
+def _fromstring_i32_strict(text: str):
+    """Parse whitespace-separated int32 values without relying on NumPy DeprecationWarning."""
+    import numpy as np
+
+    toks = text.split()
+    if not toks:
+        return np.empty(0, dtype=np.int32)
+    int(toks[-1])
+    arr = np.fromstring(text, sep=" ", dtype=np.int32)
+    if len(arr) != len(toks):
+        raise ValueError("Unmatched data in integer array")
+    return arr
+
+
 def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: str = ""):
     import numpy as np
 
@@ -94,21 +150,17 @@ def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: st
     if res is not None:
         return res
     try:
-        with _warnings_mod.catch_warnings():
-            _warnings_mod.simplefilter("error", DeprecationWarning)
-            return np.fromstring(text, sep=" ", dtype=np.float32)
-    except (ValueError, DeprecationWarning):
+        return _fromstring_f32_strict(text)
+    except ValueError:
         if "#" in text:
             cleaned, count = _LEGACY_NONFINITE_RE.subn("0.0", text)
             if count > 0:
                 try:
-                    with _warnings_mod.catch_warnings():
-                        _warnings_mod.simplefilter("error", DeprecationWarning)
-                        arr = np.fromstring(cleaned, sep=" ", dtype=np.float32)
+                    arr = _fromstring_f32_strict(cleaned)
                     if warnings is not None:
                         warnings.append(f"Replaced {count} legacy non-finite token(s) with 0.0 in {label}")
                     return arr
-                except (ValueError, DeprecationWarning):
+                except ValueError:
                     pass
         if warnings is not None:
             warnings.append(f"Invalid number in {label}")
@@ -124,10 +176,8 @@ def _parse_i32_np(text: str | None, warnings: list[str] | None = None, label: st
     if res is not None:
         return res
     try:
-        with _warnings_mod.catch_warnings():
-            _warnings_mod.simplefilter("error", DeprecationWarning)
-            return np.fromstring(text, sep=" ", dtype=np.int32)
-    except (ValueError, DeprecationWarning):
+        return _fromstring_i32_strict(text)
+    except ValueError:
         if warnings is not None:
             warnings.append(f"Invalid integer in {label}")
         return None
@@ -364,7 +414,7 @@ class DocumentImporter:
         for m_norm, m_info in manifest_entries:
             try:
                 m_bytes = self._read_zip_entry(zf, m_info)
-                mroot = ET.parse(io.BytesIO(m_bytes)).getroot()
+                mroot = _parse_xml_safe(m_bytes).getroot()
                 dae_root_el = _find_child(mroot, "dae_root")
                 if dae_root_el is not None and dae_root_el.text:
                     rel = dae_root_el.text.strip()
@@ -456,10 +506,15 @@ class DocumentImporter:
         return data
 
     def _build_archive_index(self, zf: zipfile.ZipFile) -> None:
+        infos = zf.infolist()
+        if len(infos) > _MAX_ZIP_ENTRIES:
+            raise ValueError(
+                f"Archive contains {len(infos)} entries, exceeding the {_MAX_ZIP_ENTRIES}-entry limit"
+            )
         self._archive_entries = {}
         self._archive_entries_ci = {}
         self._archive_by_basename = {}
-        for info in sorted(zf.infolist(), key=lambda i: i.filename):
+        for info in sorted(infos, key=lambda i: i.filename):
             if info.is_dir():
                 continue
             norm = _norm_archive_path(info.filename)
@@ -536,7 +591,7 @@ class DocumentImporter:
                         self._archive_dae_dir = dae_norm.rsplit("/", 1)[0] if "/" in dae_norm else ""
                         dae_bytes = self._read_zip_entry(zf, dae_info)
                         try:
-                            tree = ET.parse(io.BytesIO(dae_bytes))
+                            tree = _parse_xml_safe(dae_bytes)
                         except Exception as e:
                             self.errors.append(f"Failed to parse XML: {e}")
                             return False
@@ -557,7 +612,7 @@ class DocumentImporter:
                         self._archive_dae_dir = dae_norm.rsplit("/", 1)[0] if "/" in dae_norm else ""
                         dae_bytes = self._read_zip_entry(zf, dae_info)
                         try:
-                            tree = ET.parse(io.BytesIO(dae_bytes))
+                            tree = _parse_xml_safe(dae_bytes)
                         except Exception as e:
                             self.warnings.append(f"Failed to parse XML in '{dae_norm}': {e}")
                             continue
@@ -652,7 +707,7 @@ class DocumentImporter:
         self._beamng_mat_maps = {}
         self._load_disk_materials_json(self.dae_dir)
         try:
-            tree = ET.parse(dae_path)
+            tree = _parse_xml_safe(dae_path)
         except Exception as e:
             self.errors.append(f"Failed to parse XML: {e}")
             return False

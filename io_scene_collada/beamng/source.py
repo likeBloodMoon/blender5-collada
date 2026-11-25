@@ -26,6 +26,7 @@ _ATTR_ID_RE = re.compile(rb'\bid="([^"]*)"')
 _INST_NAME_RE = re.compile(rb'<instance_geometry\b[^>]*?\bname="([^"]*)"')
 
 _MAX_TEXT_ENTRY_BYTES = 64 * 1024 * 1024  # 64 MiB safety cap for json/jbeam/pc
+_MAX_ZIP_ENTRIES = 50_000
 
 
 def _norm_path(raw: str) -> str:
@@ -141,7 +142,12 @@ class VehicleSource:
 
     def _scan_zip(self, *, index_dae_nodes: bool) -> None:
         with zipfile.ZipFile(self.path, "r") as zf:
-            for info in sorted(zf.infolist(), key=lambda i: i.filename):
+            infos = zf.infolist()
+            if len(infos) > _MAX_ZIP_ENTRIES:
+                raise ValueError(
+                    f"Archive contains {len(infos)} entries, exceeding the {_MAX_ZIP_ENTRIES}-entry limit"
+                )
+            for info in sorted(infos, key=lambda i: i.filename):
                 if info.is_dir():
                     continue
                 norm = _norm_path(info.filename)
