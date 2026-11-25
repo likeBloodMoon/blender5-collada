@@ -630,6 +630,7 @@ def build_cases() -> dict[str, tuple[str, dict]]:
           <input semantic="VERTEX" source="#verts" offset="0"/>
           <ph>
             <p>0 1 2 3</p>
+            <h></h>
             <h>not_an_int 1 2</h>
             <h>0 1</h>
             <h>0 1 99</h>

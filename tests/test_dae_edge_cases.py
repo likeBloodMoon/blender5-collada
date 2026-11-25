@@ -339,6 +339,21 @@ for loop in me_ph2.loops:
 assert max_uv_err < 1e-6, f"UV mismatch on <ph> two holes: {max_uv_err}"
 results["ph_two_holes_uv"] = {"area": round(area2, 4), "loose": loose2, "max_uv_err": max_uv_err}
 
+# #28c: Tessellation failure fallback -> imports outer outline (area 16.0) with warning naming geometry
+import mathutils.geometry as _mg
+_orig_tess = _mg.tessellate_polygon
+_mg.tessellate_polygon = lambda *_a, **_kw: []
+try:
+    ok_fb, warns_fb, errs_fb = run_import(dae_ph1, "ph_fallback.dae")
+finally:
+    _mg.tessellate_polygon = _orig_tess
+assert ok_fb and not errs_fb, (ok_fb, warns_fb, errs_fb)
+me_fb = bpy.data.objects["SqHoleNode"].data
+area_fb = sum(p.area for p in me_fb.polygons)
+assert abs(area_fb - 16.0) < 1e-4 and len(me_fb.polygons) == 1, (area_fb, len(me_fb.polygons))
+assert any("SqHole" in w and "failed to tessellate <ph> holes" in w for w in warns_fb), warns_fb
+results["ph_tessellate_fallback"] = {"area": round(area_fb, 4), "polys": len(me_fb.polygons), "warned": True}
+
 with open(out_json, "w", encoding="utf-8") as fh:
     json.dump(results, fh, indent=2)
 '''
