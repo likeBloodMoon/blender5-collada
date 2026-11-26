@@ -470,7 +470,7 @@ class CdaeImporter:
                 if not os.path.isfile(mpath):
                     continue
                 try:
-                    with open(mpath, "r", encoding="utf-8", errors="replace") as mf:
+                    with open(mpath, encoding="utf-8", errors="replace") as mf:
                         parsed = parse_beamng_materials_json(mf.read())
                     for k, mlist in parsed.items():
                         cur = beamng_mat_maps.setdefault(k, [])

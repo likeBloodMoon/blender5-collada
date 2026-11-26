@@ -174,7 +174,7 @@ class MeshMixin:
             uv_inputs: list[tuple[str, int]] = []
             col_inputs: list[tuple[str, str, int]] = []
 
-            for sem, src_id, off, iset in inputs:
+            for sem, src_id, off, _iset in inputs:
                 if sem == "VERTEX":
                     vert_off = off
                 elif sem == "NORMAL":
@@ -316,8 +316,8 @@ class MeshMixin:
                         else np.empty((0, 3), dtype=np.float32)
                     )
 
-                    def _vert_vec(vi: int) -> Vector:
-                        row = pos_2d[vi]
+                    def _vert_vec(vi: int, _pos_2d=pos_2d) -> Vector:
+                        row = _pos_2d[vi]
                         if pos_stride >= 3:
                             return Vector((float(row[0]), float(row[1]), float(row[2])))
                         x = float(row[0]) if pos_stride >= 1 else 0.0

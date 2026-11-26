@@ -15,7 +15,9 @@ from __future__ import annotations
 
 import math
 import struct
-from typing import Iterable, Sequence
+from collections.abc import Iterable, Sequence
+
+from ._native_loader import native_fmt_f32_array, native_fmt_i32_array
 
 
 def f32(val: float) -> float:
@@ -62,9 +64,6 @@ def _fmt_f32_sanitized(v: float) -> str:
             return s.replace("e+0", "e+")
         return s
     return f"{v:.7g}"
-
-
-from ._native_loader import native_fmt_f32_array, native_fmt_i32_array
 
 
 def fmt_f32_array(arr) -> str:

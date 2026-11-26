@@ -85,7 +85,7 @@ class GlobalIdMap:
             if bucket is not None:
                 found = False
                 idx = 0
-                for idx, existing in enumerate(bucket):
+                for idx, existing in enumerate(bucket):  # noqa: B007
                     if name == existing:
                         found = True
                         break

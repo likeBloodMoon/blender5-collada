@@ -34,7 +34,7 @@ Everything here is a few lines in the current files, and all of it is either a 4
 - [x] #37 Export quadratic in object count: free temporary meshes with one `bpy.data.batch_remove()` per export (`.dae` and `.cdae`), and build a parent → children map once instead of `get_children_in_scene()` scanning the view layer. Target: 4,000 objects in under 1.5 s with byte-identical output.
 - [x] #46 jbeam expressions can hang: cap total `random()` candidates (e.g. 256), use a set for seen values, catch `RecursionError` in `eval_mesh_expr()`; same depth guard in the lenient JSON parser.
 - [x] #34 Bone-parented objects dropped on `.dae` import: after armatures are built, walk non-JOINT child nodes under joints and create them with `parent_type = "BONE"`. The largest of the five; if it turns into more than a contained change, ship the other four as 1.5.4 and move #34 to the first PR after the split.
-- [ ] Release 1.5.4 with the 4.5.1 parity and accuracy suites green.
+- [x] Release 1.5.4 with the 4.5.1 parity and accuracy suites green.
 
 ## 1.5.5 — Code split (moves only, no behaviour change)
 `import_collada.py` (~3,640 lines, one 69-method class) and `export_collada.py` (~2,450 lines) are split into modules before any more fixes land in them. This makes nothing faster; it makes bugs like #27 (the same accessor code in three places) a fix in one place.
@@ -70,10 +70,10 @@ Everything here is a few lines in the current files, and all of it is either a 4
 | 12 | `scene.py` | Asset, cameras, lights, visual scene, nodes, bindings, export-set building |
 
 **Done when**
-- [ ] Each file is under ~1,000 lines.
-- [ ] All suites green and parity export byte-identical on every PR.
-- [ ] `docs/architecture.md`: each module, what it holds, and which Blender 4.5.1 C++ source it came from.
-- [ ] #14 Broader ruff rules + mypy, now applied per module (`cdae/` first, then the new `importer/` and `exporter/`).
+- [x] Each file is under ~1,000 lines.
+- [x] All suites green and parity export byte-identical on every PR.
+- [x] `docs/architecture.md`: each module, what it holds, and which Blender 4.5.1 C++ source it came from.
+- [x] #14 Broader ruff rules + mypy, now applied per module (`cdae/` first, then the new `importer/` and `exporter/`).
 
 1.5.5 is an internal release: same behaviour as 1.5.4, so it can be tagged once the split is done, or folded into 1.5.6.
 

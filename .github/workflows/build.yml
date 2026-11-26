@@ -18,10 +18,11 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Run ruff lint check
+      - name: Run ruff lint and mypy type checks
         run: |
-          python3 -m pip install --quiet ruff
-          ruff check --select F,E9 io_scene_collada
+          python3 -m pip install --quiet ruff mypy numpy
+          ruff check io_scene_collada
+          mypy --strict io_scene_collada/cdae/msgpack_lite.py io_scene_collada/cdae/reader.py
 
   build-native-linux:
     runs-on: ubuntu-latest

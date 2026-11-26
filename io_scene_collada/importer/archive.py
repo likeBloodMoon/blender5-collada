@@ -113,7 +113,7 @@ class ArchiveMixin:
             if not os.path.isfile(path):
                 continue
             try:
-                with open(path, "r", encoding="utf-8", errors="replace") as f:
+                with open(path, encoding="utf-8", errors="replace") as f:
                     parsed = parse_beamng_materials_json(f.read())
                 self._merge_beamng_mat_maps(parsed)
             except Exception as e:

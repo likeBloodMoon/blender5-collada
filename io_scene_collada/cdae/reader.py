@@ -184,7 +184,7 @@ class CdaeShape:
 
 def _decompress_zstd_bounded(compressed: bytes) -> bytes:
     try:
-        import zstandard as zstd  # type: ignore[import-not-found]
+        import zstandard as zstd
     except ImportError as exc:
         raise CdaeError(
             "This .cdae file is Zstandard-compressed, but the 'zstandard' package is not "
@@ -285,9 +285,9 @@ class _BodyStream:
         self,
         label: str,
         expected_elem_size: int,
-        dtype: np.dtype | type,
+        dtype: np.dtype[Any] | type | str,
         shape_tail: tuple[int, ...] = (),
-    ) -> np.ndarray:
+    ) -> np.ndarray[Any, Any]:
         """Read a pack_vector (size, elemSize, bin) using strict elemSize validation."""
         count = self.read_int(f"{label}.size")
         elem_size = self.read_int(f"{label}.elemSize")
