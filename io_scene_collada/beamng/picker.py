@@ -608,7 +608,7 @@ def execute_beamng_import(
     groups_for_spread: list[tuple[list, list]] = []
 
     pbr_mode = beamng_materials == "PBR"
-    pc_paints = ce.pc.paints if ce.pc is not None else []
+    pc_paints = list(ce.pc.paints) if ce.pc is not None else []
     glass_fallbacks: list[str] = []
 
     with BeamngMaterialContext(
@@ -619,6 +619,12 @@ def execute_beamng_import(
         lights_mode=beamng_lights,
         resolved_part_names=[p.name for p in res.parts],
     ) as mat_ctx:
+        if pbr_mode and not pc_paints and any(ce.default_paint_names):
+            vinfo_obj = src.vehicles.get(ce.vehicle) if ce.vehicle else None
+            pc_paints = mat_ctx.resolve_default_paints(
+                ce.default_paint_names,
+                vehicle_info_paints=vinfo_obj.info_paints if vinfo_obj is not None else None,
+            )
         for m in own_models_to_import:
             if beamng_parts_mode == "CONFIG":
                 want_here = own_file_map.get(m.path, set()) - imported_own_names

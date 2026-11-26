@@ -72,6 +72,7 @@ class ConfigEntry:
     vehicle: str       # vehicle model folder name, e.g. "covet"
     config_type: str = ""  # from info_<config>.json "Config Type" (tooltip)
     pc: PcConfig | None = None
+    default_paint_names: tuple[str, str, str] = ("", "", "")
 
 
 @dataclass
@@ -90,6 +91,8 @@ class VehicleInfo:
     default_pc: str | None = None
     configs: list[ConfigEntry] = field(default_factory=list)
     jbeam_files: list[str] = field(default_factory=list)
+    default_paint_names: tuple[str, str, str] = ("", "", "")
+    info_paints: dict[str, Any] = field(default_factory=dict)
 
 
 class VehicleSource:
@@ -301,16 +304,35 @@ class VehicleSource:
         if index_dae_nodes:
             self._dae_nodes_indexed = True
 
-        # Attach info.json default_pc and info_<config>.json Config Type tooltips
+        # Attach info.json default_pc, defaultPaintName1..3, and info_<config>.json metadata
+        def _extract_paint_names(d: dict[str, Any] | None) -> tuple[str, str, str]:
+            if not isinstance(d, dict):
+                return ("", "", "")
+            vals: list[str] = []
+            for key in ("defaultPaintName1", "defaultPaintName2", "defaultPaintName3"):
+                v = d.get(key)
+                vals.append(v.strip() if isinstance(v, str) and v.strip() else "")
+            return (vals[0], vals[1], vals[2])
+
         for veh_name, vinfo in self.vehicles.items():
             idict = info_json_by_vehicle.get(veh_name)
-            if idict and isinstance(idict.get("default_pc"), str) and idict["default_pc"].strip():
-                vinfo.default_pc = idict["default_pc"].strip()
+            if idict:
+                if isinstance(idict.get("default_pc"), str) and idict["default_pc"].strip():
+                    vinfo.default_pc = idict["default_pc"].strip()
+                vinfo.default_paint_names = _extract_paint_names(idict)
+                if isinstance(idict.get("paints"), dict):
+                    vinfo.info_paints = dict(idict["paints"])
             vinfo.configs.sort(key=lambda c: c.name.lower())
             for ce in vinfo.configs:
                 cinfo = config_info_by_key.get((veh_name.lower(), ce.name.lower()))
                 if cinfo and isinstance(cinfo.get("Config Type"), str):
                     ce.config_type = cinfo["Config Type"]
+                c_paints = _extract_paint_names(cinfo)
+                ce.default_paint_names = (
+                    c_paints[0] or vinfo.default_paint_names[0],
+                    c_paints[1] or vinfo.default_paint_names[1],
+                    c_paints[2] or vinfo.default_paint_names[2],
+                )
 
         # Remove vehicle folders that have neither jbeam nor configs (e.g. stray subdirs)
         for vname in [k for k, v in self.vehicles.items() if not v.jbeam_files and not v.configs]:

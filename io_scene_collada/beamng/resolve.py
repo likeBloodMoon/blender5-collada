@@ -36,37 +36,63 @@ def srgb_to_linear(c: float) -> float:
     return ((v + 0.055) / 1.055) ** 2.4
 
 
+def _parse_single_paint_dict(item: dict[str, Any]) -> PcPaint:
+    bc = item.get("baseColor")
+    if isinstance(bc, (list, tuple)) and len(bc) >= 3:
+        try:
+            rgb = (max(0.0, float(bc[0])), max(0.0, float(bc[1])), max(0.0, float(bc[2])))
+        except (TypeError, ValueError):
+            rgb = (1.0, 1.0, 1.0)
+    else:
+        rgb = (1.0, 1.0, 1.0)
+
+    def _f(key: str, default: float) -> float:
+        val = item.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return max(0.0, min(1.0, float(val)))
+        return default
+
+    return PcPaint(
+        base_color_srgb=rgb,
+        metallic=_f("metallic", 0.0),
+        roughness=_f("roughness", 0.5),
+        clearcoat=_f("clearcoat", 0.0),
+        clearcoat_roughness=_f("clearcoatRoughness", 0.05),
+    )
+
+
 def _parse_pc_paints(raw_paints: Any) -> list[PcPaint]:
     if not isinstance(raw_paints, list):
         return []
     out: list[PcPaint] = []
     for item in raw_paints[:3]:
-        if not isinstance(item, dict):
-            continue
-        bc = item.get("baseColor")
-        if isinstance(bc, (list, tuple)) and len(bc) >= 3:
-            try:
-                rgb = (max(0.0, float(bc[0])), max(0.0, float(bc[1])), max(0.0, float(bc[2])))
-            except (TypeError, ValueError):
-                rgb = (1.0, 1.0, 1.0)
-        else:
-            rgb = (1.0, 1.0, 1.0)
+        if isinstance(item, dict):
+            out.append(_parse_single_paint_dict(item))
+    return out
 
-        def _f(key: str, default: float, d: dict[str, Any] = item) -> float:
-            val = d.get(key)
-            if isinstance(val, (int, float)):
-                return max(0.0, min(1.0, float(val)))
-            return default
 
-        out.append(
-            PcPaint(
-                base_color_srgb=rgb,
-                metallic=_f("metallic", 0.0),
-                roughness=_f("roughness", 0.5),
-                clearcoat=_f("clearcoat", 0.0),
-                clearcoat_roughness=_f("clearcoatRoughness", 0.05),
-            )
-        )
+def parse_paint_library(doc: Any) -> dict[str, PcPaint]:
+    """Parse a BeamNG *.paintLibrary.json (or info.json 'paints' dict) into {lower_name: PcPaint}."""
+    out: dict[str, PcPaint] = {}
+
+    def _walk(node: Any, key_hint: str = "") -> None:
+        if isinstance(node, list):
+            for item in node:
+                _walk(item)
+        elif isinstance(node, dict):
+            if isinstance(node.get("baseColor"), (list, tuple)) and len(node["baseColor"]) >= 3:
+                paint = _parse_single_paint_dict(node)
+                nm = node.get("name")
+                if isinstance(nm, str) and nm.strip():
+                    out[nm.strip().lower()] = paint
+                if key_hint and key_hint.strip().lower() not in out:
+                    out[key_hint.strip().lower()] = paint
+                return
+            for k, v in node.items():
+                if isinstance(v, (dict, list)):
+                    _walk(v, key_hint=str(k) if isinstance(k, str) else "")
+
+    _walk(doc)
     return out
 
 

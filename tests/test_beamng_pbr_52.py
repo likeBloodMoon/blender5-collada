@@ -172,6 +172,7 @@ def _build_fixture(workdir: str) -> str:
                 ["panel_g", ["body"]],
                 ["panel_b", ["body"]],
                 ["covet_body", ["body"]],
+                ["covet_interior_mesh", ["body"]],
                 ["legacy_part", ["body"]],
                 ["carbon_hood", ["body"]],
                 ["grille_mesh", ["body"]],
@@ -267,6 +268,19 @@ def _build_fixture(workdir: str) -> str:
                 },
             ],
         },
+        # Solid material (translucent=False, alphaTest=False) with opacityMap & alpha in baseColorMap:
+        # must stay OPAQUE and ignore layer 0 opacity
+        "covet_interior": {
+            "name": "covet_interior",
+            "mapTo": "covet_interior",
+            "version": 1.5,
+            "Stages": [{
+                "baseColorMap": "vehicles/pbrcar/grille_alpha.png",
+                "opacityMap": "vehicles/pbrcar/covet_main_o.png",
+                "opacityFactor": 0.5,
+                "roughnessMap": "vehicles/pbrcar/covet_main_r.png",
+            }],
+        },
         # Legacy material (no version: 1.5) with translucent and mapTo *_old, colorMap in Stages[1]
         "covet_lights_old": {
             "name": "covet_lights_old",
@@ -328,6 +342,7 @@ def _build_fixture(workdir: str) -> str:
         zf.writestr("vehicles/pbrcar/panel_g.dae", _make_two_uv_dae("panel_g", "mat_pbr_g"))
         zf.writestr("vehicles/pbrcar/panel_b.dae", _make_two_uv_dae("panel_b", "mat_pbr_b"))
         zf.writestr("vehicles/pbrcar/covet_body.dae", _make_two_uv_dae("covet_body", "covet_main"))
+        zf.writestr("vehicles/pbrcar/covet_interior_mesh.dae", _make_two_uv_dae("covet_interior_mesh", "covet_interior"))
         zf.writestr("vehicles/pbrcar/legacy_part.dae", _make_two_uv_dae("legacy_part", "covet_lights_old"))
         zf.writestr("vehicles/pbrcar/carbon_hood.dae", _make_two_uv_dae("carbon_hood", "covet_carbonfibre"))
         zf.writestr("vehicles/pbrcar/grille_mesh.dae", _make_two_uv_dae("grille_mesh", "etk800_grille"))
@@ -344,6 +359,41 @@ def _build_fixture(workdir: str) -> str:
         zf.writestr("vehicles/pbrcar/covet_main_r.png", _make_png((100, 100, 100, 255)))
         zf.writestr("vehicles/pbrcar/legacy_col.png", _make_png((200, 100, 50, 255)))
         zf.writestr("vehicles/pbrcar/grille_alpha.png", _make_split_png((40, 40, 40, 0), (40, 40, 40, 255)))
+        # Config with NO paints section + info_defaultpaint.json + info.json for paint library test
+        zf.writestr("vehicles/pbrcar/defaultpaint.pc", json.dumps({"format": 2, "parts": {"main": "pbrcar"}}))
+        zf.writestr("vehicles/pbrcar/info_defaultpaint.json", json.dumps({
+            "Config Type": "Factory",
+            "defaultPaintName1": "Sea Blue",
+            "defaultPaintName3": "NoSuchPaint",
+        }))
+        zf.writestr("vehicles/pbrcar/info.json", json.dumps({
+            "defaultPaintName1": "ShouldNotOverride",
+            "defaultPaintName2": "Fallback Red",
+        }))
+
+    common_zip = os.path.join(workdir, "common.zip")
+    paint_lib = json.dumps({
+        "paints": {
+            "Sea Blue": {
+                "name": "Sea Blue",
+                "baseColor": [0.16, 0.28, 0.56, 1.2],
+                "metallic": 0.25,
+                "roughness": 0.07,
+                "clearcoat": 1.0,
+                "clearcoatRoughness": 0.06,
+            },
+            "Fallback Red": {
+                "name": "Fallback Red",
+                "baseColor": [0.7, 0.1, 0.1, 1.0],
+                "metallic": 0.0,
+                "roughness": 0.3,
+                "clearcoat": 0.8,
+                "clearcoatRoughness": 0.05,
+            },
+        }
+    })
+    with zipfile.ZipFile(common_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
+        zf.writestr("vehicles/common/paintLibraries/default.paintLibrary.json", paint_lib)
 
     return car_zip
 
@@ -365,7 +415,7 @@ from io_scene_collada.beamng.source import clear_source_cache
 
 
 def bake_base_color_pixels(ob, sample_coords):
-    """Bake Cycles EMIT pass of the Base Color feeding Principled BSDF inside the node group."""
+    """Bake Cycles EMIT pass of the Base Color feeding Principled BSDF (both direct and inside node groups)."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -374,17 +424,34 @@ def bake_base_color_pixels(ob, sample_coords):
 
     ma = ob.data.materials[0]
     ntree = ma.node_tree
-    grp_node = next(n for n in ntree.nodes if n.type == "GROUP")
-    ng = grp_node.node_tree
-    bsdf = next(n for n in ng.nodes if n.type == "BSDF_PRINCIPLED")
-    go = next(n for n in ng.nodes if n.type == "GROUP_OUTPUT")
-    bc_src = bsdf.inputs["Base Color"].links[0].from_socket
 
-    # Temporarily route Principled Base Color -> Emission(1.0) -> Group Output
-    emit = ng.nodes.new("ShaderNodeEmission")
-    emit.inputs["Strength"].default_value = 1.0
-    ng.links.new(bc_src, emit.inputs["Color"])
-    ng.links.new(emit.outputs["Emission"], go.inputs["BSDF"])
+    # Temporarily swap every Principled BSDF (direct or inside a shared Group) with Emission(Base Color)
+    restores = []
+
+    def _patch_tree(tree):
+        for n in list(tree.nodes):
+            if n.type == "BSDF_PRINCIPLED":
+                out_links = [(lk.to_socket,) for lk in n.outputs["BSDF"].links]
+                if not out_links:
+                    continue
+                emit = tree.nodes.new("ShaderNodeEmission")
+                emit.inputs["Strength"].default_value = 1.0
+                bc_in = n.inputs["Base Color"]
+                if bc_in.is_linked:
+                    tree.links.new(bc_in.links[0].from_socket, emit.inputs["Color"])
+                else:
+                    emit.inputs["Color"].default_value = tuple(bc_in.default_value)
+                for (to_sock,) in out_links:
+                    tree.links.new(emit.outputs["Emission"], to_sock)
+                restores.append((tree, n, emit, out_links))
+
+    patched_trees = set()
+    _patch_tree(ntree)
+    patched_trees.add(ntree)
+    for n in ntree.nodes:
+        if n.type == "GROUP" and n.node_tree is not None and n.node_tree not in patched_trees:
+            _patch_tree(n.node_tree)
+            patched_trees.add(n.node_tree)
 
     w, h = 16, 8
     img = bpy.data.images.new(f"bake_{ob.name}", width=w, height=h, alpha=False, float_buffer=True)
@@ -405,8 +472,10 @@ def bake_base_color_pixels(ob, sample_coords):
             out.append([float(img.pixels[idx]), float(img.pixels[idx + 1]), float(img.pixels[idx + 2])])
         return out
     finally:
-        ng.links.new(bsdf.outputs["BSDF"], go.inputs["BSDF"])
-        ng.nodes.remove(emit)
+        for tree, bsdf_node, emit_node, out_links in restores:
+            for (to_sock,) in out_links:
+                tree.links.new(bsdf_node.outputs["BSDF"], to_sock)
+            tree.nodes.remove(emit_node)
         ntree.nodes.remove(bake_node)
         bpy.data.images.remove(img)
 
@@ -472,10 +541,16 @@ baked_r2 = bake_base_color_pixels(ob_r2, [(8, 4)])[0]
 # Two-layer covet_main: left (x=3 -> black opacityMap -> L0 paint 1 * AO), right (x=12 -> white -> L1 covet_main_b)
 covet_left, covet_right = bake_base_color_pixels(ob_covet, [(3, 4), (12, 4)])
 mat_covet = ob_covet.data.materials[0]
-covet_groups = [n for n in mat_covet.node_tree.nodes if n.type == "GROUP"]
+covet_layers = [n for n in mat_covet.node_tree.nodes if n.type in ("GROUP", "BSDF_PRINCIPLED")]
 covet_mix_shaders = [n for n in mat_covet.node_tree.nodes if n.type == "MIX_SHADER"]
 covet_l1_has_met = any(n.type == "TEX_IMAGE" and n.label == "L1 Metallic" for n in mat_covet.node_tree.nodes)
 covet_l1_has_rgh = any(n.type == "TEX_IMAGE" and n.label == "L1 Roughness" for n in mat_covet.node_tree.nodes)
+
+# Solid material with opacityMap & alpha in baseColorMap -> must stay OPAQUE & slim (0 Attribute nodes)
+ob_int = bpy.data.objects.get("covet_interior_mesh")
+mat_int = ob_int.data.materials[0]
+int_bsdf = next(n for n in mat_int.node_tree.nodes if n.type in ("GROUP", "BSDF_PRINCIPLED"))
+int_attr_count = sum(1 for n in mat_int.node_tree.nodes if n.type == "ATTRIBUTE")
 
 # Legacy material (no version: 1.5, colorMap in Stages[1])
 mat_legacy = ob_legacy.data.materials[0]
@@ -490,22 +565,22 @@ for n in mat_legacy.node_tree.nodes:
 
 # Translucent carbonfibre (no glass/windshield in name, no opacity source -> stays opaque)
 mat_carbon = ob_carbon.data.materials[0]
-carbon_grp = next(n for n in mat_carbon.node_tree.nodes if n.type == "GROUP")
+carbon_shader = next(n for n in mat_carbon.node_tree.nodes if n.type in ("GROUP", "BSDF_PRINCIPLED"))
 
 # alphaTest grille -> DITHERED + GREATER_THAN clip
 mat_grille = ob_grille.data.materials[0]
-grille_grp = next(n for n in mat_grille.node_tree.nodes if n.type == "GROUP")
+grille_shader = next(n for n in mat_grille.node_tree.nodes if n.type in ("GROUP", "BSDF_PRINCIPLED"))
 grille_alpha_clip = (
-    grille_grp.inputs["Alpha"].is_linked
-    and grille_grp.inputs["Alpha"].links[0].from_node.type == "MATH"
-    and grille_grp.inputs["Alpha"].links[0].from_node.operation == "GREATER_THAN"
+    grille_shader.inputs["Alpha"].is_linked
+    and grille_shader.inputs["Alpha"].links[0].from_node.type == "MATH"
+    and grille_shader.inputs["Alpha"].links[0].from_node.operation == "GREATER_THAN"
 )
 
 # Glass properties & report
 mat_ga = ob_ga.data.materials[0]
 mat_go = ob_go.data.materials[0]
-ga_grp = next(n for n in mat_ga.node_tree.nodes if n.type == "GROUP")
-go_grp = next(n for n in mat_go.node_tree.nodes if n.type == "GROUP")
+ga_shader = next(n for n in mat_ga.node_tree.nodes if n.type in ("GROUP", "BSDF_PRINCIPLED"))
+go_shader = next(n for n in mat_go.node_tree.nodes if n.type in ("GROUP", "BSDF_PRINCIPLED"))
 report_text = ""
 for txt in bpy.data.texts:
     if "pbrcar" in txt.name:
@@ -525,28 +600,56 @@ pbr_res = {
     "baked_r2": baked_r2,
     "shared_mat_same": (ob_r.data.materials[0] == ob_r2.data.materials[0]),
     "covet_render_method": getattr(mat_covet, "surface_render_method", None),
-    "covet_num_groups": len(covet_groups),
+    "covet_num_layers": len(covet_layers),
     "covet_num_mix": len(covet_mix_shaders),
     "covet_l1_has_met": covet_l1_has_met,
     "covet_l1_has_rgh": covet_l1_has_rgh,
     "covet_left": covet_left,
     "covet_right": covet_right,
+    "int_render_method": getattr(mat_int, "surface_render_method", None),
+    "int_alpha": float(int_bsdf.inputs["Alpha"].default_value),
+    "int_alpha_linked": bool(int_bsdf.inputs["Alpha"].is_linked),
+    "int_attr_count": int_attr_count,
     "legacy_has_group": legacy_has_group,
     "legacy_has_bsdf": legacy_has_bsdf,
     "legacy_tex": legacy_tex,
     "carbon_render_method": getattr(mat_carbon, "surface_render_method", None),
-    "carbon_alpha": float(carbon_grp.inputs["Alpha"].default_value),
+    "carbon_alpha": float(carbon_shader.inputs["Alpha"].default_value),
     "carbon_in_report": ("covet_carbonfibre" in report_text),
     "grille_render_method": getattr(mat_grille, "surface_render_method", None),
     "grille_alpha_clip": grille_alpha_clip,
     "grille_backface_culling": mat_grille.use_backface_culling,
     "ga_render_method": getattr(mat_ga, "surface_render_method", None),
     "ga_backface_culling": mat_ga.use_backface_culling,
-    "ga_alpha": float(ga_grp.inputs["Alpha"].default_value),
+    "ga_alpha": float(ga_shader.inputs["Alpha"].default_value),
     "go_render_method": getattr(mat_go, "surface_render_method", None),
     "go_backface_culling": mat_go.use_backface_culling,
-    "go_alpha": float(go_grp.inputs["Alpha"].default_value),
+    "go_alpha": float(go_shader.inputs["Alpha"].default_value),
     "report_mentions_glass_fallback": ("mat_glass_opaque" in report_text and "0.35" in report_text),
+}
+
+# ---- Part 2: Default paint library (no paints in .pc -> info_<config>.json -> info.json -> common.zip) ----
+clear_source_cache()
+bpy.ops.wm.read_homefile(use_empty=True)
+
+ok_dp, _s_dp, warns_dp, errs_dp = execute_beamng_import(
+    bpy.context,
+    filepath=car_zip,
+    cdae_mode=False,
+    beamng_config="defaultpaint",
+    beamng_parts_mode="CONFIG",
+    use_common=True,
+    beamng_materials="PBR",
+)
+ob_dp = bpy.data.objects.get("panel_r")
+dp_res = {
+    "ok": ok_dp,
+    "errors": errs_dp,
+    "warnings": warns_dp,
+    "paint1": list(ob_dp["beamng_paint1"])[:3] if ob_dp else None,
+    "paint1_roughness": float(ob_dp["beamng_paint1_roughness"]) if ob_dp else None,
+    "paint2": list(ob_dp["beamng_paint2"])[:3] if ob_dp else None,
+    "paint3": list(ob_dp["beamng_paint3"])[:3] if ob_dp else None,
 }
 
 # ---- Part 2: Base color only mode (must match 1.5.5) ----
@@ -576,7 +679,7 @@ bc_res = {
 }
 
 with open(out_json, "w", encoding="utf-8") as f:
-    json.dump({"pbr": pbr_res, "base_color": bc_res}, f, indent=2)
+    json.dump({"pbr": pbr_res, "default_paint": dp_res, "base_color": bc_res}, f, indent=2)
 '''
 
 
@@ -614,6 +717,7 @@ def main() -> int:
             data = json.load(f)
 
         pbr = data["pbr"]
+        dp = data["default_paint"]
         bc = data["base_color"]
         tol = 1.0 / 255.0
         ao = 128.0 / 255.0
@@ -652,14 +756,40 @@ def main() -> int:
         # Multi-layer covet_main checks
         if pbr["covet_render_method"] == "BLENDED":
             failures.append("covet_main should stay opaque (upper-layer opacityMap is a layer mask, not transparency)")
-        if pbr["covet_num_groups"] != 2 or pbr["covet_num_mix"] != 1:
+        if pbr["covet_num_layers"] != 2 or pbr["covet_num_mix"] != 1:
             failures.append(
-                f"covet_main expected 2 group nodes and 1 MixShader, got groups={pbr['covet_num_groups']} mix={pbr['covet_num_mix']}"
+                f"covet_main expected 2 layer shaders and 1 MixShader, got layers={pbr['covet_num_layers']} mix={pbr['covet_num_mix']}"
             )
         if not pbr["covet_l1_has_met"] or not pbr["covet_l1_has_rgh"]:
             failures.append(
                 f"covet_main L1 missing metallic/roughness maps: met={pbr['covet_l1_has_met']} rgh={pbr['covet_l1_has_rgh']}"
             )
+
+        # Solid covet_interior with opacityMap/alpha -> must stay opaque & slim (0 Attribute nodes)
+        if pbr["int_render_method"] == "BLENDED" or pbr["int_alpha_linked"] or abs(pbr["int_alpha"] - 1.0) > 1e-4:
+            failures.append(
+                f"covet_interior (non-translucent) should stay opaque: method={pbr['int_render_method']} "
+                f"alpha={pbr['int_alpha']} linked={pbr['int_alpha_linked']}"
+            )
+        if pbr["int_attr_count"] != 0:
+            failures.append(f"Plain PBR material covet_interior should have 0 Attribute nodes, got {pbr['int_attr_count']}")
+
+        # Default paint library checks (info_<config>.json -> info.json -> common.zip paintLibraries)
+        exp_sea_blue = [_srgb_to_lin(c) for c in (0.16, 0.28, 0.56)]
+        exp_fb_red = [_srgb_to_lin(c) for c in (0.7, 0.1, 0.1)]
+        if not dp["ok"] or dp["errors"]:
+            failures.append(f"Default paint import failed: {dp['errors']}")
+        if dp["paint1"] is None or _max_rgb_diff(dp["paint1"], exp_sea_blue) > 1e-5:
+            failures.append(f"Default paint1 expected Sea Blue {exp_sea_blue}, got {dp['paint1']}")
+        if dp["paint1_roughness"] is None or abs(dp["paint1_roughness"] - 0.07) > 1e-5:
+            failures.append(f"Default paint1 roughness expected 0.07, got {dp['paint1_roughness']}")
+        if dp["paint2"] is None or _max_rgb_diff(dp["paint2"], exp_fb_red) > 1e-5:
+            failures.append(f"Default paint2 (from info.json) expected Fallback Red {exp_fb_red}, got {dp['paint2']}")
+        if dp["paint3"] is None or _max_rgb_diff(dp["paint3"], [1.0, 1.0, 1.0]) > 1e-5:
+            failures.append(f"Missing default paint3 should fall back to white, got {dp['paint3']}")
+        missing_paint_warns = [w for w in dp["warnings"] if "NoSuchPaint" in w]
+        if len(missing_paint_warns) != 1:
+            failures.append(f"Expected 1 warning for missing paint 'NoSuchPaint', got {dp['warnings']}")
 
         # Legacy *_old material checks
         if pbr["legacy_has_group"] or not pbr["legacy_has_bsdf"] or pbr["legacy_tex"] != "legacy_col.png":

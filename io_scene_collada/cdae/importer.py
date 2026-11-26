@@ -528,6 +528,12 @@ class CdaeImporter:
                     glow_target = self._beamng_mat_ctx.resolve_glow_target(mat.name)
                     if glow_target is not None:
                         ma["beamng_glow_source"] = glow_target
+                        if glow_target.strip().lower() == "invis":
+                            from ..beamng.pbr_nodes import apply_beamng_invis_material
+
+                            apply_beamng_invis_material(ma)
+                            materials.append(ma)
+                            continue
                         refs = lookup_material_color_maps(beamng_mat_maps, glow_target, mat.name)
                     else:
                         refs = lookup_material_color_maps(beamng_mat_maps, mat.name)

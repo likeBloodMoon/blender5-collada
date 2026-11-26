@@ -243,6 +243,23 @@ def _image_has_non_opaque_alpha(ima: Image) -> bool:
         return False
 
 
+def apply_beamng_invis_material(ma: Material) -> None:
+    """Make a glowMap 'invis' material (e.g. off dashboard warning lamp) fully transparent."""
+    ma.use_nodes = True
+    ntree = ma.node_tree
+    assert ntree is not None
+    ntree.nodes.clear()
+    bsdf = ntree.nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.location = (0, 0)
+    bsdf.inputs["Alpha"].default_value = 0.0
+    out_node = ntree.nodes.new("ShaderNodeOutputMaterial")
+    out_node.location = (300, 0)
+    ntree.links.new(bsdf.outputs["BSDF"], out_node.inputs["Surface"])
+    if hasattr(ma, "surface_render_method"):
+        ma.surface_render_method = "BLENDED"
+    ma.use_backface_culling = False
+
+
 def _is_glass_name(*names: str) -> bool:
     for nm in names:
         low = nm.lower()
@@ -251,7 +268,7 @@ def _is_glass_name(*names: str) -> bool:
     return False
 
 
-def _build_stage_group(
+def _build_stage_shader(
     ntree: NodeTree,
     stage: BeamngStageSpec,
     spec: BeamngMaterialSpec,
@@ -262,20 +279,19 @@ def _build_stage_group(
     dae_dir: str,
     uv_nodes: dict[int, object],
 ):
-    """Build one 'BeamNG v1.5 Material' group node for ``stage``.
+    """Build the minimal shader node(s) for ``stage``.
 
-    Returns (group_node, upper_mask_socket_or_float) where upper_mask is only
-    meaningful for stage_idx >= 1 (opacityMap * opacityFactor layer mask).
+    - Uses the shared 'BeamNG v1.5 Material' group only when ``colorPaletteMap`` is present.
+    - Uses a slim direct Principled BSDF with only Paint 1 Object Attributes for ``instanceDiffuse``.
+    - Uses a minimal direct Principled BSDF (zero Attribute nodes, only active maps/factors)
+      for plain PBR layers, avoiding EEVEE uber-shader compilation stalls.
+
+    Returns (bsdf_output_socket, upper_mask_socket_or_float).
     """
     nodes = ntree.nodes
     links = ntree.links
     x_off = stage_idx * 950
     y_base = -stage_idx * 300
-
-    grp = nodes.new("ShaderNodeGroup")
-    grp.node_tree = get_or_create_beamng_v15_node_group()
-    grp.label = f"Layer {stage_idx}"
-    grp.location = (100 + x_off, y_base)
 
     def _get_uv_node(uv_idx: int):
         node = uv_nodes.get(uv_idx)
@@ -300,101 +316,69 @@ def _build_stage_group(
         links.new(_get_uv_node(uv_idx).outputs["UV"], tn.inputs["Vector"])
         return tn
 
-    # 1. Base Color (layer without baseColorMap uses white Base Color * baseColorFactor)
+    def _wire_scalar_map(tex_node, factor: float, target_sock, y: float) -> None:
+        if tex_node is not None:
+            if abs(factor - 1.0) > 1e-4:
+                mul = nodes.new("ShaderNodeMath")
+                mul.operation = "MULTIPLY"
+                mul.use_clamp = True
+                mul.location = (-200 + x_off, y + y_base)
+                links.new(tex_node.outputs["Color"], mul.inputs[0])
+                mul.inputs[1].default_value = factor
+                links.new(mul.outputs[0], target_sock)
+            else:
+                links.new(tex_node.outputs["Color"], target_sock)
+        else:
+            target_sock.default_value = factor
+
+    def _wire_emissive(em_tex, target_sock) -> bool:
+        if em_tex is not None:
+            if any(abs(c - 1.0) > 1e-4 for c in stage.emissive_factor):
+                em_mul = nodes.new("ShaderNodeMix")
+                em_mul.data_type = "RGBA"
+                em_mul.blend_type = "MULTIPLY"
+                em_mul.inputs["Factor"].default_value = 1.0
+                em_mul.location = (-200 + x_off, -1780 + y_base)
+                links.new(em_tex.outputs["Color"], em_mul.inputs["A"])
+                em_mul.inputs["B"].default_value = (
+                    stage.emissive_factor[0],
+                    stage.emissive_factor[1],
+                    stage.emissive_factor[2],
+                    1.0,
+                )
+                links.new(em_mul.outputs["Result"], target_sock)
+            else:
+                links.new(em_tex.outputs["Color"], target_sock)
+            return True
+        if any(c > 1e-4 for c in stage.emissive_factor):
+            target_sock.default_value = (
+                stage.emissive_factor[0],
+                stage.emissive_factor[1],
+                stage.emissive_factor[2],
+                1.0,
+            )
+            return True
+        return False
+
+    # Load textures needed for this stage
     bc_tex = _load_tex_node(stage.base_color_map, "Base Color", stage.base_color_uv, "sRGB", 460)
-    if bc_tex is not None:
-        links.new(bc_tex.outputs["Color"], grp.inputs["Base Color"])
-    grp.inputs["Base Color Factor"].default_value = (
-        stage.base_color_factor[0],
-        stage.base_color_factor[1],
-        stage.base_color_factor[2],
-        1.0,
+    pal_tex = _load_tex_node(stage.color_palette_map, "Color Palette", stage.color_palette_uv, "Non-Color", 180)
+    ao_tex = _load_tex_node(stage.ambient_occlusion_map, "Ambient Occlusion", stage.ambient_occlusion_uv, "Non-Color", -100)
+    met_tex = _load_tex_node(stage.metallic_map, "Metallic", stage.metallic_uv, "Non-Color", -380)
+    rgh_tex = _load_tex_node(stage.roughness_map, "Roughness", stage.roughness_uv, "Non-Color", -660)
+    coat_tex = _load_tex_node(stage.clearcoat_map, "Clearcoat", stage.clearcoat_uv, "Non-Color", -940)
+    nrm_tex = _load_tex_node(stage.normal_map, "Normal", stage.normal_uv, "Non-Color", -1220)
+    em_tex = _load_tex_node(stage.emissive_map, "Emissive", stage.emissive_uv, "sRGB", -1780)
+
+    # Opacity: layer 0 only reads opacity when translucent or alphaTest; upper layers always read as layer mask
+    need_opacity = (stage_idx > 0) or spec.translucent or spec.alpha_test
+    op_tex = (
+        _load_tex_node(stage.opacity_map, "Opacity", stage.opacity_uv, "Non-Color", -1500)
+        if need_opacity
+        else None
     )
 
-    # 2. Color Palette Mask (Non-Color) & Instance Diffuse
-    pal_tex = _load_tex_node(stage.color_palette_map, "Color Palette", stage.color_palette_uv, "Non-Color", 180)
-    if pal_tex is not None:
-        links.new(pal_tex.outputs["Color"], grp.inputs["Palette Mask"])
-        grp.inputs["Use Palette"].default_value = 1.0
-    else:
-        grp.inputs["Use Palette"].default_value = 0.0
-    grp.inputs["Instance Diffuse"].default_value = 1.0 if stage.instance_diffuse else 0.0
-
-    # 3. Ambient Occlusion (Non-Color)
-    ao_tex = _load_tex_node(stage.ambient_occlusion_map, "Ambient Occlusion", stage.ambient_occlusion_uv, "Non-Color", -100)
-    if ao_tex is not None:
-        links.new(ao_tex.outputs["Color"], grp.inputs["Ambient Occlusion"])
-    else:
-        grp.inputs["Ambient Occlusion"].default_value = 1.0
-
-    # 4. Metallic (Non-Color)
-    met_tex = _load_tex_node(stage.metallic_map, "Metallic", stage.metallic_uv, "Non-Color", -380)
-    if met_tex is not None:
-        if abs(stage.metallic_factor - 1.0) > 1e-4:
-            mul = nodes.new("ShaderNodeMath")
-            mul.operation = "MULTIPLY"
-            mul.use_clamp = True
-            mul.location = (-200 + x_off, -380 + y_base)
-            links.new(met_tex.outputs["Color"], mul.inputs[0])
-            mul.inputs[1].default_value = stage.metallic_factor
-            links.new(mul.outputs[0], grp.inputs["Metallic"])
-        else:
-            links.new(met_tex.outputs["Color"], grp.inputs["Metallic"])
-    else:
-        grp.inputs["Metallic"].default_value = stage.metallic_factor
-
-    # 5. Roughness (Non-Color)
-    rgh_tex = _load_tex_node(stage.roughness_map, "Roughness", stage.roughness_uv, "Non-Color", -660)
-    if rgh_tex is not None:
-        if abs(stage.roughness_factor - 1.0) > 1e-4:
-            mul = nodes.new("ShaderNodeMath")
-            mul.operation = "MULTIPLY"
-            mul.use_clamp = True
-            mul.location = (-200 + x_off, -660 + y_base)
-            links.new(rgh_tex.outputs["Color"], mul.inputs[0])
-            mul.inputs[1].default_value = stage.roughness_factor
-            links.new(mul.outputs[0], grp.inputs["Roughness"])
-        else:
-            links.new(rgh_tex.outputs["Color"], grp.inputs["Roughness"])
-    else:
-        grp.inputs["Roughness"].default_value = stage.roughness_factor
-
-    # 6. Clearcoat (Non-Color)
-    coat_tex = _load_tex_node(stage.clearcoat_map, "Clearcoat", stage.clearcoat_uv, "Non-Color", -940)
-    if coat_tex is not None:
-        if abs(stage.clearcoat_factor - 1.0) > 1e-4:
-            mul = nodes.new("ShaderNodeMath")
-            mul.operation = "MULTIPLY"
-            mul.use_clamp = True
-            mul.location = (-200 + x_off, -940 + y_base)
-            links.new(coat_tex.outputs["Color"], mul.inputs[0])
-            mul.inputs[1].default_value = stage.clearcoat_factor
-            links.new(mul.outputs[0], grp.inputs["Coat Weight"])
-        else:
-            links.new(coat_tex.outputs["Color"], grp.inputs["Coat Weight"])
-    else:
-        grp.inputs["Coat Weight"].default_value = stage.clearcoat_factor
-    grp.inputs["Coat Roughness"].default_value = stage.clearcoat_roughness_factor
-
-    # 7. Normal Map (Non-Color)
-    nrm_tex = _load_tex_node(stage.normal_map, "Normal", stage.normal_uv, "Non-Color", -1220)
-    if nrm_tex is not None:
-        nmap = nodes.new("ShaderNodeNormalMap")
-        nmap.space = "TANGENT"
-        nmap.uv_map = "UV1" if stage.normal_uv == 1 else "UV0"
-        nmap.location = (-200 + x_off, -1220 + y_base)
-        links.new(nrm_tex.outputs["Color"], nmap.inputs["Color"])
-        links.new(nmap.outputs["Normal"], grp.inputs["Normal"])
-        grp.inputs["Has Normal"].default_value = 1.0
-    else:
-        grp.inputs["Has Normal"].default_value = 0.0
-
-    # 8. Opacity: layer 0 controls material transparency; upper layers use opacity as layer mask
-    op_tex = _load_tex_node(stage.opacity_map, "Opacity", stage.opacity_uv, "Non-Color", -1500)
-    upper_mask = None
-
     def _build_opacity_source():
-        """Return (socket_or_None, scalar_or_None) for this stage's opacity."""
         if op_tex is not None:
             if abs(stage.opacity_factor - 1.0) > 1e-4:
                 mul = nodes.new("ShaderNodeMath")
@@ -421,12 +405,18 @@ def _build_stage_group(
             return None, stage.base_color_factor[3]
         return None, None
 
-    if stage_idx == 0:
+    def _wire_layer0_alpha(alpha_sock) -> None:
+        if not (spec.translucent or spec.alpha_test):
+            # Solid material: ignore layer 0 opacity completely, keep default opaque render method
+            alpha_sock.default_value = 1.0
+            if spec.double_sided:
+                ma.use_backface_culling = False
+            return
+
         op_sock, op_scalar = _build_opacity_source()
         has_layer0_opacity = (op_sock is not None) or (op_scalar is not None)
 
         if spec.alpha_test and has_layer0_opacity:
-            # Alpha clip / dithered (e.g. grilles) rather than blended
             if hasattr(ma, "surface_render_method"):
                 ma.surface_render_method = "DITHERED"
             if spec.double_sided:
@@ -437,32 +427,30 @@ def _build_stage_group(
                 clip.location = (-40 + x_off, -1500 + y_base)
                 links.new(op_sock, clip.inputs[0])
                 clip.inputs[1].default_value = spec.alpha_ref
-                links.new(clip.outputs[0], grp.inputs["Alpha"])
+                links.new(clip.outputs[0], alpha_sock)
             else:
-                grp.inputs["Alpha"].default_value = 1.0 if (op_scalar or 0.0) > spec.alpha_ref else 0.0
-        elif has_layer0_opacity:
+                alpha_sock.default_value = 1.0 if (op_scalar or 0.0) > spec.alpha_ref else 0.0
+        elif spec.translucent and has_layer0_opacity:
             if hasattr(ma, "surface_render_method"):
                 ma.surface_render_method = "BLENDED"
             ma.use_backface_culling = False
             if op_sock is not None:
-                links.new(op_sock, grp.inputs["Alpha"])
+                links.new(op_sock, alpha_sock)
             else:
-                grp.inputs["Alpha"].default_value = op_scalar
+                alpha_sock.default_value = op_scalar
         elif spec.translucent and _is_glass_name(ma.name, spec.name):
-            # 0.35 fallback ONLY for translucent materials named glass/windshield
             if hasattr(ma, "surface_render_method"):
                 ma.surface_render_method = "BLENDED"
             ma.use_backface_culling = False
-            grp.inputs["Alpha"].default_value = DEFAULT_GLASS_OPACITY
+            alpha_sock.default_value = DEFAULT_GLASS_OPACITY
             mat_ctx.record_glass_fallback(ma.name)
         else:
-            # Other translucent materials without an opacity source stay opaque (e.g. carbon fibre)
-            grp.inputs["Alpha"].default_value = 1.0
+            alpha_sock.default_value = 1.0
             if spec.double_sided:
                 ma.use_backface_culling = False
-    else:
-        # Upper layer: always opaque shader, opacityMap * opacityFactor is the layer composite mask
-        grp.inputs["Alpha"].default_value = 1.0
+
+    upper_mask = None
+    if stage_idx > 0:
         op_sock, op_scalar = _build_opacity_source()
         if op_sock is not None:
             upper_mask = op_sock
@@ -471,34 +459,154 @@ def _build_stage_group(
         else:
             upper_mask = stage.opacity_factor
 
-    # 9. Emissive (sRGB)
-    em_tex = _load_tex_node(stage.emissive_map, "Emissive", stage.emissive_uv, "sRGB", -1780)
-    if em_tex is not None:
-        if any(abs(c - 1.0) > 1e-4 for c in stage.emissive_factor):
-            em_mul = nodes.new("ShaderNodeMix")
-            em_mul.data_type = "RGBA"
-            em_mul.blend_type = "MULTIPLY"
-            em_mul.inputs["Factor"].default_value = 1.0
-            em_mul.location = (-200 + x_off, -1780 + y_base)
-            links.new(em_tex.outputs["Color"], em_mul.inputs["A"])
-            em_mul.inputs["B"].default_value = (
-                stage.emissive_factor[0],
-                stage.emissive_factor[1],
-                stage.emissive_factor[2],
-                1.0,
-            )
-            links.new(em_mul.outputs["Result"], grp.inputs["Emissive"])
-        else:
-            links.new(em_tex.outputs["Color"], grp.inputs["Emissive"])
-    else:
-        grp.inputs["Emissive"].default_value = (
-            stage.emissive_factor[0],
-            stage.emissive_factor[1],
-            stage.emissive_factor[2],
+    # ---- Path A: Palette-masked layer -> shared 'BeamNG v1.5 Material' node group ----
+    if pal_tex is not None:
+        grp = nodes.new("ShaderNodeGroup")
+        grp.node_tree = get_or_create_beamng_v15_node_group()
+        grp.label = f"Layer {stage_idx}"
+        grp.location = (100 + x_off, y_base)
+
+        if bc_tex is not None:
+            links.new(bc_tex.outputs["Color"], grp.inputs["Base Color"])
+        grp.inputs["Base Color Factor"].default_value = (
+            stage.base_color_factor[0],
+            stage.base_color_factor[1],
+            stage.base_color_factor[2],
             1.0,
         )
+        links.new(pal_tex.outputs["Color"], grp.inputs["Palette Mask"])
+        grp.inputs["Use Palette"].default_value = 1.0
+        grp.inputs["Instance Diffuse"].default_value = 1.0 if stage.instance_diffuse else 0.0
+        if ao_tex is not None:
+            links.new(ao_tex.outputs["Color"], grp.inputs["Ambient Occlusion"])
+        else:
+            grp.inputs["Ambient Occlusion"].default_value = 1.0
 
-    return grp, upper_mask
+        _wire_scalar_map(met_tex, stage.metallic_factor, grp.inputs["Metallic"], -380)
+        _wire_scalar_map(rgh_tex, stage.roughness_factor, grp.inputs["Roughness"], -660)
+        _wire_scalar_map(coat_tex, stage.clearcoat_factor, grp.inputs["Coat Weight"], -940)
+        grp.inputs["Coat Roughness"].default_value = stage.clearcoat_roughness_factor
+
+        if nrm_tex is not None:
+            nmap = nodes.new("ShaderNodeNormalMap")
+            nmap.space = "TANGENT"
+            nmap.uv_map = "UV1" if stage.normal_uv == 1 else "UV0"
+            nmap.location = (-200 + x_off, -1220 + y_base)
+            links.new(nrm_tex.outputs["Color"], nmap.inputs["Color"])
+            links.new(nmap.outputs["Normal"], grp.inputs["Normal"])
+            grp.inputs["Has Normal"].default_value = 1.0
+        else:
+            grp.inputs["Has Normal"].default_value = 0.0
+
+        if stage_idx == 0:
+            _wire_layer0_alpha(grp.inputs["Alpha"])
+        else:
+            grp.inputs["Alpha"].default_value = 1.0
+
+        _wire_emissive(em_tex, grp.inputs["Emissive"])
+        return grp.outputs["BSDF"], upper_mask
+
+    # ---- Path B & C: Slim direct Principled BSDF (instanceDiffuse or plain PBR) ----
+    bsdf = nodes.new("ShaderNodeBsdfPrincipled")
+    bsdf.label = f"Layer {stage_idx}"
+    bsdf.location = (100 + x_off, y_base)
+
+    # Base color chain: only create Mix nodes that are actually needed
+    bc_fac = stage.base_color_factor[:3]
+    has_nonunit_fac = any(abs(c - 1.0) > 1e-4 for c in bc_fac)
+    cur_col_sock = None
+    cur_col_const = (bc_fac[0], bc_fac[1], bc_fac[2], 1.0)
+
+    if bc_tex is not None:
+        if has_nonunit_fac:
+            m = nodes.new("ShaderNodeMix")
+            m.data_type = "RGBA"
+            m.blend_type = "MULTIPLY"
+            m.inputs["Factor"].default_value = 1.0
+            m.location = (-240 + x_off, 460 + y_base)
+            links.new(bc_tex.outputs["Color"], m.inputs["A"])
+            m.inputs["B"].default_value = cur_col_const
+            cur_col_sock = m.outputs["Result"]
+        else:
+            cur_col_sock = bc_tex.outputs["Color"]
+
+    if stage.instance_diffuse:
+        def _obj_attr(attr_name: str, y: float):
+            a = nodes.new("ShaderNodeAttribute")
+            a.attribute_type = "OBJECT"
+            a.attribute_name = attr_name
+            a.location = (-260 + x_off, y + y_base)
+            return a
+
+        p1_col = _obj_attr("beamng_paint1", 320)
+        if cur_col_sock is not None:
+            pm = nodes.new("ShaderNodeMix")
+            pm.data_type = "RGBA"
+            pm.blend_type = "MULTIPLY"
+            pm.inputs["Factor"].default_value = 1.0
+            pm.location = (-80 + x_off, 400 + y_base)
+            links.new(cur_col_sock, pm.inputs["A"])
+            links.new(p1_col.outputs["Color"], pm.inputs["B"])
+            cur_col_sock = pm.outputs["Result"]
+        elif has_nonunit_fac:
+            pm = nodes.new("ShaderNodeMix")
+            pm.data_type = "RGBA"
+            pm.blend_type = "MULTIPLY"
+            pm.inputs["Factor"].default_value = 1.0
+            pm.location = (-80 + x_off, 400 + y_base)
+            pm.inputs["A"].default_value = cur_col_const
+            links.new(p1_col.outputs["Color"], pm.inputs["B"])
+            cur_col_sock = pm.outputs["Result"]
+        else:
+            cur_col_sock = p1_col.outputs["Color"]
+
+        links.new(_obj_attr("beamng_paint1_metallic", -380).outputs["Fac"], bsdf.inputs["Metallic"])
+        links.new(_obj_attr("beamng_paint1_roughness", -540).outputs["Fac"], bsdf.inputs["Roughness"])
+        links.new(_obj_attr("beamng_paint1_clearcoat", -700).outputs["Fac"], bsdf.inputs["Coat Weight"])
+        links.new(_obj_attr("beamng_paint1_clearcoat_roughness", -860).outputs["Fac"], bsdf.inputs["Coat Roughness"])
+    else:
+        _wire_scalar_map(met_tex, stage.metallic_factor, bsdf.inputs["Metallic"], -380)
+        _wire_scalar_map(rgh_tex, stage.roughness_factor, bsdf.inputs["Roughness"], -660)
+        _wire_scalar_map(coat_tex, stage.clearcoat_factor, bsdf.inputs["Coat Weight"], -940)
+        if coat_tex is not None or stage.clearcoat_factor > 1e-4:
+            bsdf.inputs["Coat Roughness"].default_value = stage.clearcoat_roughness_factor
+
+    if ao_tex is not None:
+        ao_m = nodes.new("ShaderNodeMix")
+        ao_m.data_type = "RGBA"
+        ao_m.blend_type = "MULTIPLY"
+        ao_m.inputs["Factor"].default_value = 1.0
+        ao_m.location = (-40 + x_off, 260 + y_base)
+        if cur_col_sock is not None:
+            links.new(cur_col_sock, ao_m.inputs["A"])
+        else:
+            ao_m.inputs["A"].default_value = cur_col_const
+        links.new(ao_tex.outputs["Color"], ao_m.inputs["B"])
+        links.new(ao_m.outputs["Result"], bsdf.inputs["Base Color"])
+    elif cur_col_sock is not None:
+        links.new(cur_col_sock, bsdf.inputs["Base Color"])
+    else:
+        bsdf.inputs["Base Color"].default_value = cur_col_const
+
+    if nrm_tex is not None:
+        nmap = nodes.new("ShaderNodeNormalMap")
+        nmap.space = "TANGENT"
+        nmap.uv_map = "UV1" if stage.normal_uv == 1 else "UV0"
+        nmap.location = (-200 + x_off, -1220 + y_base)
+        links.new(nrm_tex.outputs["Color"], nmap.inputs["Color"])
+        links.new(nmap.outputs["Normal"], bsdf.inputs["Normal"])
+
+    if stage_idx == 0:
+        _wire_layer0_alpha(bsdf.inputs["Alpha"])
+    else:
+        bsdf.inputs["Alpha"].default_value = 1.0
+
+    if _wire_emissive(em_tex, bsdf.inputs["Emission Color"]):
+        bsdf.inputs["Emission Strength"].default_value = 1.0
+    else:
+        bsdf.inputs["Emission Strength"].default_value = 0.0
+
+    return bsdf.outputs["BSDF"], upper_mask
 
 
 def apply_beamng_pbr_material(
@@ -508,7 +616,7 @@ def apply_beamng_pbr_material(
     *,
     dae_dir: str = "",
 ) -> None:
-    """Build a multi-layer 'BeamNG v1.5 Material' node tree on ``ma`` from ``spec``."""
+    """Build a multi-layer BeamNG v1.5 PBR node tree on ``ma`` from ``spec``."""
     if not spec.stages:
         return
 
@@ -521,13 +629,12 @@ def apply_beamng_pbr_material(
     links = ntree.links
     uv_nodes: dict[int, object] = {}
 
-    grp0, _ = _build_stage_group(
+    cur_shader, _ = _build_stage_shader(
         ntree, spec.stages[0], spec, ma, mat_ctx, stage_idx=0, dae_dir=dae_dir, uv_nodes=uv_nodes
     )
-    cur_shader = grp0.outputs["BSDF"]
 
     for idx in range(1, len(spec.stages)):
-        grp_i, mask = _build_stage_group(
+        layer_shader, mask = _build_stage_shader(
             ntree, spec.stages[idx], spec, ma, mat_ctx, stage_idx=idx, dae_dir=dae_dir, uv_nodes=uv_nodes
         )
         mix = nodes.new("ShaderNodeMixShader")
@@ -540,7 +647,7 @@ def apply_beamng_pbr_material(
         else:
             mix.inputs["Fac"].default_value = 1.0
         links.new(cur_shader, mix.inputs[1])
-        links.new(grp_i.outputs["BSDF"], mix.inputs[2])
+        links.new(layer_shader, mix.inputs[2])
         cur_shader = mix.outputs["Shader"]
 
     out_node = nodes.new("ShaderNodeOutputMaterial")

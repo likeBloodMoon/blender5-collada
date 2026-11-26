@@ -156,6 +156,11 @@ def _build_fixtures(workdir: str) -> str:
                     "off": "covet_glass",
                     "on": "covet_glass_on_intense",
                 },
+                "covet_abs": {
+                    "simpleFunction": {"absActive": 1},
+                    "off": "invis",
+                    "on": "covet_lights_on",
+                },
             },
         },
         # Unused part in same vehicle zip: defines covet_taillight & covet_signal_L,
@@ -220,7 +225,7 @@ def _build_fixtures(workdir: str) -> str:
     })
     dae = _make_dae(
         "lights_mesh",
-        ["covet_lowbeam", "covet_headlightglass", "covet_taillight", "covet_signal_L", "common_beacon"],
+        ["covet_lowbeam", "covet_headlightglass", "covet_taillight", "covet_signal_L", "common_beacon", "covet_abs"],
     )
 
     with zipfile.ZipFile(car_zip, "w", compression=zipfile.ZIP_DEFLATED) as zf:
@@ -286,23 +291,29 @@ def inspect_mat(name):
     bc_img = None
     has_group = False
     has_bsdf = False
+    alpha_val = None
     for n in ma.node_tree.nodes:
         if n.type == "GROUP":
             has_group = True
             sock = n.inputs.get("Base Color")
             if sock and sock.is_linked and sock.links[0].from_node.type == "TEX_IMAGE":
                 bc_img = sock.links[0].from_node.image.name
+            if "Alpha" in n.inputs:
+                alpha_val = float(n.inputs["Alpha"].default_value)
         elif n.type == "BSDF_PRINCIPLED":
             has_bsdf = True
             sock = n.inputs.get("Base Color")
             if sock and sock.is_linked and sock.links[0].from_node.type == "TEX_IMAGE":
                 bc_img = sock.links[0].from_node.image.name
+            if "Alpha" in n.inputs:
+                alpha_val = float(n.inputs["Alpha"].default_value)
     return {
         "name": ma.name,
         "glow_source": ma.get("beamng_glow_source"),
         "bc_img": bc_img,
         "has_group": has_group,
         "has_bsdf": has_bsdf,
+        "alpha": alpha_val,
         "render_method": getattr(ma, "surface_render_method", None),
         "backface_culling": ma.use_backface_culling,
     }
@@ -329,6 +340,8 @@ def run_case(mat_mode, lights_mode):
         "taillight": inspect_mat("covet_taillight"),
         "signal": inspect_mat("covet_signal_L"),
         "beacon": inspect_mat("common_beacon"),
+        "invis_lamp": inspect_mat("covet_abs"),
+        "warnings": warns,
     }
 
 
@@ -381,10 +394,13 @@ def main() -> int:
             ("beacon", "beacon_off_mat", "beacon_off.png"),
         ):
             m = po[key]
-            if m is None or m["glow_source"] != exp_src or m["bc_img"] != exp_img or not m["has_group"]:
+            if m is None or m["glow_source"] != exp_src or m["bc_img"] != exp_img:
                 failures.append(f"pbr_off[{key}] mismatch: expected src={exp_src} img={exp_img}, got {m}")
         if po["glass"]["render_method"] != "BLENDED" or po["glass"]["backface_culling"] is not False:
             failures.append(f"pbr_off[glass] should be BLENDED + no backface culling: {po['glass']}")
+        inv_po = po["invis_lamp"]
+        if inv_po is None or inv_po["glow_source"] != "invis" or inv_po["alpha"] != 0.0 or inv_po["render_method"] != "BLENDED":
+            failures.append(f"pbr_off[invis_lamp] should be fully transparent (alpha=0, BLENDED): {inv_po}")
 
         # 2. PBR + Lights ON
         pon = data["pbr_on"]
@@ -394,9 +410,10 @@ def main() -> int:
             ("lowbeam", "covet_lights_on", "covet_lights_on_d.png"),
             ("glass", "covet_glass_on_intense", "covet_glass_on_d.png"),
             ("beacon", "beacon_on_mat", "beacon_on.png"),
+            ("invis_lamp", "covet_lights_on", "covet_lights_on_d.png"),
         ):
             m = pon[key]
-            if m is None or m["glow_source"] != exp_src or m["bc_img"] != exp_img or not m["has_group"]:
+            if m is None or m["glow_source"] != exp_src or m["bc_img"] != exp_img:
                 failures.append(f"pbr_on[{key}] mismatch: expected src={exp_src} img={exp_img}, got {m}")
 
         # 3. BASE_COLOR + Lights OFF
@@ -413,6 +430,9 @@ def main() -> int:
             m = bc[key]
             if m is None or m["glow_source"] != exp_src or m["bc_img"] != exp_img or m["has_group"] or not m["has_bsdf"]:
                 failures.append(f"bc_off[{key}] mismatch: expected src={exp_src} img={exp_img} BSDF, got {m}")
+        inv_bc = bc["invis_lamp"]
+        if inv_bc is None or inv_bc["glow_source"] != "invis" or inv_bc["alpha"] != 0.0 or inv_bc["render_method"] != "BLENDED":
+            failures.append(f"bc_off[invis_lamp] should be fully transparent (alpha=0, BLENDED): {inv_bc}")
 
         if failures:
             print("FAIL test_beamng_glowmap:")

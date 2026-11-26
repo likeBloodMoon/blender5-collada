@@ -21,7 +21,9 @@ from ..beamng_materials import (
     parse_beamng_material_specs,
     parse_beamng_materials_json,
 )
-from .pbr_nodes import apply_beamng_pbr_material
+from .lenient_json import parse as loads_lenient_json
+from .pbr_nodes import apply_beamng_invis_material, apply_beamng_pbr_material
+from .resolve import PcPaint, parse_paint_library
 from .source import VehicleSource, _is_ignored_entry, _norm_path
 
 if TYPE_CHECKING:
@@ -69,6 +71,7 @@ class BeamngMaterialContext:
         self.mat_maps: dict[str, list[str]] = {}
         self.mat_specs: dict[str, BeamngMaterialSpec] = {}
         self.glow_map: dict[str, dict[str, str]] = {}
+        self.paint_library: dict[str, PcPaint] = {}
         self.warnings: list[str] = []
         self.missing_textures: list[str] = []
         self._missing_seen: set[str] = set()
@@ -92,6 +95,7 @@ class BeamngMaterialContext:
     def __enter__(self) -> BeamngMaterialContext:
         self._load_all_materials_json()
         self._load_glow_maps()
+        self._load_paint_libraries()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -244,11 +248,69 @@ class BeamngMaterialContext:
                     return entry.get("off") or entry.get("on") or entry.get("on_intense")
         return None
 
+    def _load_paint_libraries(self) -> None:
+        """Load *.paintLibrary.json from common.zip / vehicles/common/ (and vehicle source if any)."""
+        lib: dict[str, PcPaint] = {}
+        # Scan common first, then vehicle (so vehicle overrides if both define a paint)
+        order = list(reversed(range(len(self.sources))))
+        for src_idx in order:
+            src = self.sources[src_idx]
+            entries = [
+                norm
+                for norm in sorted(src.entries.keys())
+                if not _is_ignored_entry(norm) and norm.lower().endswith(".paintlibrary.json")
+            ]
+            for norm in entries:
+                try:
+                    raw = self._read_entry_bytes(src_idx, src, norm)
+                    if not raw:
+                        continue
+                    doc = loads_lenient_json(raw.decode("utf-8", errors="replace"))
+                    lib.update(parse_paint_library(doc))
+                except Exception as exc:
+                    self.warnings.append(f"Could not parse paint library '{norm}': {exc}")
+        self.paint_library = lib
+
+    def resolve_default_paints(
+        self,
+        paint_names: tuple[str, str, str],
+        *,
+        vehicle_info_paints: dict | None = None,
+    ) -> list[PcPaint]:
+        """Resolve defaultPaintName1..3 via paint libraries (and vehicle info.json paints)."""
+        if not any(paint_names):
+            return []
+        pool: dict[str, PcPaint] = dict(self.paint_library)
+        if vehicle_info_paints:
+            pool.update(parse_paint_library(vehicle_info_paints))
+
+        resolved: list[PcPaint] = []
+        missing: list[str] = []
+        for nm in paint_names:
+            if not nm:
+                resolved.append(PcPaint())
+                continue
+            hit = pool.get(nm.strip().lower())
+            if hit is not None:
+                resolved.append(hit)
+            else:
+                resolved.append(PcPaint())
+                if nm not in missing:
+                    missing.append(nm)
+        if missing:
+            self.warnings.append(
+                f"Default paint(s) not found in paint library (using white): {', '.join(missing)}"
+            )
+        return resolved
+
     def apply_material(self, ma: Material, *names: str, dae_dir: str = "") -> bool:
-        """Apply full v1.5 PBR node tree if pbr_mode is enabled and a v1.5 spec exists."""
+        """Apply full v1.5 PBR node tree (or invisible lamp shader) if applicable."""
         glow_target = self.resolve_glow_target(*names)
         if glow_target is not None:
             ma["beamng_glow_source"] = glow_target
+            if glow_target.strip().lower() == "invis":
+                apply_beamng_invis_material(ma)
+                return True
         if not self.pbr_mode or not self.mat_specs:
             return False
         lookup_names = (glow_target, *names) if glow_target is not None else names
