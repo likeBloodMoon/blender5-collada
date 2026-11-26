@@ -1378,6 +1378,7 @@ class DocumentExporter:
             False if use_loop_tris else self.settings.triangulate,
             keep_normals=self.settings.keep_normals,
             keep_quads=self.settings.keep_quads,
+            eval_mode=self.settings.export_mesh_type,
         )
         try:
             self._write_mesh_xml(
@@ -1442,6 +1443,7 @@ class DocumentExporter:
             self.settings.triangulate,
             keep_normals=False,
             keep_quads=self.settings.keep_quads,
+            eval_mode=self.settings.export_mesh_type,
         )
         try:
             has_any_weights = any(len(v.groups) > 0 for v in mesh.vertices)

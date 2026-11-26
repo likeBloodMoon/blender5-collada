@@ -30,7 +30,7 @@ Products:
 
 **New, small**
 - [x] **Keep Quads** export option: triangulate n-gons only, keep quads; greyed out for `.cdae`.
-- [ ] Modifier evaluation mode on export (none / viewport / render).
+- [x] Modifier evaluation mode on export (none / viewport / render).
 - [ ] **BeamNG Check v1**: a pre-export linter and panel button. It flags:
   - missing materials
   - names that aren't snake_case, or duplicate names

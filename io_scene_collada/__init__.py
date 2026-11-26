@@ -977,6 +977,15 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         description="Apply modifiers before exporting",
         default=True,
     )
+    export_mesh_type_selection: EnumProperty(
+        name="Resolution",
+        description="Modifier resolution for export",
+        items=(
+            ("view", "Viewport", "Apply modifier's viewport settings"),
+            ("render", "Render", "Apply modifier's render settings"),
+        ),
+        default="view",
+    )
     keep_quads: BoolProperty(
         name="Keep Quads",
         description="Not available for .cdae (Torque3D requires triangles)",
@@ -1002,7 +1011,11 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         box.label(text="BeamNG .cdae [Experimental]", icon="EXPORT")
         col = box.column(align=False)
         col.prop(self, "use_selection")
-        col.prop(self, "apply_modifiers")
+        row = col.row(align=True)
+        row.prop(self, "apply_modifiers")
+        sub_res = row.column(align=False)
+        sub_res.active = self.apply_modifiers
+        sub_res.prop(self, "export_mesh_type_selection", text="")
         sub_kq = col.row(align=False)
         sub_kq.enabled = False
         sub_kq.prop(self, "keep_quads")
@@ -1020,6 +1033,7 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
             filepath=self.filepath,
             use_selection=self.use_selection,
             apply_modifiers=self.apply_modifiers,
+            export_mesh_type=self.export_mesh_type_selection,
             keep_normals=self.keep_normals,
             compress=self.compress and zstd_available(),
         )
