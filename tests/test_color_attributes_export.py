@@ -91,6 +91,26 @@ results = {
     "byte_point": run_case("byte_point", "BYTE_COLOR", "POINT", triangulate=False),
     "byte_corner": run_case("byte_corner", "BYTE_COLOR", "CORNER", triangulate=False),
 }
+
+# HDR FLOAT_COLOR round-trip (follow-up to #39): values > 1.0 must come back as FLOAT_COLOR exact within 1e-4
+bpy.ops.wm.read_homefile(use_empty=True)
+bpy.ops.mesh.primitive_cube_add()
+me_hdr = bpy.context.object.data
+ca_hdr = me_hdr.color_attributes.new("HDRColor", "FLOAT_COLOR", "CORNER")
+hdr_linear = [2.5, 0.21404114, 0.002, 1.0]
+for d in ca_hdr.data:
+    d.color = hdr_linear
+dae_hdr = os.path.join(workdir, "hdr_float_corner.dae")
+assert "FINISHED" in bpy.ops.wm.collada_export(filepath=dae_hdr, triangulate=False)
+bpy.ops.wm.read_homefile(use_empty=True)
+assert "FINISHED" in bpy.ops.wm.collada_import(filepath=dae_hdr)
+ob_hdr = next(o for o in bpy.data.objects if o.type == "MESH")
+imp_hdr = ob_hdr.data.color_attributes[0]
+results["hdr_float_corner"] = {
+    "data_type": imp_hdr.data_type,
+    "sample_linear": list(imp_hdr.data[0].color),
+}
+
 with open(out_json, "w", encoding="utf-8") as f:
     json.dump(results, f, indent=2)
 '''
@@ -120,6 +140,7 @@ def main() -> int:
         with open(out_json, encoding="utf-8") as f:
             res = json.load(f)
 
+        hdr_info = res.pop("hdr_float_corner")
         expected = [1.0, 0.5, 0.0, 1.0]
         failures: list[str] = []
         for label, info in res.items():
@@ -132,13 +153,22 @@ def main() -> int:
                 if diff > 0.01:
                     failures.append(f"{label}: sRGB mismatch {info['sample_srgb']} vs {expected} (diff={diff:.4f})")
 
+        expected_hdr = [2.5, 0.21404114, 0.002, 1.0]
+        if hdr_info["data_type"] != "FLOAT_COLOR":
+            failures.append(f"hdr_float_corner: expected FLOAT_COLOR, got {hdr_info['data_type']}")
+        hdr_diff = max(abs(a - b) for a, b in zip(hdr_info["sample_linear"], expected_hdr))
+        if hdr_diff > 1e-4:
+            failures.append(
+                f"hdr_float_corner: linear mismatch {hdr_info['sample_linear']} vs {expected_hdr} (diff={hdr_diff:.6f})"
+            )
+
         if failures:
             print("FAIL test_color_attributes_export:")
             for msg in failures:
                 print(f"  - {msg}")
             return 1
 
-        print("PASS test_color_attributes_export (all 5 #39 FLOAT/BYTE x POINT/CORNER cases passed)")
+        print(f"PASS test_color_attributes_export (all 5 #39 cases + HDR FLOAT_COLOR diff={hdr_diff:.2e})")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

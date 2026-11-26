@@ -843,7 +843,7 @@ class MeshMixin:
                     uv_layer = me.uv_layers.new(name=uv_name)
                     uv_layer.data.foreach_set("uv", uv_arr.ravel())
 
-            # Byte Color Attributes (foreach_set)
+            # Color Attributes (foreach_set): use FLOAT_COLOR (sRGB -> linear) when HDR values > 1.0 are present
             for cn in col_set_order:
                 c_arr = col_arrays.get(cn)
                 if c_arr is None:
@@ -851,8 +851,19 @@ class MeshMixin:
                 if len(c_arr) == cur_n_loops:
                     if not np.isfinite(c_arr).all():
                         c_arr = np.where(np.isfinite(c_arr), c_arr, np.float32(0.0))
-                    cattr = me.color_attributes.new(name=cn, type="BYTE_COLOR", domain="CORNER")
-                    cattr.data.foreach_set("color_srgb", c_arr.ravel())
+                    if cur_n_loops > 0 and float(c_arr.max()) > 1.0:
+                        lin = c_arr.astype(np.float32, copy=True)
+                        rgb = np.maximum(lin[:, :3], np.float32(0.0))
+                        lin[:, :3] = np.where(
+                            rgb <= 0.04045,
+                            rgb / 12.92,
+                            np.power((rgb + 0.055) / 1.055, 2.4),
+                        ).astype(np.float32, copy=False)
+                        cattr = me.color_attributes.new(name=cn, type="FLOAT_COLOR", domain="CORNER")
+                        cattr.data.foreach_set("color", lin.ravel())
+                    else:
+                        cattr = me.color_attributes.new(name=cn, type="BYTE_COLOR", domain="CORNER")
+                        cattr.data.foreach_set("color_srgb", c_arr.ravel())
 
             # Custom normals / Clean sharp edges from normals
             if all_loop_normals is not None and len(all_loop_normals) == cur_n_loops and len(all_loop_normals) > 0:
