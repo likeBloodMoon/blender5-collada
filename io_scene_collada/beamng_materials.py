@@ -7,7 +7,6 @@
 from __future__ import annotations
 
 import os
-from dataclasses import dataclass
 from typing import Any
 
 from .beamng.lenient_json import parse as loads_lenient_json
@@ -161,41 +160,109 @@ def lookup_material_color_maps(mat_index: dict[str, list[str]], *names: str) -> 
     return out
 
 
-@dataclass
 class BeamngMaterialSpec:
     """Parsed BeamNG v1.5 PBR material definition from Stages[0] of *.materials.json."""
 
-    name: str
-    is_v15: bool = False
-    base_color_map: str = ""
-    color_palette_map: str = ""
-    ambient_occlusion_map: str = ""
-    metallic_map: str = ""
-    roughness_map: str = ""
-    clearcoat_map: str = ""
-    normal_map: str = ""
-    opacity_map: str = ""
-    emissive_map: str = ""
-    base_color_uv: int = 0
-    color_palette_uv: int = 0
-    ambient_occlusion_uv: int = 0
-    metallic_uv: int = 0
-    roughness_uv: int = 0
-    clearcoat_uv: int = 0
-    normal_uv: int = 0
-    opacity_uv: int = 0
-    emissive_uv: int = 0
-    base_color_factor: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
-    metallic_factor: float = 0.0
-    roughness_factor: float = 0.5
-    clearcoat_factor: float = 0.0
-    clearcoat_roughness_factor: float = 0.05
-    opacity_factor: float = 1.0
-    has_opacity_factor: bool = False
-    emissive_factor: tuple[float, float, float] = (0.0, 0.0, 0.0)
-    instance_diffuse: bool = False
-    translucent: bool = False
-    double_sided: bool = False
+    __slots__ = (
+        "name",
+        "is_v15",
+        "base_color_map",
+        "color_palette_map",
+        "ambient_occlusion_map",
+        "metallic_map",
+        "roughness_map",
+        "clearcoat_map",
+        "normal_map",
+        "opacity_map",
+        "emissive_map",
+        "base_color_uv",
+        "color_palette_uv",
+        "ambient_occlusion_uv",
+        "metallic_uv",
+        "roughness_uv",
+        "clearcoat_uv",
+        "normal_uv",
+        "opacity_uv",
+        "emissive_uv",
+        "base_color_factor",
+        "metallic_factor",
+        "roughness_factor",
+        "clearcoat_factor",
+        "clearcoat_roughness_factor",
+        "opacity_factor",
+        "has_opacity_factor",
+        "emissive_factor",
+        "instance_diffuse",
+        "translucent",
+        "double_sided",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        is_v15: bool = False,
+        base_color_map: str = "",
+        color_palette_map: str = "",
+        ambient_occlusion_map: str = "",
+        metallic_map: str = "",
+        roughness_map: str = "",
+        clearcoat_map: str = "",
+        normal_map: str = "",
+        opacity_map: str = "",
+        emissive_map: str = "",
+        base_color_uv: int = 0,
+        color_palette_uv: int = 0,
+        ambient_occlusion_uv: int = 0,
+        metallic_uv: int = 0,
+        roughness_uv: int = 0,
+        clearcoat_uv: int = 0,
+        normal_uv: int = 0,
+        opacity_uv: int = 0,
+        emissive_uv: int = 0,
+        base_color_factor: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0),
+        metallic_factor: float = 0.0,
+        roughness_factor: float = 0.5,
+        clearcoat_factor: float = 0.0,
+        clearcoat_roughness_factor: float = 0.05,
+        opacity_factor: float = 1.0,
+        has_opacity_factor: bool = False,
+        emissive_factor: tuple[float, float, float] = (0.0, 0.0, 0.0),
+        instance_diffuse: bool = False,
+        translucent: bool = False,
+        double_sided: bool = False,
+    ) -> None:
+        self.name = name
+        self.is_v15 = is_v15
+        self.base_color_map = base_color_map
+        self.color_palette_map = color_palette_map
+        self.ambient_occlusion_map = ambient_occlusion_map
+        self.metallic_map = metallic_map
+        self.roughness_map = roughness_map
+        self.clearcoat_map = clearcoat_map
+        self.normal_map = normal_map
+        self.opacity_map = opacity_map
+        self.emissive_map = emissive_map
+        self.base_color_uv = base_color_uv
+        self.color_palette_uv = color_palette_uv
+        self.ambient_occlusion_uv = ambient_occlusion_uv
+        self.metallic_uv = metallic_uv
+        self.roughness_uv = roughness_uv
+        self.clearcoat_uv = clearcoat_uv
+        self.normal_uv = normal_uv
+        self.opacity_uv = opacity_uv
+        self.emissive_uv = emissive_uv
+        self.base_color_factor = base_color_factor
+        self.metallic_factor = metallic_factor
+        self.roughness_factor = roughness_factor
+        self.clearcoat_factor = clearcoat_factor
+        self.clearcoat_roughness_factor = clearcoat_roughness_factor
+        self.opacity_factor = opacity_factor
+        self.has_opacity_factor = has_opacity_factor
+        self.emissive_factor = emissive_factor
+        self.instance_diffuse = instance_diffuse
+        self.translucent = translucent
+        self.double_sided = double_sided
 
 
 def _first_map(d: dict[str, Any], *keys: str) -> tuple[str, int]:
