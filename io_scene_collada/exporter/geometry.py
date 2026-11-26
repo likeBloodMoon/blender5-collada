@@ -686,13 +686,60 @@ class GeometryMixin:
         self.sw.close_element()
         self.sw.close_element()
 
-    def _export_geometry_object(self, ob: Object) -> None:
+    def _has_active_modifiers(self, ob: Object) -> bool:
+        use_render = self.settings.export_mesh_type == "render"
+        for mod in ob.modifiers:
+            if mod.show_render if use_render else mod.show_viewport:
+                return True
+        return False
+
+    def _get_object_geometry_id(self, ob: Object) -> tuple[str, bool]:
+        """Return (geom_id, is_shared_inst) for ``ob`` (#43).
+
+        When ``apply_modifiers`` and ``use_object_instantiation`` are both enabled,
+        linked duplicates with active modifiers get their own geometry ID so they
+        do not overwrite or share an unmodified sibling's geometry.
+        """
+        cache: dict[int, tuple[str, bool]] | None = getattr(self, "_object_geom_ids", None)
+        if cache is None:
+            cache = {}
+            self._object_geom_ids = cache
+        ptr = ob.as_pointer()
+        cached = cache.get(ptr)
+        if cached is not None:
+            return cached
+
         use_inst = self.settings.use_object_instantiation
-        geom_id = get_geometry_id(self.id_map, ob, use_inst)
-        if use_inst and geom_id in self.exported_geometries:
+        if not use_inst or not ob.data:
+            res = (get_geometry_id(self.id_map, ob, False), False)
+            cache[ptr] = res
+            return res
+
+        if self.settings.apply_modifiers:
+            mesh_counts: dict[int, int] | None = getattr(self, "_mesh_user_counts", None)
+            if mesh_counts is None:
+                mesh_counts = {}
+                for o in self.export_set:
+                    if o.type == "MESH" and o.data is not None:
+                        mp = o.data.as_pointer()
+                        mesh_counts[mp] = mesh_counts.get(mp, 0) + 1
+                self._mesh_user_counts = mesh_counts
+            if mesh_counts.get(ob.data.as_pointer(), 0) > 1 and self._has_active_modifiers(ob):
+                base = f"{ob.name}_mod-mesh" if ob.name == ob.data.name else f"{ob.name}-mesh"
+                res = (self.id_map.translate_id(base), False)
+                cache[ptr] = res
+                return res
+
+        res = (get_geometry_id(self.id_map, ob, True), True)
+        cache[ptr] = res
+        return res
+
+    def _export_geometry_object(self, ob: Object) -> None:
+        geom_id, is_shared_inst = self._get_object_geometry_id(ob)
+        if is_shared_inst and geom_id in self.exported_geometries:
             return
         self.exported_geometries.add(geom_id)
-        geom_name = encode_xml(ob.data.name if use_inst else ob.name)
+        geom_name = encode_xml(ob.data.name if is_shared_inst else ob.name)
 
         use_loop_tris = self.settings.triangulate and not self.settings.keep_quads and self.settings.keep_normals
         has_morphs = (

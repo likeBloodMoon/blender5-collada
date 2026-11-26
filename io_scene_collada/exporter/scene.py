@@ -21,7 +21,6 @@ from ..collada_utils import (
     focallength_to_fov,
     get_assigned_armature,
     get_camera_id,
-    get_geometry_id,
     get_light_id,
     get_material_id,
     is_export_root,
@@ -344,7 +343,7 @@ class SceneMixin:
                 if armature_exported:
                     inst_ctrl_created = self._write_instance_controller(ob, ob_arm)
                 if not inst_ctrl_created:
-                    geom_id = get_geometry_id(self.id_map, ob, self.settings.use_object_instantiation)
+                    geom_id, _ = self._get_object_geometry_id(ob)
                     self.sw.open_element("instance_geometry", [("url", f"#{geom_id}"), ("name", node_name)])
                     self._write_material_bindings(ob)
                     self.sw.close_element()

@@ -118,10 +118,9 @@ class RigMixin:
         if not has_any_weights:
             return
 
-        use_inst = self.settings.use_object_instantiation
         controller_id = get_controller_id(self.id_map, ob_arm, ob)
         controller_name = encode_xml(ob_arm.name)
-        geom_id = get_geometry_id(self.id_map, ob, use_inst)
+        geom_id, _ = self._get_object_geometry_id(ob)
 
         self.sw.open_element("controller", [("id", controller_id), ("name", controller_name)])
         self.sw.open_element("skin", [("source", f"#{geom_id}")])
@@ -258,10 +257,9 @@ class RigMixin:
         kbs = [kb for kb in list(key.key_blocks)[1:] if kb.name not in skipped]
         if not kbs:
             return
-        use_inst = self.settings.use_object_instantiation
         controller_id = get_morph_controller_id(self.id_map, ob)
         controller_name = encode_xml(f"{ob.name}-morph")
-        geom_id = get_geometry_id(self.id_map, ob, use_inst)
+        geom_id, _ = self._get_object_geometry_id(ob)
 
         self.sw.open_element("controller", [("id", controller_id), ("name", controller_name)])
         self.sw.open_element("morph", [("source", f"#{geom_id}"), ("method", "NORMALIZED")])
