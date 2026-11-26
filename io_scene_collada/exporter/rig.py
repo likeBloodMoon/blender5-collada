@@ -254,7 +254,8 @@ class RigMixin:
 
     def _export_morph_controller(self, ob: Object) -> None:
         key = ob.data.shape_keys
-        kbs = list(key.key_blocks)[1:]
+        skipped = getattr(self, "_skipped_morph_keys", {}).get(ob.name, ())
+        kbs = [kb for kb in list(key.key_blocks)[1:] if kb.name not in skipped]
         if not kbs:
             return
         use_inst = self.settings.use_object_instantiation

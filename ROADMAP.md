@@ -86,7 +86,7 @@ In this order. The module each fix lands in is in brackets.
 - [x] #39 Float and point-domain color attributes not exported `[exporter/geometry]`: the Blender 5 default color type, so it hits the most users. Convert point → corner and float → byte (or write floats); warn when a layer is skipped.
 - [x] #38 Skin bound to the wrong armature when two rigs share bone names `[importer/rig]`: resolve skin SIDs under that controller's `<skeleton>` instead of the global `joint_elem_by_sid`.
 - [x] #42 Duplicate bone IDs after name sanitizing `[exporter/rig]`: make sanitized IDs and SIDs unique, restore original names from `name` on import.
-- [ ] #40 + #41 Shape keys `[exporter/rig]`, one PR: evaluate each key separately when modifiers change the vertex count (#40), and write `Basis + (key − relative_key)` for chained keys (#41).
+- [x] #40 + #41 Shape keys `[exporter/rig]`, one PR: evaluate each key separately when modifiers change the vertex count (#40), and write `Basis + (key − relative_key)` for chained keys (#41).
 - [ ] #26 Doubled triangles `[importer/mesh]`: the Double-sided faces option (Keep / Merge / Remove back faces), with exact duplicates defined as identical winding, material, UVs and corner normals, as specified in the issue. Consistent between `.dae` and `.cdae` import.
 - [ ] #43 Linked duplicates with different modifiers share one mesh `[exporter/geometry]`: only share a geometry when the evaluated meshes are the same.
 - [ ] #47 `.cdae` skinned mesh exported in the current pose with no warning `[cdae/exporter]`: warn; export the rest pose by default.

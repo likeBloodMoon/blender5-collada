@@ -175,6 +175,7 @@ jobs:
           python3 tests/test_color_attributes_export.py
           python3 tests/test_two_rigs_import.py
           python3 tests/test_bone_id_uniqueness.py
+          python3 tests/test_shapekeys_export.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
           python3 tests/test_beamng_materials_51.py

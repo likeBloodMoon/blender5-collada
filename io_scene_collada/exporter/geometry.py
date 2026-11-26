@@ -657,6 +657,112 @@ class GeometryMixin:
         )
         if needs_free:
             self._temp_meshes.append(mesh)
+
+        eval_morphs_via_depsgraph = (
+            has_morphs
+            and self.settings.apply_modifiers
+            and len(mesh.vertices) != len(ob.data.shape_keys.key_blocks[0].data)
+        )
+
+        if eval_morphs_via_depsgraph:
+            # Modifiers changed the vertex count (e.g. Subsurf, Array, Mirror):
+            # evaluate the basis (all keys at 0) and each shape key separately
+            # with modifiers applied, then restore original shape-key state.
+            key = ob.data.shape_keys
+            key_blocks = key.key_blocks
+            saved_state = [
+                (k, k.value, k.mute, k.slider_min, k.slider_max)
+                for k in key_blocks[1:]
+            ]
+            saved_show_only = ob.show_only_shape_key
+            saved_active_idx = ob.active_shape_key_index
+            any_active = (
+                any(val != 0.0 and not mute for _, val, mute, _, _ in saved_state)
+                or (saved_show_only and saved_active_idx != 0)
+            )
+            try:
+                ob.show_only_shape_key = False
+                for k, _, _, smin, smax in saved_state:
+                    if smin > 0.0:
+                        k.slider_min = 0.0
+                    if smax < 1.0:
+                        k.slider_max = 1.0
+                if any_active:
+                    for k, _, _, _, _ in saved_state:
+                        k.value = 0.0
+                    self.depsgraph.update()
+                    mesh, base_needs_free = get_mesh_copy(
+                        self.depsgraph,
+                        ob,
+                        self.settings.apply_modifiers,
+                        False if use_loop_tris else self.settings.triangulate,
+                        keep_normals=self.settings.keep_normals,
+                        keep_quads=self.settings.keep_quads,
+                        eval_mode=self.settings.export_mesh_type,
+                        readonly=True,
+                    )
+                    if base_needs_free:
+                        self._temp_meshes.append(mesh)
+
+                self._write_mesh_xml(
+                    ob,
+                    mesh,
+                    geom_id,
+                    geom_name,
+                    include_loose_edges=True,
+                    use_loop_triangles=use_loop_tris,
+                )
+
+                for kb in key_blocks[1:]:
+                    morph_id = f"{get_geometry_id(self.id_map, ob, False)}_morph_{self.id_map.translate_id(kb.name)}"
+                    if morph_id in self.exported_geometries:
+                        continue
+                    for k, _, _, _, _ in saved_state:
+                        k.value = 0.0
+                    kb.mute = False
+                    kb.value = 1.0
+                    self.depsgraph.update()
+                    morph_mesh, morph_needs_free = get_mesh_copy(
+                        self.depsgraph,
+                        ob,
+                        self.settings.apply_modifiers,
+                        False if use_loop_tris else self.settings.triangulate,
+                        keep_normals=self.settings.keep_normals,
+                        keep_quads=self.settings.keep_quads,
+                        eval_mode=self.settings.export_mesh_type,
+                        readonly=True,
+                    )
+                    if morph_needs_free:
+                        self._temp_meshes.append(morph_mesh)
+                    if len(morph_mesh.vertices) != len(mesh.vertices):
+                        self.warnings.append(
+                            f"Mesh '{ob.name}': skipped shape key '{kb.name}' "
+                            f"(evaluated vertex count {len(morph_mesh.vertices)} differs from basis {len(mesh.vertices)})"
+                        )
+                        if not hasattr(self, "_skipped_morph_keys"):
+                            self._skipped_morph_keys: dict[str, set[str]] = {}
+                        self._skipped_morph_keys.setdefault(ob.name, set()).add(kb.name)
+                        continue
+                    self.exported_geometries.add(morph_id)
+                    self._write_mesh_xml(
+                        ob,
+                        morph_mesh,
+                        morph_id,
+                        encode_xml(kb.name),
+                        include_loose_edges=False,
+                        use_loop_triangles=use_loop_tris,
+                    )
+            finally:
+                for k, val, mute, smin, smax in saved_state:
+                    k.slider_min = smin
+                    k.slider_max = smax
+                    k.value = val
+                    k.mute = mute
+                ob.show_only_shape_key = saved_show_only
+                ob.active_shape_key_index = saved_active_idx
+                self.depsgraph.update()
+            return
+
         self._write_mesh_xml(
             ob,
             mesh,
@@ -668,15 +774,23 @@ class GeometryMixin:
 
         # Shape keys
         if has_morphs:
-            key_blocks = ob.data.shape_keys.key_blocks
+            key = ob.data.shape_keys
+            key_blocks = key.key_blocks
+            basis = key_blocks[0]
+            use_relative = bool(key.use_relative)
             for kb in key_blocks[1:]:
                 morph_id = f"{get_geometry_id(self.id_map, ob, False)}_morph_{self.id_map.translate_id(kb.name)}"
                 if morph_id in self.exported_geometries:
                     continue
                 self.exported_geometries.add(morph_id)
                 if len(kb.data) == len(mesh.vertices):
-                    for vi, kd in enumerate(kb.data):
-                        mesh.vertices[vi].co = kd.co
+                    rel = kb.relative_key if use_relative else None
+                    if rel is not None and rel != basis and len(rel.data) == len(basis.data):
+                        for vi in range(len(basis.data)):
+                            mesh.vertices[vi].co = basis.data[vi].co + (kb.data[vi].co - rel.data[vi].co)
+                    else:
+                        for vi, kd in enumerate(kb.data):
+                            mesh.vertices[vi].co = kd.co
                     mesh.update()
                 self._write_mesh_xml(
                     ob,
