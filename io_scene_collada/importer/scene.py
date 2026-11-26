@@ -463,14 +463,24 @@ class SceneMixin:
         for ic in inst_ctrls:
             cid = _uri_to_local_id(ic.attrib.get("url"))
             gid = ""
-            if cid in self.skins_by_id:
-                gid = self.skins_by_id[cid].geometry_id
+            skin_obj = self.skins_by_id.get(cid)
+            if skin_obj is not None:
+                gid = skin_obj.geometry_id
+                skel_ids = [
+                    _uri_to_local_id(sk.text.strip())
+                    for sk in _find_children(ic, "skeleton")
+                    if sk.text and sk.text.strip()
+                ]
+                if skel_ids:
+                    skin_obj.skeleton_ids = skel_ids
             elif cid in self.morphs_by_id:
                 gid = self.morphs_by_id[cid].geometry_id
             me = self.meshes_by_id.get(gid)
             if me is not None:
                 ob = self._add_object_to_scene(node_name, me)
                 self._apply_material_bindings(ic, ob, gid)
+                if skin_obj is not None:
+                    skin_obj.ob_mesh = ob
                 self.object_by_geom_id[gid] = ob
                 self.imported_mesh_objects.append(ob)
                 self.imported_objects_by_node_name.setdefault(node_name, []).append(ob)

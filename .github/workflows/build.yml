@@ -173,6 +173,7 @@ jobs:
           python3 tests/test_export_scaling.py
           python3 tests/test_bone_parented_import.py
           python3 tests/test_color_attributes_export.py
+          python3 tests/test_two_rigs_import.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
           python3 tests/test_beamng_materials_51.py

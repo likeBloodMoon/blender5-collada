@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import math
 import xml.etree.ElementTree as ET
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import TYPE_CHECKING
 
 import bpy
@@ -43,6 +43,8 @@ class _SkinData:
     vcounts: list[int]
     v_pairs: list[tuple[int, float]]  # flattened (joint_idx, weight)
     ob_arm: Object | None = None
+    ob_mesh: Object | None = None
+    skeleton_ids: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -275,11 +277,42 @@ class RigMixin:
         for rj, ob_arm in self.root_joint_nodes:
             index_joints(rj, ob_arm, None)
 
-        # Build lookup from joint_elem -> inv_bind_mat across all skins
+        # Scoped SID/ID lookup per <skeleton> root so two rigs with the same bone names don't collide (#38)
+        skel_joint_maps: dict[str, dict[str, ET.Element]] = {}
+
+        def _get_skel_map(skel_id: str) -> dict[str, ET.Element]:
+            cached = skel_joint_maps.get(skel_id)
+            if cached is not None:
+                return cached
+            m: dict[str, ET.Element] = {}
+            root_el = self.joint_elem_by_id.get(skel_id) or self.node_elem_by_id.get(skel_id)
+            if root_el is not None:
+                stack = [root_el]
+                while stack:
+                    el = stack.pop()
+                    if el.attrib.get("type", "NODE").upper() == "JOINT":
+                        sid = el.attrib.get("sid", "")
+                        eid = el.attrib.get("id", "")
+                        if sid and sid not in m:
+                            m[sid] = el
+                        if eid and eid not in m:
+                            m[eid] = el
+                    stack.extend(_find_children(el, "node"))
+            skel_joint_maps[skel_id] = m
+            return m
+
+        def _resolve_skin_joint(skin_obj: _SkinData, jname: str) -> ET.Element | None:
+            for sk_id in skin_obj.skeleton_ids:
+                je_hit = _get_skel_map(sk_id).get(jname)
+                if je_hit is not None:
+                    return je_hit
+            return self.joint_elem_by_sid.get(jname) or self.joint_elem_by_id.get(jname)
+
+        # Map joint elements to their inverse bind matrices and skins to their armatures
         joint_inv_bind: dict[int, Matrix] = {}
         for skin in self.skins_by_id.values():
             for jname, ibm in zip(skin.joint_names, skin.inv_bind_matrices):
-                je = self.joint_elem_by_sid.get(jname) or self.joint_elem_by_id.get(jname)
+                je = _resolve_skin_joint(skin, jname)
                 if je is not None:
                     joint_inv_bind[id(je)] = ibm
                     if skin.ob_arm is None:
@@ -324,7 +357,7 @@ class RigMixin:
 
         # Link skins to meshes
         for skin in self.skins_by_id.values():
-            ob_mesh = self.object_by_geom_id.get(skin.geometry_id)
+            ob_mesh = skin.ob_mesh or self.object_by_geom_id.get(skin.geometry_id)
             ob_arm = skin.ob_arm
             if ob_mesh is None or ob_arm is None:
                 continue
@@ -340,7 +373,7 @@ class RigMixin:
             # Create vertex groups
             vgroups = []
             for jname in skin.joint_names:
-                je = self.joint_elem_by_sid.get(jname) or self.joint_elem_by_id.get(jname)
+                je = _resolve_skin_joint(skin, jname)
                 bname = (je.attrib.get("name") or je.attrib.get("id") or jname) if je is not None else jname
                 vgroups.append(ob_mesh.vertex_groups.new(name=bname))
 
