@@ -1,0 +1,2 @@
+# Pure code-move commits from the 1.5.5 importer/exporter split (no behaviour changes).
+# Use with: git config blame.ignoreRevsFile .git-blame-ignore-revs
