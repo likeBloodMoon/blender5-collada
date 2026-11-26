@@ -78,7 +78,10 @@ Everything here is a few lines in the current files, and all of it is either a 4
 
 1.5.5 ships the code split and #51 together (plain `.dae`/`.zip` behaviour stays identical to 1.5.4).
 
-## 1.5.6 — Correctness (inherited bugs, fixed in the new modules)
+## 1.5.6 — BeamNG PBR materials (#52)
+- [ ] #52 BeamNG PBR materials, palette paints, AO, see-through glass: full v1.5 PBR material import (`Stages[0..3]` node graph, palette-mask paints/liveries, ambient occlusion, and see-through glass).
+
+## 1.5.7 — Correctness (inherited bugs, fixed in the new modules)
 In this order. The module each fix lands in is in brackets.
 - [ ] #39 Float and point-domain color attributes not exported `[exporter/geometry]`: the Blender 5 default color type, so it hits the most users. Convert point → corner and float → byte (or write floats); warn when a layer is skipped.
 - [ ] #38 Skin bound to the wrong armature when two rigs share bone names `[importer/rig]`: resolve skin SIDs under that controller's `<skeleton>` instead of the global `joint_elem_by_sid`.
@@ -101,9 +104,9 @@ In this order. The module each fix lands in is in brackets.
 - [ ] #49 Keep UV map names, shape key slider ranges, relative keys, roughness and `use_deform` through a `.dae` round trip (Blender `<extra>` profile).
 - [ ] #21 Troubleshooting docs: "spiky" meshes, VY node errors, parts at the origin.
 
-## Distribution (after 1.5.6, when the add-on has no known regressions)
+## Distribution (after 1.5.7, when the add-on has no known regressions)
 - [ ] #23 List the pure-Python build on **extensions.blender.org**. Blenux's C++ build was rejected there.
-- [ ] #24 Benchmark page: import/export time and file size against Blenux's published numbers, using the 1.5.6 profiling results.
+- [ ] #24 Benchmark page: import/export time and file size against Blenux's published numbers, using the 1.5.7 profiling results.
 
 ---
 
@@ -198,18 +201,19 @@ Every open issue, and where it lands.
 | #34 | Bone-parented objects dropped on import | 1.5.4 (or first after split) |
 | #14 | ruff + mypy | 1.5.5 |
 | #51 | BeamNG import leaves parts untextured | 1.5.5 |
-| #39 | Float/point colors not exported | 1.5.6 |
-| #38 | Two rigs with same bone names | 1.5.6 |
-| #42 | Duplicate bone IDs | 1.5.6 |
-| #40, #41 | Shape keys (modifiers, chained keys) | 1.5.6 |
-| #26 | Doubled triangles option | 1.5.6 |
-| #43 | Linked duplicates with different modifiers | 1.5.6 |
-| #47 | `.cdae` skinned pose warning | 1.5.6 |
-| #48 | Same axis Forward/Up | 1.5.6 |
-| #50 | `.cdae` Collection Exporter | 1.5.6 |
-| #44 | Include all Actions | 1.5.6 |
-| #45 | Geometry Nodes instances | 1.5.6 |
-| #6 | CI on Blender daily builds | 1.5.6 |
+| #52 | BeamNG PBR materials, palette paints, AO, see-through glass | 1.5.6 |
+| #39 | Float/point colors not exported | 1.5.7 |
+| #38 | Two rigs with same bone names | 1.5.7 |
+| #42 | Duplicate bone IDs | 1.5.7 |
+| #40, #41 | Shape keys (modifiers, chained keys) | 1.5.7 |
+| #26 | Doubled triangles option | 1.5.7 |
+| #43 | Linked duplicates with different modifiers | 1.5.7 |
+| #47 | `.cdae` skinned pose warning | 1.5.7 |
+| #48 | Same axis Forward/Up | 1.5.7 |
+| #50 | `.cdae` Collection Exporter | 1.5.7 |
+| #44 | Include all Actions | 1.5.7 |
+| #45 | Geometry Nodes instances | 1.5.7 |
+| #6 | CI on Blender daily builds | 1.5.7 |
 | #15 | Settings page | Alongside 1.6 |
 | #20 | BeamNG Check v1 | Alongside 1.6 |
 | #13 | Read Blenux `.cdae` | Alongside 1.6 |
