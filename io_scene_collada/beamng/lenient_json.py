@@ -66,8 +66,11 @@ _ESCAPES: dict[str, str] = {
 }
 
 
+MAX_NESTING_DEPTH = 256
+
+
 class _Parser:
-    __slots__ = ("s", "i", "n")
+    __slots__ = ("s", "i", "n", "depth")
 
     def __init__(self, text: str) -> None:
         if text.startswith("\ufeff"):
@@ -75,6 +78,7 @@ class _Parser:
         self.s = text
         self.i = 0
         self.n = len(text)
+        self.depth = 0
 
     def _error(self, msg: str, pos: int | None = None) -> None:
         p = self.i if pos is None else pos
@@ -182,43 +186,55 @@ class _Parser:
 
     def _parse_object(self) -> dict[str, Any]:
         open_pos = self.i
+        self.depth += 1
+        if self.depth > MAX_NESTING_DEPTH:
+            self._error(f"maximum nesting depth exceeded ({MAX_NESTING_DEPTH})", open_pos)
         self.i += 1
         obj: dict[str, Any] = {}
-        while True:
-            self._skip_ws_and_commas()
-            if self.i >= self.n:
-                self._error("unterminated object", open_pos)
-            c = self.s[self.i]
-            if c == "}":
-                self.i += 1
-                return obj
-            if c == '"':
-                key = self._parse_string()
-            else:
-                m = _WORD_RE.match(self.s, self.i) or _NUM_RE.match(self.s, self.i)
-                if not m:
-                    self._error(f"invalid object key {c!r}")
-                key = m.group(0)
-                self.i = m.end()
-            self._skip_ws_and_commas()
-            if self.i < self.n and self.s[self.i] in ":=":
-                self.i += 1
-            else:
-                self._error(f"missing ':' after key {key!r}")
-            obj[key] = self.parse_value()
+        try:
+            while True:
+                self._skip_ws_and_commas()
+                if self.i >= self.n:
+                    self._error("unterminated object", open_pos)
+                c = self.s[self.i]
+                if c == "}":
+                    self.i += 1
+                    return obj
+                if c == '"':
+                    key = self._parse_string()
+                else:
+                    m = _WORD_RE.match(self.s, self.i) or _NUM_RE.match(self.s, self.i)
+                    if not m:
+                        self._error(f"invalid object key {c!r}")
+                    key = m.group(0)
+                    self.i = m.end()
+                self._skip_ws_and_commas()
+                if self.i < self.n and self.s[self.i] in ":=":
+                    self.i += 1
+                else:
+                    self._error(f"missing ':' after key {key!r}")
+                obj[key] = self.parse_value()
+        finally:
+            self.depth -= 1
 
     def _parse_array(self) -> list[Any]:
         open_pos = self.i
+        self.depth += 1
+        if self.depth > MAX_NESTING_DEPTH:
+            self._error(f"maximum nesting depth exceeded ({MAX_NESTING_DEPTH})", open_pos)
         self.i += 1
         arr: list[Any] = []
-        while True:
-            self._skip_ws_and_commas()
-            if self.i >= self.n:
-                self._error("unterminated array", open_pos)
-            if self.s[self.i] == "]":
-                self.i += 1
-                return arr
-            arr.append(self.parse_value())
+        try:
+            while True:
+                self._skip_ws_and_commas()
+                if self.i >= self.n:
+                    self._error("unterminated array", open_pos)
+                if self.s[self.i] == "]":
+                    self.i += 1
+                    return arr
+                arr.append(self.parse_value())
+        finally:
+            self.depth -= 1
 
 
 def parse(text: str) -> Any:

@@ -172,6 +172,7 @@ jobs:
           python3 tests/test_export_scaling.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
+          python3 tests/test_jbeam_expr_limits.py
 
       - name: Verify byte-identical output with COLLADA_NATIVE=0 fallback
         env:

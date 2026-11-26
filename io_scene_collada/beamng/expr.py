@@ -379,10 +379,13 @@ class _ExprParser:
             fn = fn_map[func_name]
             a0 = args[0]
             if isinstance(a0, _RandomCandidates):
-                vals = []
+                vals: list[Any] = []
+                seen_u: set[tuple[type, Any]] = set()
                 for v in a0.values:
                     rv = fn(v)
-                    if rv not in vals:
+                    key = (type(rv), rv)
+                    if key not in seen_u:
+                        seen_u.add(key)
                         vals.append(rv)
                 return _RandomCandidates(tuple(vals))  # type: ignore[arg-type]
             return fn(a0)
@@ -408,15 +411,23 @@ class _ExprParser:
 
         raise ExprError(f"Unsupported function {func_name!r}")
 
+    MAX_TOTAL_CANDIDATES = 256
+
     @staticmethod
     def _combine_candidates(left: Any, right: Any, fn) -> _RandomCandidates:
         lvals = left.values if isinstance(left, _RandomCandidates) else (left,)
         rvals = right.values if isinstance(right, _RandomCandidates) else (right,)
         out: list[Any] = []
+        seen: set[tuple[type, Any]] = set()
+        limit = _ExprParser.MAX_TOTAL_CANDIDATES
         for a in lvals:
             for b in rvals:
                 v = fn(a, b)
-                if v not in out:
+                key = (type(v), v)
+                if key not in seen:
+                    if len(out) >= limit:
+                        raise ExprError(f"random() candidate count exceeds limit ({limit})")
+                    seen.add(key)
                     out.append(v)
         return _RandomCandidates(tuple(out))  # type: ignore[arg-type]
 
@@ -445,7 +456,7 @@ def eval_mesh_expr(
     body = _strip_expr_prefix(expr_str)
     try:
         val = _ExprParser(body, vars_dict, components_dict).parse()
-    except (ExprError, TypeError, ValueError, ZeroDivisionError) as exc:
+    except (ExprError, TypeError, ValueError, ZeroDivisionError, RecursionError) as exc:
         lits = [lit for lit in extract_string_literals(expr_str) if lit in known_meshes]
         return lits, True, [f"Could not evaluate mesh expression {expr_str!r} ({exc}); using literal candidates"]
 
@@ -497,7 +508,7 @@ def eval_modifier_expr(
             if isinstance(res, (int, float)) and not isinstance(res, bool) and math.isfinite(float(res)):
                 return float(res), None
             return None, f"Modifier expression {val!r} evaluated to non-number {res!r}"
-        except (ExprError, TypeError, ValueError, ZeroDivisionError) as exc:
+        except (ExprError, TypeError, ValueError, ZeroDivisionError, RecursionError) as exc:
             return None, f"Could not evaluate modifier expression {val!r}: {exc}"
     if s.startswith("$"):
         v = vars_dict.get(s)
