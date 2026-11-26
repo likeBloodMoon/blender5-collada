@@ -62,17 +62,23 @@ _TRANSLATE_NAME_MAP = bytes([
 
 
 class GlobalIdMap:
-    """Exact port of global_id_map and translate_id() from collada_internal.cpp."""
+    """Port of global_id_map and translate_id() with collision-free IDs across clean and sanitized names (#42)."""
 
     def __init__(self) -> None:
-        self._map: dict[str, list[str]] = {}
+        self._assigned: dict[str, str] = {}
+        self._used_ids: set[str] = set()
 
     def clear(self) -> None:
-        self._map.clear()
+        self._assigned.clear()
+        self._used_ids.clear()
 
     def translate_id(self, name: str) -> str:
         if not name:
             return name
+        cached = self._assigned.get(name)
+        if cached is not None:
+            return cached
+
         raw = name.encode("utf-8")
         out = bytearray(len(raw))
         out[0] = _TRANSLATE_START_NAME_MAP[raw[0]]
@@ -80,28 +86,16 @@ class GlobalIdMap:
             out[i] = _TRANSLATE_NAME_MAP[raw[i]]
         id_translated = out.decode("utf-8", errors="surrogateescape")
 
-        if id_translated != name:
-            bucket = self._map.get(id_translated)
-            if bucket is not None:
-                found = False
-                idx = 0
-                for idx, existing in enumerate(bucket):  # noqa: B007
-                    if name == existing:
-                        found = True
-                        break
-                convert = False
-                if found:
-                    if idx > 0:
-                        convert = True
-                else:
-                    idx = len(bucket)
-                    convert = True
-                    bucket.append(name)
-                if convert:
-                    id_translated += str(idx + 1)
-            else:
-                self._map[id_translated] = [name]
-        return id_translated
+        cand = id_translated
+        if cand in self._used_ids:
+            suffix = 2
+            while f"{id_translated}{suffix}" in self._used_ids:
+                suffix += 1
+            cand = f"{id_translated}{suffix}"
+
+        self._assigned[name] = cand
+        self._used_ids.add(cand)
+        return cand
 
 
 def get_geometry_id(id_map: GlobalIdMap, ob: Object, use_instantiation: bool = True) -> str:
