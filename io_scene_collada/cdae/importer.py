@@ -406,6 +406,7 @@ class CdaeImporter:
         self.imported_mesh_objects: list = []
         self.imported_objects_by_node_name: dict[str, list] = {}
         self.root_objects: list = []
+        self._beamng_mat_ctx = None
 
     def import_document(self) -> bool:
         try:
@@ -461,7 +462,9 @@ class CdaeImporter:
         # Optionally read sibling/parent main.materials.json for loose .cdae files on disk
         cdae_dir = os.path.dirname(os.path.abspath(self.settings.filepath)) if self.settings.filepath else ""
         beamng_mat_maps: dict[str, list[str]] = {}
-        if cdae_dir:
+        if self._beamng_mat_ctx is not None:
+            beamng_mat_maps = self._beamng_mat_ctx.mat_maps
+        elif cdae_dir:
             mat_candidates = [os.path.join(cdae_dir, "main.materials.json")]
             parent_dir = os.path.dirname(cdae_dir)
             if parent_dir and parent_dir != cdae_dir:
@@ -506,9 +509,17 @@ class CdaeImporter:
         # Create/reuse materials by name
         materials: list = []
         for mat in shape.materials:
-            ma = bpy.data.materials.get(mat.name)
-            if ma is None:
+            if self._beamng_mat_ctx is not None:
+                ma = self._beamng_mat_ctx.get_reusable_material(mat.name)
+                if ma is not None:
+                    materials.append(ma)
+                    continue
                 ma = bpy.data.materials.new(name=mat.name)
+                self._beamng_mat_ctx.register_material(mat.name, ma)
+            else:
+                ma = bpy.data.materials.get(mat.name)
+                if ma is None:
+                    ma = bpy.data.materials.new(name=mat.name)
             if beamng_mat_maps:
                 refs = lookup_material_color_maps(beamng_mat_maps, mat.name)
                 if refs:
@@ -521,14 +532,22 @@ class CdaeImporter:
                     bc_sock = shader_node.inputs.get("Base Color") if shader_node is not None else None
                     if bc_sock is None or not bc_sock.is_linked:
                         ima = None
-                        for ref in refs:
-                            fp = _resolve_disk_tex(ref)
-                            if fp is not None:
-                                try:
-                                    ima = bpy.data.images.load(fp, check_existing=True)
+                        if self._beamng_mat_ctx is not None:
+                            for ref in refs:
+                                ima = self._beamng_mat_ctx.load_texture(ref)
+                                if ima is not None:
                                     break
-                                except Exception:
-                                    ima = None
+                            if ima is None:
+                                self._beamng_mat_ctx.record_missing_textures(refs)
+                        else:
+                            for ref in refs:
+                                fp = _resolve_disk_tex(ref)
+                                if fp is not None:
+                                    try:
+                                        ima = bpy.data.images.load(fp, check_existing=True)
+                                        break
+                                    except Exception:
+                                        ima = None
                         if ima is not None:
                             if ntree is None:
                                 ma.use_nodes = True

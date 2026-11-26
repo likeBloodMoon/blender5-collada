@@ -80,6 +80,7 @@ class DocumentImporter(ArchiveMixin, MaterialsMixin, MeshMixin, RigMixin, Animat
         self._archive_images_by_entry: dict[str, object] = {}
         self._archive_bytes_read: int = 0
         self._beamng_mat_maps: dict[str, list[str]] = {}
+        self._beamng_mat_ctx = None
         self.errors: list[str] = []
         self.warnings: list[str] = []
 
@@ -132,7 +133,7 @@ class DocumentImporter(ArchiveMixin, MaterialsMixin, MeshMixin, RigMixin, Animat
             self._archive_basename = os.path.basename(self.settings.filepath)
             self._archive_images_by_entry = {}
             self._archive_bytes_read = 0
-            self._beamng_mat_maps = {}
+            self._beamng_mat_maps = self._beamng_mat_ctx.mat_maps if self._beamng_mat_ctx is not None else {}
             base_collection = self.target_collection
             try:
                 with zipfile.ZipFile(self.settings.filepath, "r") as zf:
@@ -144,7 +145,8 @@ class DocumentImporter(ArchiveMixin, MaterialsMixin, MeshMixin, RigMixin, Animat
                             f"No .dae file found inside archive: {self._archive_basename}"
                         )
                         return False
-                    self._load_archive_materials_json(zf)
+                    if self._beamng_mat_ctx is None:
+                        self._load_archive_materials_json(zf)
 
                     if self.settings.archive_entry_filter is not None:
                         want_ci = {_norm_archive_path(p).lower() for p in self.settings.archive_entry_filter}
@@ -298,8 +300,11 @@ class DocumentImporter(ArchiveMixin, MaterialsMixin, MeshMixin, RigMixin, Animat
             return False
 
     def _import_dae_file(self, dae_path: str) -> bool:
-        self._beamng_mat_maps = {}
-        self._load_disk_materials_json(self.dae_dir)
+        if self._beamng_mat_ctx is not None:
+            self._beamng_mat_maps = self._beamng_mat_ctx.mat_maps
+        else:
+            self._beamng_mat_maps = {}
+            self._load_disk_materials_json(self.dae_dir)
         try:
             tree = _parse_xml_safe(dae_path)
         except Exception as e:

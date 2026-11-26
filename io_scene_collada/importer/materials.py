@@ -73,6 +73,11 @@ class MaterialsMixin:
             if init_from is None or not init_from.text:
                 continue
             raw_ref = init_from.text.strip()
+            if self._beamng_mat_ctx is not None:
+                ima = self._beamng_mat_ctx.load_texture(raw_ref, dae_dir=self._archive_dae_dir)
+                if ima is not None:
+                    self.images_by_id[img_id] = ima
+                    continue
             if self._archive_zf is not None:
                 ima = self._load_archive_image(raw_ref)
                 if ima is not None:
@@ -101,7 +106,14 @@ class MaterialsMixin:
             if self._allowed_mat_ids is not None and mat_id not in self._allowed_mat_ids:
                 continue
             mat_name = mat_elem.attrib.get("name") or mat_id
+            if self._beamng_mat_ctx is not None:
+                reused = self._beamng_mat_ctx.get_reusable_material(mat_name)
+                if reused is not None:
+                    self.materials_by_id[mat_id] = reused
+                    continue
             ma = bpy.data.materials.new(name=mat_name)
+            if self._beamng_mat_ctx is not None:
+                self._beamng_mat_ctx.register_material(mat_name, ma)
             self.materials_by_id[mat_id] = ma
 
             inst_eff = _find_child(mat_elem, "instance_effect")
@@ -133,20 +145,29 @@ class MaterialsMixin:
                 return
 
         ima = None
-        for ref in refs:
-            if self._archive_zf is not None:
-                ima = self._load_archive_image(ref, warn_missing=False)
-            else:
-                workpath = self._resolve_image_path(ref)
-                if workpath is not None:
-                    try:
-                        ima = bpy.data.images.load(workpath, check_existing=True)
-                    except Exception:
-                        ima = None
-            if ima is not None:
-                break
-        if ima is None:
-            return
+        if self._beamng_mat_ctx is not None:
+            for ref in refs:
+                ima = self._beamng_mat_ctx.load_texture(ref, dae_dir=self._archive_dae_dir)
+                if ima is not None:
+                    break
+            if ima is None:
+                self._beamng_mat_ctx.record_missing_textures(refs)
+                return
+        else:
+            for ref in refs:
+                if self._archive_zf is not None:
+                    ima = self._load_archive_image(ref, warn_missing=False)
+                else:
+                    workpath = self._resolve_image_path(ref)
+                    if workpath is not None:
+                        try:
+                            ima = bpy.data.images.load(workpath, check_existing=True)
+                        except Exception:
+                            ima = None
+                if ima is not None:
+                    break
+            if ima is None:
+                return
 
         if ntree is None:
             ma.use_nodes = True

@@ -24,6 +24,7 @@ from mathutils import Vector
 
 from ..cdae.importer import CdaeImporter, CdaeImportSettings
 from ..import_collada import DocumentImporter, ImportSettings
+from .materials_ctx import BeamngMaterialContext
 from .resolve import ResolvedConfig, ResolvedMesh, resolve_config
 from .source import (
     ConfigEntry,
@@ -220,6 +221,7 @@ def _import_single_model_from_source(
     base_cdae_settings: CdaeImportSettings | None,
     warnings_out: list[str],
     errors_out: list[str],
+    beamng_mat_ctx: BeamngMaterialContext | None = None,
 ) -> tuple[bool, list, dict[str, list], list]:
     """Import one .dae or .cdae model from ``src`` into ``target_coll``.
 
@@ -262,6 +264,7 @@ def _import_single_model_from_source(
             )
         imp = DocumentImporter(context, s)
         imp.target_collection = target_coll
+        imp._beamng_mat_ctx = beamng_mat_ctx
         ok = imp.import_document()
         warnings_out.extend(imp.warnings)
         errors_out.extend(imp.errors)
@@ -293,6 +296,7 @@ def _import_single_model_from_source(
     )
     cimp = CdaeImporter(context, cs)
     cimp.target_collection = target_coll
+    cimp._beamng_mat_ctx = beamng_mat_ctx
     ok = cimp.import_document()
     warnings_out.extend(cimp.warnings)
     errors_out.extend(cimp.errors)
@@ -414,40 +418,51 @@ def execute_beamng_import(
             st = os.path.splitext(m.path.rsplit("/", 1)[-1])[0].lower()
             stem_counts[st] = stem_counts.get(st, 0) + 1
 
+        common_src_m1: VehicleSource | None = None
+        if use_common and src.common_path:
+            common_src_m1 = load_vehicle_source(src.common_path, index_dae_nodes=False)
+
         groups: list[tuple[list, list]] = []
         total_meshes = 0
         any_ok = False
-        for m in selected:
-            if len(selected) > 1:
-                stem = os.path.splitext(m.path.rsplit("/", 1)[-1])[0] or "Model"
-                if stem_counts.get(stem.lower(), 0) > 1 and "/" in m.path:
-                    parent_seg = m.path.rsplit("/", 2)[-2]
-                    cname = f"{parent_seg}_{stem}"
+        with BeamngMaterialContext(src, common_src_m1) as mat_ctx:
+            for m in selected:
+                if len(selected) > 1:
+                    stem = os.path.splitext(m.path.rsplit("/", 1)[-1])[0] or "Model"
+                    if stem_counts.get(stem.lower(), 0) > 1 and "/" in m.path:
+                        parent_seg = m.path.rsplit("/", 2)[-2]
+                        cname = f"{parent_seg}_{stem}"
+                    else:
+                        cname = stem
+                    target = bpy.data.collections.new(cname)
+                    active_coll.children.link(target)
                 else:
-                    cname = stem
-                target = bpy.data.collections.new(cname)
-                active_coll.children.link(target)
-            else:
-                target = active_coll
+                    target = active_coll
 
-            ok, mesh_obs, _by_node, roots = _import_single_model_from_source(
-                context,
-                src,
-                m.path,
-                target,
-                cdae_mode=cdae_mode,
-                node_filter=None,
-                base_dae_settings=base_dae_settings,
-                base_cdae_settings=base_cdae_settings,
-                warnings_out=warnings,
-                errors_out=errors,
-            )
-            if ok:
-                any_ok = True
-                total_meshes += len(mesh_obs)
-                for ob in mesh_obs:
-                    ob["beamng_source"] = f"{src_bname}:{m.path}"
-                groups.append((roots, mesh_obs))
+                ok, mesh_obs, _by_node, roots = _import_single_model_from_source(
+                    context,
+                    src,
+                    m.path,
+                    target,
+                    cdae_mode=cdae_mode,
+                    node_filter=None,
+                    base_dae_settings=base_dae_settings,
+                    base_cdae_settings=base_cdae_settings,
+                    warnings_out=warnings,
+                    errors_out=errors,
+                    beamng_mat_ctx=mat_ctx,
+                )
+                if ok:
+                    any_ok = True
+                    total_meshes += len(mesh_obs)
+                    for ob in mesh_obs:
+                        ob["beamng_source"] = f"{src_bname}:{m.path}"
+                    groups.append((roots, mesh_obs))
+
+            warnings.extend(mat_ctx.warnings)
+            miss_warn = mat_ctx.format_missing_textures_warning()
+            if miss_warn:
+                warnings.append(miss_warn)
 
         if spread_out and len(groups) > 1:
             _spread_model_groups(context, groups)
@@ -571,100 +586,108 @@ def execute_beamng_import(
     imported_common_names: set[str] = set()
     groups_for_spread: list[tuple[list, list]] = []
 
-    for m in own_models_to_import:
-        if beamng_parts_mode == "CONFIG":
-            want_here = own_file_map.get(m.path, set()) - imported_own_names
-            if not want_here:
-                continue
-            nf: set[str] | None = want_here
-        else:
-            nf = None
-        model_stem = os.path.splitext(m.path.rsplit("/", 1)[-1])[0] or veh_name
-        model_coll = _ensure_subcollection(root_coll, model_stem, sub_cache)
+    with BeamngMaterialContext(src, common_src) as mat_ctx:
+        for m in own_models_to_import:
+            if beamng_parts_mode == "CONFIG":
+                want_here = own_file_map.get(m.path, set()) - imported_own_names
+                if not want_here:
+                    continue
+                nf: set[str] | None = want_here
+            else:
+                nf = None
+            model_stem = os.path.splitext(m.path.rsplit("/", 1)[-1])[0] or veh_name
+            model_coll = _ensure_subcollection(root_coll, model_stem, sub_cache)
 
-        ok, mesh_obs, by_node, roots = _import_single_model_from_source(
-            context,
-            src,
-            m.path,
-            model_coll,
-            cdae_mode=cdae_mode,
-            node_filter=nf,
-            base_dae_settings=base_dae_settings,
-            base_cdae_settings=base_cdae_settings,
-            warnings_out=warnings,
-            errors_out=errors,
-        )
-        if not ok:
-            continue
-        groups_for_spread.append((roots, mesh_obs))
-
-        for node_nm, obs in by_node.items():
-            rm = mesh_meta.get(node_nm)
-            src_tag = f"{src_bname}:{m.path}"
-            for ob in obs:
-                if rm is not None and rm.source_category == "own":
-                    imported_own_names.add(node_nm)
-                    _tag_object(ob, rm, src_tag)
-                    if rm.is_alternative:
-                        _move_object_to_collection(ob, _get_alternatives_coll())
-                    elif rm.needs_placement:
-                        _move_object_to_collection(ob, _get_needs_placement_coll())
-                elif beamng_parts_mode == "CONFIG_PLUS_HIDDEN":
-                    slot_info = part_slot_lookup.get(node_nm)
-                    if slot_info is not None:
-                        p_nm, s_desc = slot_info
-                        _tag_object(ob, None, src_tag, fallback_part=p_nm)
-                        _move_object_to_collection(ob, _get_alt_slot_coll(s_desc))
-                    else:
-                        _tag_object(ob, None, src_tag, fallback_part="")
-                        _move_object_to_collection(ob, _get_unreferenced_coll())
-                else:
-                    _tag_object(ob, rm, src_tag)
-
-        # Remove empty model sub-collection if every mesh moved into Needs placement / Alternatives
-        if len(model_coll.objects) == 0 and len(model_coll.children) == 0:
-            root_coll.children.unlink(model_coll)
-            bpy.data.collections.remove(model_coll)
-            sub_cache.pop(model_stem, None)
-
-    # Import common.zip meshes referenced by the config (Phase 1 -> Needs placement / Alternatives)
-    if common_src is not None and (com_primary or com_alt_expr):
-        com_file_map = (
-            common_src.cdae_files_for_meshes(com_primary | com_alt_expr)
-            if cdae_mode
-            else common_src.dae_files_for_meshes(com_primary | com_alt_expr)
-        )
-        com_bname = os.path.basename(common_src.path)
-        for com_entry in sorted(com_file_map.keys()):
-            want_here = com_file_map[com_entry] - imported_common_names
-            if not want_here:
-                continue
-            np_coll = _get_needs_placement_coll()
             ok, mesh_obs, by_node, roots = _import_single_model_from_source(
                 context,
-                common_src,
-                com_entry,
-                np_coll,
+                src,
+                m.path,
+                model_coll,
                 cdae_mode=cdae_mode,
-                node_filter=want_here,
+                node_filter=nf,
                 base_dae_settings=base_dae_settings,
                 base_cdae_settings=base_cdae_settings,
                 warnings_out=warnings,
                 errors_out=errors,
+                beamng_mat_ctx=mat_ctx,
             )
             if not ok:
                 continue
+            groups_for_spread.append((roots, mesh_obs))
+
             for node_nm, obs in by_node.items():
                 rm = mesh_meta.get(node_nm)
-                src_tag = f"{com_bname}:{com_entry}"
-                if rm is not None:
-                    imported_common_names.add(node_nm)
+                src_tag = f"{src_bname}:{m.path}"
                 for ob in obs:
-                    _tag_object(ob, rm, src_tag)
-                    if rm is not None and rm.is_alternative:
-                        _move_object_to_collection(ob, _get_alternatives_coll())
+                    if rm is not None and rm.source_category == "own":
+                        imported_own_names.add(node_nm)
+                        _tag_object(ob, rm, src_tag)
+                        if rm.is_alternative:
+                            _move_object_to_collection(ob, _get_alternatives_coll())
+                        elif rm.needs_placement:
+                            _move_object_to_collection(ob, _get_needs_placement_coll())
+                    elif beamng_parts_mode == "CONFIG_PLUS_HIDDEN":
+                        slot_info = part_slot_lookup.get(node_nm)
+                        if slot_info is not None:
+                            p_nm, s_desc = slot_info
+                            _tag_object(ob, None, src_tag, fallback_part=p_nm)
+                            _move_object_to_collection(ob, _get_alt_slot_coll(s_desc))
+                        else:
+                            _tag_object(ob, None, src_tag, fallback_part="")
+                            _move_object_to_collection(ob, _get_unreferenced_coll())
                     else:
-                        _move_object_to_collection(ob, np_coll)
+                        _tag_object(ob, rm, src_tag)
+
+            # Remove empty model sub-collection if every mesh moved into Needs placement / Alternatives
+            if len(model_coll.objects) == 0 and len(model_coll.children) == 0:
+                root_coll.children.unlink(model_coll)
+                bpy.data.collections.remove(model_coll)
+                sub_cache.pop(model_stem, None)
+
+        # Import common.zip meshes referenced by the config (Phase 1 -> Needs placement / Alternatives)
+        if common_src is not None and (com_primary or com_alt_expr):
+            com_file_map = (
+                common_src.cdae_files_for_meshes(com_primary | com_alt_expr)
+                if cdae_mode
+                else common_src.dae_files_for_meshes(com_primary | com_alt_expr)
+            )
+            com_bname = os.path.basename(common_src.path)
+            for com_entry in sorted(com_file_map.keys()):
+                want_here = com_file_map[com_entry] - imported_common_names
+                if not want_here:
+                    continue
+                np_coll = _get_needs_placement_coll()
+                ok, mesh_obs, by_node, roots = _import_single_model_from_source(
+                    context,
+                    common_src,
+                    com_entry,
+                    np_coll,
+                    cdae_mode=cdae_mode,
+                    node_filter=want_here,
+                    base_dae_settings=base_dae_settings,
+                    base_cdae_settings=base_cdae_settings,
+                    warnings_out=warnings,
+                    errors_out=errors,
+                    beamng_mat_ctx=mat_ctx,
+                )
+                if not ok:
+                    continue
+                for node_nm, obs in by_node.items():
+                    rm = mesh_meta.get(node_nm)
+                    src_tag = f"{com_bname}:{com_entry}"
+                    if rm is not None:
+                        imported_common_names.add(node_nm)
+                    for ob in obs:
+                        _tag_object(ob, rm, src_tag)
+                        if rm is not None and rm.is_alternative:
+                            _move_object_to_collection(ob, _get_alternatives_coll())
+                        else:
+                            _move_object_to_collection(ob, np_coll)
+
+        warnings.extend(mat_ctx.warnings)
+        miss_warn = mat_ctx.format_missing_textures_warning()
+        if miss_warn:
+            warnings.append(miss_warn)
 
     if spread_out and len(groups_for_spread) > 1:
         _spread_model_groups(context, groups_for_spread)

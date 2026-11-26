@@ -74,8 +74,9 @@ Everything here is a few lines in the current files, and all of it is either a 4
 - [x] All suites green and parity export byte-identical on every PR.
 - [x] `docs/architecture.md`: each module, what it holds, and which Blender 4.5.1 C++ source it came from.
 - [x] #14 Broader ruff rules + mypy, now applied per module (`cdae/` first, then the new `importer/` and `exporter/`).
+- [x] #51 BeamNG vehicle import leaves parts untextured: shared material table from every `*.materials.json` in vehicle + `common.zip` (vehicle wins on clash), vehicle-then-`common.zip` texture lookup, per-import material reuse guarded by custom property, and one missing-texture summary warning per import.
 
-1.5.5 is an internal release: same behaviour as 1.5.4, so it can be tagged once the split is done, or folded into 1.5.6.
+1.5.5 ships the code split and #51 together (plain `.dae`/`.zip` behaviour stays identical to 1.5.4).
 
 ## 1.5.6 — Correctness (inherited bugs, fixed in the new modules)
 In this order. The module each fix lands in is in brackets.
@@ -196,6 +197,7 @@ Every open issue, and where it lands.
 | #46 | jbeam expressions can hang | 1.5.4 |
 | #34 | Bone-parented objects dropped on import | 1.5.4 (or first after split) |
 | #14 | ruff + mypy | 1.5.5 |
+| #51 | BeamNG import leaves parts untextured | 1.5.5 |
 | #39 | Float/point colors not exported | 1.5.6 |
 | #38 | Two rigs with same bone names | 1.5.6 |
 | #42 | Duplicate bone IDs | 1.5.6 |
