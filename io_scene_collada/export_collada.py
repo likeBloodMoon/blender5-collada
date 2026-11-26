@@ -44,7 +44,6 @@ from .collada_utils import (
     get_assigned_fcurves,
     get_bone_property_matrix,
     get_camera_id,
-    get_children_in_scene,
     get_controller_id,
     get_diffuse_image,
     get_effect_id,
@@ -117,6 +116,24 @@ def _dedup_float_rows(arr_2d):
     if (a == 0.0).any():
         a = a.copy()
         a[a == 0.0] = 0.0
+    if n <= 256:
+        if stride == 2:
+            keys = a.view(np.uint64).ravel().tolist()
+        else:
+            raw = a.tobytes()
+            rb = stride * 4
+            keys = [raw[off : off + rb] for off in range(0, n * rb, rb)]
+        seen: dict = {}
+        first_idx: list[int] = []
+        loop_idx = [0] * n
+        for i, k in enumerate(keys):
+            idx = seen.get(k)
+            if idx is None:
+                idx = len(first_idx)
+                seen[k] = idx
+                first_idx.append(i)
+            loop_idx[i] = idx
+        return np.ascontiguousarray(a[first_idx], dtype=np.float32), np.array(loop_idx, dtype=np.int32)
     if stride == 2:
         keys = a.view(np.uint64).ravel()
     else:
@@ -294,6 +311,8 @@ class DocumentExporter:
         self.key_image_map: dict[str, bpy.types.Image] = {}
         self.exported_geometries: set[str] = set()
         self.marked_ptrs: set[int] = set()
+        self._temp_meshes: list[bpy.types.Mesh] = []
+        self._children_by_parent_ptr: dict[int, list[Object]] = {}
 
     def export_current_scene(self) -> int:
         # Match io_collada.cc option normalization
@@ -320,36 +339,47 @@ class DocumentExporter:
             s.collection,
         )
         self.export_set_ptrs = {ob.as_pointer() for ob in self.export_set}
+        self._temp_meshes.clear()
+        self._children_by_parent_ptr.clear()
+        for ob in self.view_layer.objects:
+            par = ob.parent
+            if par is not None:
+                self._children_by_parent_ptr.setdefault(par.as_pointer(), []).append(ob)
 
-        self.sw.start_document()
-        self._export_asset()
-
-        if any(ob.type == "CAMERA" and ob.data for ob in self.export_set):
-            self._export_cameras()
-
-        if any(ob.type == "LIGHT" and ob.data for ob in self.export_set):
-            self._export_lights()
-
-        self._export_effects()
-        self._export_images()
-        self._export_materials()
-
-        if any(ob.type == "MESH" and ob.data for ob in self.export_set):
-            self._export_geometries()
-
-        if any(ob.type == "ARMATURE" and ob.data for ob in self.export_set) or s.include_shapekeys:
-            self._export_controllers()
-
-        orig_frame = self.scene.frame_current
-        orig_subframe = self.scene.frame_subframe
         try:
-            if s.include_animations:
-                self._export_animations()
+            self.sw.start_document()
+            self._export_asset()
 
-            self._export_visual_scene()
-            self._export_scene()
+            if any(ob.type == "CAMERA" and ob.data for ob in self.export_set):
+                self._export_cameras()
+
+            if any(ob.type == "LIGHT" and ob.data for ob in self.export_set):
+                self._export_lights()
+
+            self._export_effects()
+            self._export_images()
+            self._export_materials()
+
+            if any(ob.type == "MESH" and ob.data for ob in self.export_set):
+                self._export_geometries()
+
+            if any(ob.type == "ARMATURE" and ob.data for ob in self.export_set) or s.include_shapekeys:
+                self._export_controllers()
+
+            orig_frame = self.scene.frame_current
+            orig_subframe = self.scene.frame_subframe
+            try:
+                if s.include_animations:
+                    self._export_animations()
+
+                self._export_visual_scene()
+                self._export_scene()
+            finally:
+                self.scene.frame_set(orig_frame, subframe=orig_subframe)
         finally:
-            self.scene.frame_set(orig_frame, subframe=orig_subframe)
+            if self._temp_meshes:
+                bpy.data.batch_remove(self._temp_meshes)
+                self._temp_meshes.clear()
 
         self.sw.end_document()
         os.makedirs(os.path.dirname(os.path.abspath(self.settings.filepath)), exist_ok=True)
@@ -1373,6 +1403,11 @@ class DocumentExporter:
         geom_name = encode_xml(ob.data.name if use_inst else ob.name)
 
         use_loop_tris = self.settings.triangulate and not self.settings.keep_quads and self.settings.keep_normals
+        has_morphs = (
+            self.settings.include_shapekeys
+            and ob.data.shape_keys is not None
+            and len(ob.data.shape_keys.key_blocks) > 1
+        )
         mesh, needs_free = get_mesh_copy(
             self.depsgraph,
             ob,
@@ -1381,41 +1416,39 @@ class DocumentExporter:
             keep_normals=self.settings.keep_normals,
             keep_quads=self.settings.keep_quads,
             eval_mode=self.settings.export_mesh_type,
+            readonly=not has_morphs,
         )
-        try:
-            self._write_mesh_xml(
-                ob,
-                mesh,
-                geom_id,
-                geom_name,
-                include_loose_edges=True,
-                use_loop_triangles=use_loop_tris,
-            )
+        if needs_free:
+            self._temp_meshes.append(mesh)
+        self._write_mesh_xml(
+            ob,
+            mesh,
+            geom_id,
+            geom_name,
+            include_loose_edges=True,
+            use_loop_triangles=use_loop_tris,
+        )
 
-            # Shape keys
-            if self.settings.include_shapekeys and ob.data.shape_keys is not None:
-                key_blocks = ob.data.shape_keys.key_blocks
-                if len(key_blocks) > 1:
-                    for kb in key_blocks[1:]:
-                        morph_id = f"{get_geometry_id(self.id_map, ob, False)}_morph_{self.id_map.translate_id(kb.name)}"
-                        if morph_id in self.exported_geometries:
-                            continue
-                        self.exported_geometries.add(morph_id)
-                        if len(kb.data) == len(mesh.vertices):
-                            for vi, kd in enumerate(kb.data):
-                                mesh.vertices[vi].co = kd.co
-                            mesh.update()
-                        self._write_mesh_xml(
-                            ob,
-                            mesh,
-                            morph_id,
-                            encode_xml(kb.name),
-                            include_loose_edges=False,
-                            use_loop_triangles=use_loop_tris,
-                        )
-        finally:
-            if needs_free:
-                bpy.data.meshes.remove(mesh)
+        # Shape keys
+        if has_morphs:
+            key_blocks = ob.data.shape_keys.key_blocks
+            for kb in key_blocks[1:]:
+                morph_id = f"{get_geometry_id(self.id_map, ob, False)}_morph_{self.id_map.translate_id(kb.name)}"
+                if morph_id in self.exported_geometries:
+                    continue
+                self.exported_geometries.add(morph_id)
+                if len(kb.data) == len(mesh.vertices):
+                    for vi, kd in enumerate(kb.data):
+                        mesh.vertices[vi].co = kd.co
+                    mesh.update()
+                self._write_mesh_xml(
+                    ob,
+                    mesh,
+                    morph_id,
+                    encode_xml(kb.name),
+                    include_loose_edges=False,
+                    use_loop_triangles=use_loop_tris,
+                )
 
     # ------------------------------------------------------------------
     # <library_controllers>
@@ -1446,148 +1479,147 @@ class DocumentExporter:
             keep_normals=False,
             keep_quads=self.settings.keep_quads,
             eval_mode=self.settings.export_mesh_type,
+            readonly=True,
         )
-        try:
-            has_any_weights = any(len(v.groups) > 0 for v in mesh.vertices)
-            if not has_any_weights:
-                return
+        if needs_free:
+            self._temp_meshes.append(mesh)
+        has_any_weights = any(len(v.groups) > 0 for v in mesh.vertices)
+        if not has_any_weights:
+            return
 
-            use_inst = self.settings.use_object_instantiation
-            controller_id = get_controller_id(self.id_map, ob_arm, ob)
-            controller_name = encode_xml(ob_arm.name)
-            geom_id = get_geometry_id(self.id_map, ob, use_inst)
+        use_inst = self.settings.use_object_instantiation
+        controller_id = get_controller_id(self.id_map, ob_arm, ob)
+        controller_name = encode_xml(ob_arm.name)
+        geom_id = get_geometry_id(self.id_map, ob, use_inst)
 
-            self.sw.open_element("controller", [("id", controller_id), ("name", controller_name)])
-            self.sw.open_element("skin", [("source", f"#{geom_id}")])
+        self.sw.open_element("controller", [("id", controller_id), ("name", controller_name)])
+        self.sw.open_element("skin", [("source", f"#{geom_id}")])
 
-            # <bind_shape_matrix>
-            f_obmat = _get_object_local_matrix(ob)
-            if not self.settings.apply_global_orientation:
-                f_obmat = bc_add_global_transform_mat(f_obmat, self.settings.global_transform)
-            bvals = matrix_to_dae_flat(f_obmat, self.settings.limit_precision)
-            self.sw.open_element("bind_shape_matrix")
-            self.sw.append_values(fmt_float(v) for v in bvals)
-            self.sw.close_element()
+        # <bind_shape_matrix>
+        f_obmat = _get_object_local_matrix(ob)
+        if not self.settings.apply_global_orientation:
+            f_obmat = bc_add_global_transform_mat(f_obmat, self.settings.global_transform)
+        bvals = matrix_to_dae_flat(f_obmat, self.settings.limit_precision)
+        self.sw.open_element("bind_shape_matrix")
+        self.sw.append_values(fmt_float(v) for v in bvals)
+        self.sw.close_element()
 
-            # Map vertex groups -> bones
-            arm = ob_arm.data
-            bone_vgroups: list[tuple[int, Bone]] = []
-            joint_index_by_vg: list[int] = []
-            for vg in ob.vertex_groups:
-                bone = arm.bones.get(vg.name)
-                if bone is not None:
-                    joint_index_by_vg.append(len(bone_vgroups))
-                    bone_vgroups.append((vg.index, bone))
-                else:
-                    joint_index_by_vg.append(-1)
+        # Map vertex groups -> bones
+        arm = ob_arm.data
+        bone_vgroups: list[tuple[int, Bone]] = []
+        joint_index_by_vg: list[int] = []
+        for vg in ob.vertex_groups:
+            bone = arm.bones.get(vg.name)
+            if bone is not None:
+                joint_index_by_vg.append(len(bone_vgroups))
+                bone_vgroups.append((vg.index, bone))
+            else:
+                joint_index_by_vg.append(-1)
 
-            # 1. Joints Name_array source
-            joints_src_id = f"{controller_id}-joints"
-            joints_arr_id = f"{joints_src_id}-array"
-            self.sw.open_element("source", [("id", joints_src_id)])
-            self.sw.open_element("Name_array", [("id", joints_arr_id), ("count", fmt_int(len(bone_vgroups)))])
-            self.sw.append_values(get_joint_sid(self.id_map, b.name) for _, b in bone_vgroups)
-            self.sw.close_element()
-            self.sw.open_element("technique_common")
-            self.sw.open_element("accessor", [("source", f"#{joints_arr_id}"), ("count", fmt_int(len(bone_vgroups))), ("stride", "1")])
-            self.sw.write_element("param", None, [("name", "JOINT"), ("type", "name")])
-            self.sw.close_element()
-            self.sw.close_element()
-            self.sw.close_element()
+        # 1. Joints Name_array source
+        joints_src_id = f"{controller_id}-joints"
+        joints_arr_id = f"{joints_src_id}-array"
+        self.sw.open_element("source", [("id", joints_src_id)])
+        self.sw.open_element("Name_array", [("id", joints_arr_id), ("count", fmt_int(len(bone_vgroups)))])
+        self.sw.append_values(get_joint_sid(self.id_map, b.name) for _, b in bone_vgroups)
+        self.sw.close_element()
+        self.sw.open_element("technique_common")
+        self.sw.open_element("accessor", [("source", f"#{joints_arr_id}"), ("count", fmt_int(len(bone_vgroups))), ("stride", "1")])
+        self.sw.write_element("param", None, [("name", "JOINT"), ("type", "name")])
+        self.sw.close_element()
+        self.sw.close_element()
+        self.sw.close_element()
 
-            # 2. Inverse bind matrices source
-            bind_src_id = f"{controller_id}-bind_poses"
-            bind_arr_id = f"{bind_src_id}-array"
-            bind_vals: list[str] = []
-            arm_world = ob_arm.matrix_world
-            for _, bone in bone_vgroups:
-                bind_mat = get_bone_property_matrix(bone, "bind_mat")
-                has_bindmat = bind_mat is not None
-                if not has_bindmat:
-                    bind_mat = _create_restpose_mat(self.settings, bone, bone.matrix_local, True)
-                    if self.settings.open_sim:
-                        loc, _, _, scale = bc_decompose(bind_mat)
-                        bind_mat = Matrix.LocRotScale(loc, Euler((0.0, 0.0, 0.0), "XYZ"), scale)
+        # 2. Inverse bind matrices source
+        bind_src_id = f"{controller_id}-bind_poses"
+        bind_arr_id = f"{bind_src_id}-array"
+        bind_vals: list[str] = []
+        arm_world = ob_arm.matrix_world
+        for _, bone in bone_vgroups:
+            bind_mat = get_bone_property_matrix(bone, "bind_mat")
+            has_bindmat = bind_mat is not None
+            if not has_bindmat:
+                bind_mat = _create_restpose_mat(self.settings, bone, bone.matrix_local, True)
+                if self.settings.open_sim:
+                    loc, _, _, scale = bc_decompose(bind_mat)
+                    bind_mat = Matrix.LocRotScale(loc, Euler((0.0, 0.0, 0.0), "XYZ"), scale)
 
-                world = arm_world @ bind_mat
-                if not has_bindmat and self.settings.apply_global_orientation:
-                    world = bc_apply_global_transform_mat(world, self.settings.global_transform)
-                inv_world = world.inverted()
-                flat = matrix_to_dae_flat(inv_world, self.settings.limit_precision)
-                for fv in flat:
-                    bind_vals.append(fmt_f32(fv))
+            world = arm_world @ bind_mat
+            if not has_bindmat and self.settings.apply_global_orientation:
+                world = bc_apply_global_transform_mat(world, self.settings.global_transform)
+            inv_world = world.inverted()
+            flat = matrix_to_dae_flat(inv_world, self.settings.limit_precision)
+            for fv in flat:
+                bind_vals.append(fmt_f32(fv))
 
-            self._write_float_source(
-                bind_src_id,
-                bind_arr_id,
-                len(bone_vgroups),
-                16,
-                ("TRANSFORM",),
-                bind_vals,
-                param_type="float4x4",
-            )
+        self._write_float_source(
+            bind_src_id,
+            bind_arr_id,
+            len(bone_vgroups),
+            16,
+            ("TRANSFORM",),
+            bind_vals,
+            param_type="float4x4",
+        )
 
-            # 3. Vertex weights collection (normalized per vertex)
-            vcounts: list[int] = []
-            joints_out: list[int] = []
-            weights_out: list[float] = []
-            for v in mesh.vertices:
-                jw: dict[int, float] = {}
-                sumw = 0.0
-                for g in v.groups:
-                    idx = g.group
-                    if 0 <= idx < len(joint_index_by_vg):
-                        ji = joint_index_by_vg[idx]
-                        if ji != -1 and g.weight > 0.0:
-                            jw[ji] = jw.get(ji, 0.0) + g.weight
-                            sumw += g.weight
-                if sumw > 0.0:
-                    invsum = 1.0 / sumw
-                    vcounts.append(len(jw))
-                    for ji in sorted(jw.keys()):
-                        joints_out.append(ji)
-                        weights_out.append(invsum * jw[ji])
-                else:
-                    vcounts.append(0)
+        # 3. Vertex weights collection (normalized per vertex)
+        vcounts: list[int] = []
+        joints_out: list[int] = []
+        weights_out: list[float] = []
+        for v in mesh.vertices:
+            jw: dict[int, float] = {}
+            sumw = 0.0
+            for g in v.groups:
+                idx = g.group
+                if 0 <= idx < len(joint_index_by_vg):
+                    ji = joint_index_by_vg[idx]
+                    if ji != -1 and g.weight > 0.0:
+                        jw[ji] = jw.get(ji, 0.0) + g.weight
+                        sumw += g.weight
+            if sumw > 0.0:
+                invsum = 1.0 / sumw
+                vcounts.append(len(jw))
+                for ji in sorted(jw.keys()):
+                    joints_out.append(ji)
+                    weights_out.append(invsum * jw[ji])
+            else:
+                vcounts.append(0)
 
-            weights_src_id = f"{controller_id}-weights"
-            weights_arr_id = f"{weights_src_id}-array"
-            self._write_float_source(
-                weights_src_id,
-                weights_arr_id,
-                len(weights_out),
-                1,
-                ("WEIGHT",),
-                [fmt_f32(w) for w in weights_out],
-            )
+        weights_src_id = f"{controller_id}-weights"
+        weights_arr_id = f"{weights_src_id}-array"
+        self._write_float_source(
+            weights_src_id,
+            weights_arr_id,
+            len(weights_out),
+            1,
+            ("WEIGHT",),
+            [fmt_f32(w) for w in weights_out],
+        )
 
-            # <joints>
-            self.sw.open_element("joints")
-            self.sw.write_element("input", None, [("semantic", "JOINT"), ("source", f"#{joints_src_id}")])
-            self.sw.write_element("input", None, [("semantic", "INV_BIND_MATRIX"), ("source", f"#{bind_src_id}")])
-            self.sw.close_element()
+        # <joints>
+        self.sw.open_element("joints")
+        self.sw.write_element("input", None, [("semantic", "JOINT"), ("source", f"#{joints_src_id}")])
+        self.sw.write_element("input", None, [("semantic", "INV_BIND_MATRIX"), ("source", f"#{bind_src_id}")])
+        self.sw.close_element()
 
-            # <vertex_weights>
-            self.sw.open_element("vertex_weights", [("count", fmt_int(len(vcounts)))])
-            self.sw.write_element("input", None, [("semantic", "JOINT"), ("source", f"#{joints_src_id}"), ("offset", "0")])
-            self.sw.write_element("input", None, [("semantic", "WEIGHT"), ("source", f"#{weights_src_id}"), ("offset", "1")])
-            self.sw.open_element("vcount")
-            self.sw.append_text(" ".join(fmt_int(vc) for vc in vcounts) + " ")
-            self.sw.close_element()
-            self.sw.open_element("v")
-            v_pairs: list[str] = []
-            for wi, ji in enumerate(joints_out):
-                v_pairs.append(fmt_int(ji))
-                v_pairs.append(fmt_int(wi))
-            self.sw.append_values(v_pairs)
-            self.sw.close_element()
-            self.sw.close_element()
+        # <vertex_weights>
+        self.sw.open_element("vertex_weights", [("count", fmt_int(len(vcounts)))])
+        self.sw.write_element("input", None, [("semantic", "JOINT"), ("source", f"#{joints_src_id}"), ("offset", "0")])
+        self.sw.write_element("input", None, [("semantic", "WEIGHT"), ("source", f"#{weights_src_id}"), ("offset", "1")])
+        self.sw.open_element("vcount")
+        self.sw.append_text(" ".join(fmt_int(vc) for vc in vcounts) + " ")
+        self.sw.close_element()
+        self.sw.open_element("v")
+        v_pairs: list[str] = []
+        for wi, ji in enumerate(joints_out):
+            v_pairs.append(fmt_int(ji))
+            v_pairs.append(fmt_int(wi))
+        self.sw.append_values(v_pairs)
+        self.sw.close_element()
+        self.sw.close_element()
 
-            self.sw.close_element()  # skin
-            self.sw.close_element()  # controller
-        finally:
-            if needs_free:
-                bpy.data.meshes.remove(mesh)
+        self.sw.close_element()  # skin
+        self.sw.close_element()  # controller
 
     def _export_morph_controller(self, ob: Object) -> None:
         key = ob.data.shape_keys
@@ -2147,7 +2179,7 @@ class DocumentExporter:
             self.marked_ptrs.discard(child.as_pointer())
 
     def _write_node(self, ob: Object) -> None:
-        child_objects = get_children_in_scene(ob, self.view_layer)
+        child_objects = self._children_by_parent_ptr.get(ob.as_pointer(), ())
         can_export = ob.as_pointer() in self.export_set_ptrs
 
         armature_exported = False

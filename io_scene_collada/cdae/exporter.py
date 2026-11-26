@@ -453,34 +453,40 @@ class CdaeExporter:
         world_maxs: list[np.ndarray] = []
         total_tris = 0
 
-        for ob in node_obs:
-            if ob.type != "MESH" or ob not in mesh_obs:
-                continue
-            ni = ob_to_node_idx[ob]
-            # On the default keep_normals=True path, keep quads intact for Blender's viewport
-            # loop_triangles tessellator (triangulating only n-gons > 4 so calc_tangents works).
-            # When keep_normals=False (legacy), triangulate all polygons via bmesh SHORT_EDGE.
-            if self.settings.keep_normals:
-                me_copy, should_remove = get_mesh_copy(
-                    depsgraph,
-                    ob,
-                    apply_modifiers=self.settings.apply_modifiers,
-                    triangulate=True,
-                    keep_normals=True,
-                    keep_quads=True,
-                    eval_mode=self.settings.export_mesh_type,
-                )
-            else:
-                needs_tri = self.settings.apply_modifiers or any(p.loop_total > 3 for p in ob.data.polygons)
-                me_copy, should_remove = get_mesh_copy(
-                    depsgraph,
-                    ob,
-                    apply_modifiers=self.settings.apply_modifiers,
-                    triangulate=needs_tri,
-                    keep_normals=False,
-                    eval_mode=self.settings.export_mesh_type,
-                )
-            try:
+        mesh_obs_set = set(mesh_obs)
+        temp_meshes: list[bpy.types.Mesh] = []
+        try:
+            for ob in node_obs:
+                if ob.type != "MESH" or ob not in mesh_obs_set:
+                    continue
+                ni = ob_to_node_idx[ob]
+                # On the default keep_normals=True path, keep quads intact for Blender's viewport
+                # loop_triangles tessellator (triangulating only n-gons > 4 so calc_tangents works).
+                # When keep_normals=False (legacy), triangulate all polygons via bmesh SHORT_EDGE.
+                if self.settings.keep_normals:
+                    me_copy, should_remove = get_mesh_copy(
+                        depsgraph,
+                        ob,
+                        apply_modifiers=self.settings.apply_modifiers,
+                        triangulate=True,
+                        keep_normals=True,
+                        keep_quads=True,
+                        eval_mode=self.settings.export_mesh_type,
+                        readonly=True,
+                    )
+                else:
+                    needs_tri = self.settings.apply_modifiers or any(p.loop_total > 3 for p in ob.data.polygons)
+                    me_copy, should_remove = get_mesh_copy(
+                        depsgraph,
+                        ob,
+                        apply_modifiers=self.settings.apply_modifiers,
+                        triangulate=needs_tri,
+                        keep_normals=False,
+                        eval_mode=self.settings.export_mesh_type,
+                        readonly=True,
+                    )
+                if should_remove:
+                    temp_meshes.append(me_copy)
                 mdata = _build_gpu_mesh_data(
                     me_copy,
                     node_scales[ni],
@@ -489,29 +495,30 @@ class CdaeExporter:
                     warnings=self.warnings,
                     mesh_name=ob.name,
                 )
-            finally:
-                if should_remove:
-                    bpy.data.meshes.remove(me_copy)
 
-            if mdata is None:
-                continue
+                if mdata is None:
+                    continue
 
-            mesh_idx = len(exported_meshes)
-            obj_idx = len(obj_rows)
-            exported_meshes.append(mdata)
-            obj_names.append(ob.name)
-            total_tris += mdata["num_tris"]
+                mesh_idx = len(exported_meshes)
+                obj_idx = len(obj_rows)
+                exported_meshes.append(mdata)
+                obj_names.append(ob.name)
+                total_tris += mdata["num_tris"]
 
-            # Link object onto its node
-            prev_first = int(nodes_arr[ni]["first_object"])
-            nodes_arr[ni]["first_object"] = obj_idx
-            obj_rows.append((_add_name(ob.name), 1, mesh_idx, ni, prev_first, -1))
+                # Link object onto its node
+                prev_first = int(nodes_arr[ni]["first_object"])
+                nodes_arr[ni]["first_object"] = obj_idx
+                obj_rows.append((_add_name(ob.name), 1, mesh_idx, ni, prev_first, -1))
 
-            # Track world-space shape bounds (verts already have residual baked in)
-            mw_r = np.array(rigid_worlds[ni], dtype=np.float64)
-            w_pts = (mdata["verts"].astype(np.float64) @ mw_r[:3, :3].T) + mw_r[:3, 3]
-            world_mins.append(w_pts.min(axis=0))
-            world_maxs.append(w_pts.max(axis=0))
+                # Track world-space shape bounds (verts already have residual baked in)
+                mw_r = np.array(rigid_worlds[ni], dtype=np.float64)
+                w_pts = (mdata["verts"].astype(np.float64) @ mw_r[:3, :3].T) + mw_r[:3, 3]
+                world_mins.append(w_pts.min(axis=0))
+                world_maxs.append(w_pts.max(axis=0))
+        finally:
+            if temp_meshes:
+                bpy.data.batch_remove(temp_meshes)
+                temp_meshes.clear()
 
         if not exported_meshes:
             self.errors.append("No non-empty mesh geometry to export")

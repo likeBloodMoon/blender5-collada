@@ -126,6 +126,9 @@ def escape_attr(text: str) -> str:
     )
 
 
+_NL_INDENTS = tuple("\n" + "  " * i for i in range(64))
+
+
 class ColladaStreamWriter:
     """Streaming XML writer matching OpenCOLLADA's COLLADASW::StreamWriter."""
 
@@ -163,13 +166,15 @@ class ColladaStreamWriter:
         self._chunks.append("\n</COLLADA>")
 
     def open_element(self, name: str, attrs: Sequence[tuple[str, str]] | None = None) -> None:
+        chunks = self._chunks
         if self._open_tag_unclosed:
-            self._chunks.append(">")
-            self._open_tag_unclosed = False
-        self._chunks.append("\n" + self._indent() + "<" + name)
+            chunks.append(">")
+        depth = len(self._stack)
+        prefix = _NL_INDENTS[depth] if depth < 64 else ("\n" + "  " * depth)
         if attrs:
-            for k, v in attrs:
-                self._chunks.append(f' {k}="{v}"')
+            chunks.append(f"{prefix}<{name}" + "".join(f' {k}="{v}"' for k, v in attrs))
+        else:
+            chunks.append(f"{prefix}<{name}")
         self._stack.append(name)
         self._open_tag_unclosed = True
         self._has_text = False
@@ -177,13 +182,16 @@ class ColladaStreamWriter:
 
     def close_element(self) -> None:
         name = self._stack.pop()
+        chunks = self._chunks
         if self._open_tag_unclosed:
-            self._chunks.append("/>")
+            chunks.append("/>")
             self._open_tag_unclosed = False
         elif self._has_text:
-            self._chunks.append(f"</{name}>")
+            chunks.append(f"</{name}>")
         else:
-            self._chunks.append("\n" + self._indent() + f"</{name}>")
+            depth = len(self._stack)
+            prefix = _NL_INDENTS[depth] if depth < 64 else ("\n" + "  " * depth)
+            chunks.append(f"{prefix}</{name}>")
         self._has_text = False
         self._has_children = True
 

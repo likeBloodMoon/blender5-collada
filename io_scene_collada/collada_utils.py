@@ -335,15 +335,20 @@ def build_export_set(
         add_obj(ob)
 
     if include_children or include_armatures:
+        children_by_parent_ptr: dict[int, list[Object]] = {}
+        if include_children:
+            for child in layer_objs:
+                par = child.parent
+                if par is not None:
+                    children_by_parent_ptr.setdefault(par.as_pointer(), []).append(child)
         # Iteratively expand relations
         idx = 0
         while idx < len(export_set):
             ob = export_set[idx]
             idx += 1
             if include_children:
-                for child in layer_objs:
-                    if child.parent == ob:
-                        add_obj(child)
+                for child in children_by_parent_ptr.get(ob.as_pointer(), ()):
+                    add_obj(child)
             if include_armatures:
                 arm = get_assigned_armature(ob)
                 if arm is not None and arm.as_pointer() in layer_ptrs:
@@ -438,6 +443,7 @@ def get_mesh_copy(
     keep_normals: bool = True,
     keep_quads: bool = False,
     eval_mode: str = "view",
+    readonly: bool = False,
 ) -> tuple[Mesh, bool]:
     """Return (mesh, needs_free).
 
@@ -447,6 +453,8 @@ def get_mesh_copy(
     n-gons (faces with more than 4 vertices) are triangulated and quads are preserved.
     If keep_normals is True and triangulate is True, preserves pre-triangulation corner normals
     in a temporary FLOAT_VECTOR CORNER attribute (KEEP_NORMALS_ATTR) across bmesh triangulation.
+    If readonly is True and neither modifier evaluation nor triangulation is needed, returns
+    (ob.data, False) directly without creating a temporary mesh datablock.
     """
     if apply_modifiers:
         saved_mod_attrs: list[tuple[object, str, object]] = []
@@ -477,6 +485,20 @@ def get_mesh_copy(
                 ob.update_tag()
                 depsgraph.update()
     else:
+        need_tri_raw = False
+        if triangulate:
+            if keep_quads:
+                n_polys = len(ob.data.polygons)
+                if n_polys > 0:
+                    import numpy as np
+
+                    loop_totals = np.empty(n_polys, dtype=np.int32)
+                    ob.data.polygons.foreach_get("loop_total", loop_totals)
+                    need_tri_raw = bool((loop_totals > 4).any())
+            else:
+                need_tri_raw = True
+        if readonly and not need_tri_raw:
+            return ob.data, False
         mesh_copy = ob.data.copy()
 
     if triangulate:
