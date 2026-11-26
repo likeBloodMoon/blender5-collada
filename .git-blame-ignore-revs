@@ -10,3 +10,4 @@ f550d9500b4de49f206426bf704fe734f3594b9b  # importer/scene.py
 89b2def8277a7352a58156279b3b129335d0b573  # exporter/geometry.py
 0097d31dcde388a8c70d7c49101f49fccec0e2a6  # exporter/materials.py
 0ea04124c61809f005b07f650f1dc4b0d3c8afd1  # exporter/rig.py
+c9f728dadc29c1cd2a5a2cee7db56fa45f7cf94a  # exporter/animation.py
