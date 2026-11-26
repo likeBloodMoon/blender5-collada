@@ -160,12 +160,10 @@ def lookup_material_color_maps(mat_index: dict[str, list[str]], *names: str) -> 
     return out
 
 
-class BeamngMaterialSpec:
-    """Parsed BeamNG v1.5 PBR material definition from Stages[0] of *.materials.json."""
+class BeamngStageSpec:
+    """Parsed single layer (Stages[i]) of a BeamNG v1.5 PBR material."""
 
     __slots__ = (
-        "name",
-        "is_v15",
         "base_color_map",
         "color_palette_map",
         "ambient_occlusion_map",
@@ -193,15 +191,11 @@ class BeamngMaterialSpec:
         "has_opacity_factor",
         "emissive_factor",
         "instance_diffuse",
-        "translucent",
-        "double_sided",
     )
 
     def __init__(
         self,
-        name: str,
         *,
-        is_v15: bool = False,
         base_color_map: str = "",
         color_palette_map: str = "",
         ambient_occlusion_map: str = "",
@@ -229,11 +223,7 @@ class BeamngMaterialSpec:
         has_opacity_factor: bool = False,
         emissive_factor: tuple[float, float, float] = (0.0, 0.0, 0.0),
         instance_diffuse: bool = False,
-        translucent: bool = False,
-        double_sided: bool = False,
     ) -> None:
-        self.name = name
-        self.is_v15 = is_v15
         self.base_color_map = base_color_map
         self.color_palette_map = color_palette_map
         self.ambient_occlusion_map = ambient_occlusion_map
@@ -261,7 +251,38 @@ class BeamngMaterialSpec:
         self.has_opacity_factor = has_opacity_factor
         self.emissive_factor = emissive_factor
         self.instance_diffuse = instance_diffuse
+
+
+class BeamngMaterialSpec:
+    """Parsed BeamNG v1.5 PBR material definition from *.materials.json."""
+
+    __slots__ = (
+        "name",
+        "is_v15",
+        "stages",
+        "translucent",
+        "alpha_test",
+        "alpha_ref",
+        "double_sided",
+    )
+
+    def __init__(
+        self,
+        name: str,
+        *,
+        is_v15: bool = False,
+        stages: list[BeamngStageSpec] | None = None,
+        translucent: bool = False,
+        alpha_test: bool = False,
+        alpha_ref: float = 0.5,
+        double_sided: bool = False,
+    ) -> None:
+        self.name = name
+        self.is_v15 = is_v15
+        self.stages: list[BeamngStageSpec] = stages if stages is not None else []
         self.translucent = translucent
+        self.alpha_test = alpha_test
+        self.alpha_ref = alpha_ref
         self.double_sided = double_sided
 
 
@@ -321,17 +342,23 @@ def _parse_rgb_factor(val: Any, default: tuple[float, float, float]) -> tuple[fl
     return default
 
 
-def _parse_single_spec(name: str, entry: dict[str, Any]) -> BeamngMaterialSpec | None:
-    stages = entry.get("Stages")
-    has_stages = isinstance(stages, list) and len(stages) > 0 and isinstance(stages[0], dict)
-    if not has_stages:
-        return None
+def _is_v15_version(val: Any) -> bool:
+    if isinstance(val, bool):
+        return False
+    if isinstance(val, (int, float)):
+        return abs(float(val) - 1.5) < 1e-4
+    if isinstance(val, str):
+        try:
+            return abs(float(val.strip()) - 1.5) < 1e-4
+        except ValueError:
+            return False
+    return False
 
-    s0: dict[str, Any] = stages[0]
 
+def _parse_stage(stage_dict: dict[str, Any], entry: dict[str, Any], *, is_base_layer: bool) -> BeamngStageSpec:
     def _map(*keys: str) -> tuple[str, int]:
-        path, uv = _first_map(s0, *keys)
-        if not path:
+        path, uv = _first_map(stage_dict, *keys)
+        if not path and is_base_layer:
             path, uv = _first_map(entry, *keys)
         return path, uv
 
@@ -345,45 +372,48 @@ def _parse_single_spec(name: str, entry: dict[str, Any]) -> BeamngMaterialSpec |
     op_map, op_uv = _map("opacityMap")
     em_map, em_uv = _map("emissiveMap")
 
-    bc_fac = _parse_rgba_factor(s0.get("baseColorFactor", entry.get("baseColorFactor")))
+    bc_raw = stage_dict.get("baseColorFactor")
+    if bc_raw is None and is_base_layer:
+        bc_raw = entry.get("baseColorFactor")
+    bc_fac = _parse_rgba_factor(bc_raw)
 
-    met_raw = _first_float(s0, "metallicFactor")
-    if met_raw is None:
+    met_raw = _first_float(stage_dict, "metallicFactor")
+    if met_raw is None and is_base_layer:
         met_raw = _first_float(entry, "metallicFactor")
     met_fac = max(0.0, min(1.0, met_raw)) if met_raw is not None else (1.0 if met_map else 0.0)
 
-    rgh_raw = _first_float(s0, "roughnessFactor")
-    if rgh_raw is None:
+    rgh_raw = _first_float(stage_dict, "roughnessFactor")
+    if rgh_raw is None and is_base_layer:
         rgh_raw = _first_float(entry, "roughnessFactor")
     rgh_fac = max(0.0, min(1.0, rgh_raw)) if rgh_raw is not None else (1.0 if rgh_map else 0.5)
 
-    coat_raw = _first_float(s0, "clearCoatFactor", "clearcoatFactor")
-    if coat_raw is None:
+    coat_raw = _first_float(stage_dict, "clearCoatFactor", "clearcoatFactor")
+    if coat_raw is None and is_base_layer:
         coat_raw = _first_float(entry, "clearCoatFactor", "clearcoatFactor")
     coat_fac = max(0.0, min(1.0, coat_raw)) if coat_raw is not None else (1.0 if coat_map else 0.0)
 
-    coat_rgh_raw = _first_float(s0, "clearCoatRoughnessFactor", "clearcoatRoughnessFactor")
-    if coat_rgh_raw is None:
+    coat_rgh_raw = _first_float(stage_dict, "clearCoatRoughnessFactor", "clearcoatRoughnessFactor")
+    if coat_rgh_raw is None and is_base_layer:
         coat_rgh_raw = _first_float(entry, "clearCoatRoughnessFactor", "clearcoatRoughnessFactor")
     coat_rgh_fac = max(0.0, min(1.0, coat_rgh_raw)) if coat_rgh_raw is not None else 0.05
 
-    op_raw = _first_float(s0, "opacityFactor")
-    if op_raw is None:
+    op_raw = _first_float(stage_dict, "opacityFactor")
+    if op_raw is None and is_base_layer:
         op_raw = _first_float(entry, "opacityFactor")
     has_op = op_raw is not None
     op_fac = max(0.0, min(1.0, op_raw)) if op_raw is not None else 1.0
 
     em_default = (1.0, 1.0, 1.0) if em_map else (0.0, 0.0, 0.0)
-    em_raw = s0.get("emissiveFactor", entry.get("emissiveFactor"))
+    em_raw = stage_dict.get("emissiveFactor")
+    if em_raw is None and is_base_layer:
+        em_raw = entry.get("emissiveFactor")
     em_fac = _parse_rgb_factor(em_raw, em_default) if em_raw is not None else em_default
 
-    inst_diff = _first_bool(s0, "instanceDiffuse") or _first_bool(entry, "instanceDiffuse")
-    translucent = _first_bool(entry, "translucent") or _first_bool(s0, "translucent")
-    double_sided = _first_bool(entry, "doubleSided") or _first_bool(s0, "doubleSided")
+    inst_diff = _first_bool(stage_dict, "instanceDiffuse") or (
+        is_base_layer and _first_bool(entry, "instanceDiffuse")
+    )
 
-    return BeamngMaterialSpec(
-        name=name,
-        is_v15=True,
+    return BeamngStageSpec(
         base_color_map=bc_map,
         color_palette_map=pal_map,
         ambient_occlusion_map=ao_map,
@@ -411,7 +441,52 @@ def _parse_single_spec(name: str, entry: dict[str, Any]) -> BeamngMaterialSpec |
         has_opacity_factor=has_op,
         emissive_factor=em_fac,
         instance_diffuse=inst_diff,
+    )
+
+
+def _parse_single_spec(name: str, entry: dict[str, Any]) -> BeamngMaterialSpec | None:
+    if not _is_v15_version(entry.get("version")):
+        return None
+    stages_raw = entry.get("Stages")
+    if not isinstance(stages_raw, list) or not stages_raw or not isinstance(stages_raw[0], dict):
+        return None
+
+    al_raw = entry.get("activeLayers", 1)
+    if isinstance(al_raw, (int, float)) and not isinstance(al_raw, bool):
+        active_layers = max(1, min(int(al_raw), len(stages_raw)))
+    else:
+        active_layers = 1
+
+    parsed_stages: list[BeamngStageSpec] = []
+    for idx in range(active_layers):
+        st = stages_raw[idx]
+        if isinstance(st, dict):
+            parsed_stages.append(_parse_stage(st, entry, is_base_layer=(idx == 0)))
+    if not parsed_stages:
+        return None
+
+    s0 = stages_raw[0]
+    translucent = _first_bool(entry, "translucent") or _first_bool(s0, "translucent")
+    alpha_test = _first_bool(entry, "alphaTest") or _first_bool(s0, "alphaTest")
+    double_sided = _first_bool(entry, "doubleSided") or _first_bool(s0, "doubleSided")
+
+    aref_raw = _first_float(entry, "alphaRef")
+    if aref_raw is None:
+        aref_raw = _first_float(s0, "alphaRef")
+    if aref_raw is None:
+        alpha_ref = 0.5
+    elif aref_raw > 1.0:
+        alpha_ref = max(0.0, min(1.0, aref_raw / 255.0))
+    else:
+        alpha_ref = max(0.0, min(1.0, aref_raw))
+
+    return BeamngMaterialSpec(
+        name=name,
+        is_v15=True,
+        stages=parsed_stages,
         translucent=translucent,
+        alpha_test=alpha_test,
+        alpha_ref=alpha_ref,
         double_sided=double_sided,
     )
 

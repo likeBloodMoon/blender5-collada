@@ -1,17 +1,26 @@
-"""Synthetic regression test for #52: BeamNG v1.5 PBR materials, palette paints, AO, UV1, glass.
+"""Synthetic regression test for #52: BeamNG v1.5 PBR materials, multi-layer compositing,
+palette paints, AO, UV1, glass/alphaTest/carbonfibre transparency, and legacy fallback.
 
 Verifies (using purely synthetic zips, no game files):
   1. Shared 'BeamNG v1.5 Material' node group is created once and shared by v1.5 materials.
   2. UV maps are named UV0 and UV1 on BeamNG PBR import; maps with <map>UseUV: 1 bind to UV1.
   3. Paints from .pc are stored on imported objects as beamng_paint1..3 (sRGB -> linear)
      plus metallic/roughness/clearcoat/clearcoat_roughness.
-  4. Cycles DIFFUSE/COLOR bake of a quad with Base Color + Palette Mask (UV1) + AO (UV1)
-     matches expected paint * mask * AO to within 1/255 for all 3 paint channels (R, G, B).
+  4. Cycles EMIT bake of Base Color with Palette Mask (UV1) + AO (UV1) matches
+     paint * mask * AO to within 1/255 for all 3 paint channels (R, G, B).
   5. Two objects sharing the exact same material with different beamng_paint1 values
      bake to different colors matching each object's own paint.
-  6. Translucent glass gets Alpha, surface_render_method='BLENDED', backface culling off;
-     opaque translucent glass falls back to 0.35 and is noted in the import report.
-  7. beamng_materials='BASE_COLOR' produces 1.5.5-style direct Principled BSDF trees
+  6. Two-layer material shaped like covet_main (version 1.5, activeLayers=2):
+     Layer 0 = instanceDiffuse (no baseColorMap, white factor) + AO;
+     Layer 1 = baseColorMap + opacityMap mask + metallicMap + roughnessMap.
+     Material stays opaque; black opacityMap -> Paint 1 * AO, white opacityMap -> Layer 1 texture.
+  7. Legacy material (no version: 1.5, translucent=true, mapTo='*_old', colorMap in Stages[1])
+     keeps 1.5.5 direct Principled BSDF behaviour with its texture connected.
+  8. Translucent v1.5 material with no opacity source:
+     - Name containing 'glass'/'windshield' -> 0.35 fallback, BLENDED, backface culling off, reported.
+     - Other name ('covet_carbonfibre') -> stays opaque (Alpha=1.0, not BLENDED, not in glass report).
+  9. Material with alphaTest ('etk800_grille') -> DITHERED (not BLENDED) with GREATER_THAN clip.
+ 10. beamng_materials='BASE_COLOR' produces 1.5.5-style direct Principled BSDF trees
      without the shared node group or UV renaming.
 
 Usage:
@@ -49,6 +58,25 @@ def _find_blender() -> str:
 def _make_png(rgba: tuple[int, int, int, int]) -> bytes:
     w, h = 4, 4
     raw = b"".join(b"\x00" + bytes(rgba) * w for _ in range(h))
+
+    def _chunk(tag: bytes, payload: bytes) -> bytes:
+        crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
+        return struct.pack(">I", len(payload)) + tag + payload + struct.pack(">I", crc)
+
+    ihdr = struct.pack(">IIBBBBB", w, h, 8, 6, 0, 0, 0)
+    return (
+        b"\x89PNG\r\n\x1a\n"
+        + _chunk(b"IHDR", ihdr)
+        + _chunk(b"IDAT", zlib.compress(raw))
+        + _chunk(b"IEND", b"")
+    )
+
+
+def _make_split_png(left_rgba: tuple[int, int, int, int], right_rgba: tuple[int, int, int, int]) -> bytes:
+    """8x4 PNG: left 4 columns = left_rgba, right 4 columns = right_rgba."""
+    w, h = 8, 4
+    row = bytes(left_rgba) * 4 + bytes(right_rgba) * 4
+    raw = b"".join(b"\x00" + row for _ in range(h))
 
     def _chunk(tag: bytes, payload: bytes) -> bytes:
         crc = zlib.crc32(tag + payload) & 0xFFFFFFFF
@@ -143,6 +171,10 @@ def _build_fixture(workdir: str) -> str:
                 ["panel_r", ["body"]],
                 ["panel_g", ["body"]],
                 ["panel_b", ["body"]],
+                ["covet_body", ["body"]],
+                ["legacy_part", ["body"]],
+                ["carbon_hood", ["body"]],
+                ["grille_mesh", ["body"]],
                 ["glass_alpha", ["glass"]],
                 ["glass_opaque", ["glass"]],
             ],
@@ -179,6 +211,7 @@ def _build_fixture(workdir: str) -> str:
         "mat_pbr_r": {
             "name": "mat_pbr_r",
             "mapTo": "mat_pbr_r",
+            "version": 1.5,
             "Stages": [{
                 "baseColorMap": "vehicles/pbrcar/white.png",
                 "colorPaletteMap": "vehicles/pbrcar/mask_r.png",
@@ -192,6 +225,7 @@ def _build_fixture(workdir: str) -> str:
         "mat_pbr_g": {
             "name": "mat_pbr_g",
             "mapTo": "mat_pbr_g",
+            "version": 1.5,
             "Stages": [{
                 "baseColorMap": "vehicles/pbrcar/white.png",
                 "colorPaletteMap": "vehicles/pbrcar/mask_g.png",
@@ -203,6 +237,7 @@ def _build_fixture(workdir: str) -> str:
         "mat_pbr_b": {
             "name": "mat_pbr_b",
             "mapTo": "mat_pbr_b",
+            "version": 1.5,
             "Stages": [{
                 "baseColorMap": "vehicles/pbrcar/white.png",
                 "colorPaletteMap": "vehicles/pbrcar/mask_b.png",
@@ -211,9 +246,63 @@ def _build_fixture(workdir: str) -> str:
                 "ambientOcclusionMapUseUV": 1,
             }],
         },
+        # Two-layer material shaped like covet_main:
+        # Layer 0 = instanceDiffuse paint 1 (no baseColorMap) + AO
+        # Layer 1 = covet_main_b texture masked by covet_main_o (black=L0, white=L1)
+        "covet_main": {
+            "name": "covet_main",
+            "mapTo": "covet_main",
+            "version": 1.5,
+            "activeLayers": 2,
+            "Stages": [
+                {
+                    "instanceDiffuse": True,
+                    "ambientOcclusionMap": "vehicles/pbrcar/ao_half.png",
+                },
+                {
+                    "baseColorMap": "vehicles/pbrcar/covet_main_b.png",
+                    "opacityMap": "vehicles/pbrcar/covet_main_o.png",
+                    "metallicMap": "vehicles/pbrcar/covet_main_m.png",
+                    "roughnessMap": "vehicles/pbrcar/covet_main_r.png",
+                },
+            ],
+        },
+        # Legacy material (no version: 1.5) with translucent and mapTo *_old, colorMap in Stages[1]
+        "covet_lights_old": {
+            "name": "covet_lights_old",
+            "mapTo": "covet_lights_old",
+            "translucent": True,
+            "Stages": [
+                {},
+                {"colorMap": "vehicles/pbrcar/legacy_col.png"},
+            ],
+        },
+        # Translucent v1.5 material without glass/windshield in name and no opacity source
+        "covet_carbonfibre": {
+            "name": "covet_carbonfibre",
+            "mapTo": "covet_carbonfibre",
+            "version": 1.5,
+            "translucent": True,
+            "Stages": [{
+                "baseColorMap": "vehicles/pbrcar/white.png",
+            }],
+        },
+        # alphaTest material shaped like etk800_grille
+        "etk800_grille": {
+            "name": "etk800_grille",
+            "mapTo": "etk800_grille",
+            "version": 1.5,
+            "alphaTest": True,
+            "alphaRef": 128,
+            "doubleSided": True,
+            "Stages": [{
+                "baseColorMap": "vehicles/pbrcar/grille_alpha.png",
+            }],
+        },
         "mat_glass_alpha": {
             "name": "mat_glass_alpha",
             "mapTo": "mat_glass_alpha",
+            "version": 1.5,
             "translucent": True,
             "Stages": [{
                 "baseColorMap": "vehicles/pbrcar/white.png",
@@ -223,6 +312,7 @@ def _build_fixture(workdir: str) -> str:
         "mat_glass_opaque": {
             "name": "mat_glass_opaque",
             "mapTo": "mat_glass_opaque",
+            "version": 1.5,
             "translucent": True,
             "Stages": [{
                 "baseColorMap": "vehicles/pbrcar/white.png",
@@ -237,6 +327,10 @@ def _build_fixture(workdir: str) -> str:
         zf.writestr("vehicles/pbrcar/panel_r.dae", _make_two_uv_dae("panel_r", "mat_pbr_r"))
         zf.writestr("vehicles/pbrcar/panel_g.dae", _make_two_uv_dae("panel_g", "mat_pbr_g"))
         zf.writestr("vehicles/pbrcar/panel_b.dae", _make_two_uv_dae("panel_b", "mat_pbr_b"))
+        zf.writestr("vehicles/pbrcar/covet_body.dae", _make_two_uv_dae("covet_body", "covet_main"))
+        zf.writestr("vehicles/pbrcar/legacy_part.dae", _make_two_uv_dae("legacy_part", "covet_lights_old"))
+        zf.writestr("vehicles/pbrcar/carbon_hood.dae", _make_two_uv_dae("carbon_hood", "covet_carbonfibre"))
+        zf.writestr("vehicles/pbrcar/grille_mesh.dae", _make_two_uv_dae("grille_mesh", "etk800_grille"))
         zf.writestr("vehicles/pbrcar/glass_alpha.dae", _make_two_uv_dae("glass_alpha", "mat_glass_alpha"))
         zf.writestr("vehicles/pbrcar/glass_opaque.dae", _make_two_uv_dae("glass_opaque", "mat_glass_opaque"))
         zf.writestr("vehicles/pbrcar/white.png", _make_png((255, 255, 255, 255)))
@@ -244,6 +338,12 @@ def _build_fixture(workdir: str) -> str:
         zf.writestr("vehicles/pbrcar/mask_g.png", _make_png((0, 255, 0, 255)))
         zf.writestr("vehicles/pbrcar/mask_b.png", _make_png((0, 0, 255, 255)))
         zf.writestr("vehicles/pbrcar/ao_half.png", _make_png((128, 128, 128, 255)))
+        zf.writestr("vehicles/pbrcar/covet_main_b.png", _make_png((51, 153, 204, 255)))
+        zf.writestr("vehicles/pbrcar/covet_main_o.png", _make_split_png((0, 0, 0, 255), (255, 255, 255, 255)))
+        zf.writestr("vehicles/pbrcar/covet_main_m.png", _make_png((200, 200, 200, 255)))
+        zf.writestr("vehicles/pbrcar/covet_main_r.png", _make_png((100, 100, 100, 255)))
+        zf.writestr("vehicles/pbrcar/legacy_col.png", _make_png((200, 100, 50, 255)))
+        zf.writestr("vehicles/pbrcar/grille_alpha.png", _make_split_png((40, 40, 40, 0), (40, 40, 40, 255)))
 
     return car_zip
 
@@ -264,8 +364,8 @@ from io_scene_collada.beamng.resolve import srgb_to_linear
 from io_scene_collada.beamng.source import clear_source_cache
 
 
-def bake_base_color(ob):
-    """Bake Cycles EMIT pass of the Base Color input feeding Principled BSDF inside the node group."""
+def bake_base_color_pixels(ob, sample_coords):
+    """Bake Cycles EMIT pass of the Base Color feeding Principled BSDF inside the node group."""
     scene = bpy.context.scene
     scene.render.engine = "CYCLES"
     scene.cycles.device = "CPU"
@@ -286,7 +386,8 @@ def bake_base_color(ob):
     ng.links.new(bc_src, emit.inputs["Color"])
     ng.links.new(emit.outputs["Emission"], go.inputs["BSDF"])
 
-    img = bpy.data.images.new(f"bake_{ob.name}", width=8, height=8, alpha=False, float_buffer=True)
+    w, h = 16, 8
+    img = bpy.data.images.new(f"bake_{ob.name}", width=w, height=h, alpha=False, float_buffer=True)
     bake_node = ntree.nodes.new("ShaderNodeTexImage")
     bake_node.image = img
     ntree.nodes.active = bake_node
@@ -297,14 +398,12 @@ def bake_base_color(ob):
     bpy.context.view_layer.objects.active = ob
 
     try:
-        bpy.ops.object.bake(
-            type="EMIT",
-            use_clear=True,
-            margin=0,
-        )
-        # Sample center pixel (x=4, y=4) in linear float buffer
-        idx = (4 * 8 + 4) * 4
-        return [float(img.pixels[idx]), float(img.pixels[idx + 1]), float(img.pixels[idx + 2])]
+        bpy.ops.object.bake(type="EMIT", use_clear=True, margin=0)
+        out = []
+        for sx, sy in sample_coords:
+            idx = (sy * w + sx) * 4
+            out.append([float(img.pixels[idx]), float(img.pixels[idx + 1]), float(img.pixels[idx + 2])])
+        return out
     finally:
         ng.links.new(bsdf.outputs["BSDF"], go.inputs["BSDF"])
         ng.nodes.remove(emit)
@@ -330,12 +429,15 @@ ng = bpy.data.node_groups.get(NODE_GROUP_NAME)
 ob_r = bpy.data.objects.get("panel_r")
 ob_g = bpy.data.objects.get("panel_g")
 ob_b = bpy.data.objects.get("panel_b")
+ob_covet = bpy.data.objects.get("covet_body")
+ob_legacy = bpy.data.objects.get("legacy_part")
+ob_carbon = bpy.data.objects.get("carbon_hood")
+ob_grille = bpy.data.objects.get("grille_mesh")
 ob_ga = bpy.data.objects.get("glass_alpha")
 ob_go = bpy.data.objects.get("glass_opaque")
 
 uv_names_r = [u.name for u in ob_r.data.uv_layers] if ob_r else []
 
-# Check palette & AO UVMap nodes use UV1
 mat_r = ob_r.data.materials[0]
 pal_uv = None
 ao_uv = None
@@ -349,14 +451,14 @@ for n in mat_r.node_tree.nodes:
         if vec_in.is_linked and vec_in.links[0].from_node.type == "UVMAP":
             ao_uv = vec_in.links[0].from_node.uv_map
 
-baked_r = bake_base_color(ob_r)
-baked_g = bake_base_color(ob_g)
-baked_b = bake_base_color(ob_b)
+baked_r = bake_base_color_pixels(ob_r, [(8, 4)])[0]
+baked_g = bake_base_color_pixels(ob_g, [(8, 4)])[0]
+baked_b = bake_base_color_pixels(ob_b, [(8, 4)])[0]
 
 # Two objects sharing the exact same material with different beamng_paint1
 ob_r2 = ob_r.copy()
 ob_r2.name = "panel_r_recolored"
-ob_r2.data = ob_r.data.copy()  # share material mat_r
+ob_r2.data = ob_r.data.copy()
 ob_r2.location = (3.0, 0.0, 0.0)
 bpy.context.scene.collection.objects.link(ob_r2)
 ob_r2["beamng_paint1"] = (
@@ -365,9 +467,41 @@ ob_r2["beamng_paint1"] = (
     srgb_to_linear(0.85),
     1.0,
 )
-baked_r2 = bake_base_color(ob_r2)
+baked_r2 = bake_base_color_pixels(ob_r2, [(8, 4)])[0]
 
-# Check glass properties & report
+# Two-layer covet_main: left (x=3 -> black opacityMap -> L0 paint 1 * AO), right (x=12 -> white -> L1 covet_main_b)
+covet_left, covet_right = bake_base_color_pixels(ob_covet, [(3, 4), (12, 4)])
+mat_covet = ob_covet.data.materials[0]
+covet_groups = [n for n in mat_covet.node_tree.nodes if n.type == "GROUP"]
+covet_mix_shaders = [n for n in mat_covet.node_tree.nodes if n.type == "MIX_SHADER"]
+covet_l1_has_met = any(n.type == "TEX_IMAGE" and n.label == "L1 Metallic" for n in mat_covet.node_tree.nodes)
+covet_l1_has_rgh = any(n.type == "TEX_IMAGE" and n.label == "L1 Roughness" for n in mat_covet.node_tree.nodes)
+
+# Legacy material (no version: 1.5, colorMap in Stages[1])
+mat_legacy = ob_legacy.data.materials[0]
+legacy_has_group = any(n.type == "GROUP" for n in mat_legacy.node_tree.nodes)
+legacy_has_bsdf = any(n.type == "BSDF_PRINCIPLED" for n in mat_legacy.node_tree.nodes)
+legacy_tex = None
+for n in mat_legacy.node_tree.nodes:
+    if n.type == "BSDF_PRINCIPLED":
+        bc_sock = n.inputs.get("Base Color")
+        if bc_sock and bc_sock.is_linked and bc_sock.links[0].from_node.type == "TEX_IMAGE":
+            legacy_tex = bc_sock.links[0].from_node.image.name
+
+# Translucent carbonfibre (no glass/windshield in name, no opacity source -> stays opaque)
+mat_carbon = ob_carbon.data.materials[0]
+carbon_grp = next(n for n in mat_carbon.node_tree.nodes if n.type == "GROUP")
+
+# alphaTest grille -> DITHERED + GREATER_THAN clip
+mat_grille = ob_grille.data.materials[0]
+grille_grp = next(n for n in mat_grille.node_tree.nodes if n.type == "GROUP")
+grille_alpha_clip = (
+    grille_grp.inputs["Alpha"].is_linked
+    and grille_grp.inputs["Alpha"].links[0].from_node.type == "MATH"
+    and grille_grp.inputs["Alpha"].links[0].from_node.operation == "GREATER_THAN"
+)
+
+# Glass properties & report
 mat_ga = ob_ga.data.materials[0]
 mat_go = ob_go.data.materials[0]
 ga_grp = next(n for n in mat_ga.node_tree.nodes if n.type == "GROUP")
@@ -390,6 +524,22 @@ pbr_res = {
     "baked_b": baked_b,
     "baked_r2": baked_r2,
     "shared_mat_same": (ob_r.data.materials[0] == ob_r2.data.materials[0]),
+    "covet_render_method": getattr(mat_covet, "surface_render_method", None),
+    "covet_num_groups": len(covet_groups),
+    "covet_num_mix": len(covet_mix_shaders),
+    "covet_l1_has_met": covet_l1_has_met,
+    "covet_l1_has_rgh": covet_l1_has_rgh,
+    "covet_left": covet_left,
+    "covet_right": covet_right,
+    "legacy_has_group": legacy_has_group,
+    "legacy_has_bsdf": legacy_has_bsdf,
+    "legacy_tex": legacy_tex,
+    "carbon_render_method": getattr(mat_carbon, "surface_render_method", None),
+    "carbon_alpha": float(carbon_grp.inputs["Alpha"].default_value),
+    "carbon_in_report": ("covet_carbonfibre" in report_text),
+    "grille_render_method": getattr(mat_grille, "surface_render_method", None),
+    "grille_alpha_clip": grille_alpha_clip,
+    "grille_backface_culling": mat_grille.use_backface_culling,
     "ga_render_method": getattr(mat_ga, "surface_render_method", None),
     "ga_backface_culling": mat_ga.use_backface_culling,
     "ga_alpha": float(ga_grp.inputs["Alpha"].default_value),
@@ -472,6 +622,7 @@ def main() -> int:
         exp_g = [_srgb_to_lin(c) * ao for c in (0.15, 0.75, 0.25)]
         exp_b = [_srgb_to_lin(c) * ao for c in (0.1, 0.3, 0.9)]
         exp_r2 = [_srgb_to_lin(c) * ao for c in (0.2, 0.9, 0.85)]
+        exp_covet_l1 = [_srgb_to_lin(c / 255.0) for c in (51, 153, 204)]
 
         failures: list[str] = []
         if not pbr["ok"] or pbr["errors"]:
@@ -488,6 +639,8 @@ def main() -> int:
             ("Paint 2 (G) * AO", pbr["baked_g"], exp_g),
             ("Paint 3 (B) * AO", pbr["baked_b"], exp_b),
             ("Recolored object sharing mat", pbr["baked_r2"], exp_r2),
+            ("covet_main L0 (black mask -> paint 1 * AO)", pbr["covet_left"], exp_r),
+            ("covet_main L1 (white mask -> covet_main_b)", pbr["covet_right"], exp_covet_l1),
         ):
             diff = _max_rgb_diff(got, exp)
             if diff > tol:
@@ -495,6 +648,44 @@ def main() -> int:
 
         if not pbr["shared_mat_same"]:
             failures.append("Recolored object did not share the same material")
+
+        # Multi-layer covet_main checks
+        if pbr["covet_render_method"] == "BLENDED":
+            failures.append("covet_main should stay opaque (upper-layer opacityMap is a layer mask, not transparency)")
+        if pbr["covet_num_groups"] != 2 or pbr["covet_num_mix"] != 1:
+            failures.append(
+                f"covet_main expected 2 group nodes and 1 MixShader, got groups={pbr['covet_num_groups']} mix={pbr['covet_num_mix']}"
+            )
+        if not pbr["covet_l1_has_met"] or not pbr["covet_l1_has_rgh"]:
+            failures.append(
+                f"covet_main L1 missing metallic/roughness maps: met={pbr['covet_l1_has_met']} rgh={pbr['covet_l1_has_rgh']}"
+            )
+
+        # Legacy *_old material checks
+        if pbr["legacy_has_group"] or not pbr["legacy_has_bsdf"] or pbr["legacy_tex"] != "legacy_col.png":
+            failures.append(
+                f"Legacy material should keep 1.5.5 direct Principled BSDF + Stages[1] colorMap: "
+                f"group={pbr['legacy_has_group']} bsdf={pbr['legacy_has_bsdf']} tex={pbr['legacy_tex']!r}"
+            )
+
+        # Translucent carbonfibre without opacity source -> stays opaque
+        if pbr["carbon_render_method"] == "BLENDED" or abs(pbr["carbon_alpha"] - 1.0) > 1e-4:
+            failures.append(
+                f"covet_carbonfibre should stay opaque: method={pbr['carbon_render_method']} alpha={pbr['carbon_alpha']}"
+            )
+        if pbr["carbon_in_report"]:
+            failures.append("covet_carbonfibre should NOT appear in glass fallback report")
+
+        # alphaTest grille -> DITHERED + GREATER_THAN
+        if pbr["grille_render_method"] != "DITHERED" or not pbr["grille_alpha_clip"]:
+            failures.append(
+                f"etk800_grille should use DITHERED + GREATER_THAN alpha clip: "
+                f"method={pbr['grille_render_method']} clip={pbr['grille_alpha_clip']}"
+            )
+        if pbr["grille_backface_culling"] is not False:
+            failures.append("etk800_grille (doubleSided=True) should have backface culling off")
+
+        # Glass checks
         if pbr["ga_render_method"] != "BLENDED" or pbr["ga_backface_culling"] is not False:
             failures.append(
                 f"glass_alpha render settings wrong: method={pbr['ga_render_method']} cull={pbr['ga_backface_culling']}"
@@ -510,6 +701,7 @@ def main() -> int:
         if not pbr["report_mentions_glass_fallback"]:
             failures.append("Import report did not mention mat_glass_opaque 0.35 fallback")
 
+        # Base color only checks
         if not bc["ok"] or bc["errors"]:
             failures.append(f"BASE_COLOR import failed: {bc['errors']}")
         if bc["has_node_group"] or bc["has_group_node"] or not bc["has_bsdf_node"]:
@@ -525,11 +717,15 @@ def main() -> int:
                 print(f"  - {msg}")
             return 1
 
-        print("PASS test_beamng_pbr_52 (all #52 PBR, Cycles bake, shared-mat paint, glass & BASE_COLOR checks passed)")
-        print(f"  Max bake diffs: R={_max_rgb_diff(pbr['baked_r'], exp_r):.6f}, "
-              f"G={_max_rgb_diff(pbr['baked_g'], exp_g):.6f}, "
-              f"B={_max_rgb_diff(pbr['baked_b'], exp_b):.6f}, "
-              f"Recolored={_max_rgb_diff(pbr['baked_r2'], exp_r2):.6f}")
+        print("PASS test_beamng_pbr_52 (all #52 PBR, multi-layer covet_main, legacy, carbonfibre, alphaTest, glass & BASE_COLOR checks passed)")
+        print(
+            f"  Max bake diffs: R={_max_rgb_diff(pbr['baked_r'], exp_r):.6f}, "
+            f"G={_max_rgb_diff(pbr['baked_g'], exp_g):.6f}, "
+            f"B={_max_rgb_diff(pbr['baked_b'], exp_b):.6f}, "
+            f"Recolored={_max_rgb_diff(pbr['baked_r2'], exp_r2):.6f}, "
+            f"CovetL0={_max_rgb_diff(pbr['covet_left'], exp_r):.6f}, "
+            f"CovetL1={_max_rgb_diff(pbr['covet_right'], exp_covet_l1):.6f}"
+        )
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)
