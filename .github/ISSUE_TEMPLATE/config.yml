@@ -1,0 +1,8 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Ask a question
+    url: https://github.com/likeBloodMoon/blender5-collada/discussions/categories/q-a
+    about: How do I...? Is this supported? Ask here instead of opening an issue.
+  - name: Share what you made
+    url: https://github.com/likeBloodMoon/blender5-collada/discussions/categories/show-and-tell
+    about: Mods, vehicles and scenes you've built with the add-on.

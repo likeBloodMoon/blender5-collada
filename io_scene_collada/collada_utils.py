@@ -409,6 +409,13 @@ def set_editbone_property_matrix(ebone, key: str, mat: Matrix) -> None:
 KEEP_NORMALS_ATTR = "__collada_keep_normals__"
 
 
+_RENDER_MOD_ATTR_PAIRS = (
+    ("levels", "render_levels"),          # SUBSURF, MULTIRES
+    ("steps", "render_steps"),            # SCREW
+    ("resolution", "render_resolution"),  # OCEAN
+)
+
+
 def get_mesh_copy(
     depsgraph,
     ob: Object,
@@ -416,10 +423,11 @@ def get_mesh_copy(
     triangulate: bool,
     keep_normals: bool = True,
     keep_quads: bool = False,
+    eval_mode: str = "view",
 ) -> tuple[Mesh, bool]:
     """Return (mesh, needs_free).
 
-    If apply_modifiers is True, gets evaluated mesh copy.
+    If apply_modifiers is True, gets evaluated mesh copy at ``eval_mode`` ("view" or "render").
     If triangulate is True, triangulates using SHORT_EDGE quad method and BEAUTY ngon method,
     matching bc_triangulate_mesh() in collada_utils.cpp. When keep_quads is also True, only
     n-gons (faces with more than 4 vertices) are triangulated and quads are preserved.
@@ -427,10 +435,33 @@ def get_mesh_copy(
     in a temporary FLOAT_VECTOR CORNER attribute (KEEP_NORMALS_ATTR) across bmesh triangulation.
     """
     if apply_modifiers:
-        ob_eval = ob.evaluated_get(depsgraph)
-        me = ob_eval.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
-        mesh_copy = me.copy()
-        ob_eval.to_mesh_clear()
+        saved_mod_attrs: list[tuple[object, str, object]] = []
+        if eval_mode == "render":
+            for mod in ob.modifiers:
+                if mod.show_viewport != mod.show_render:
+                    saved_mod_attrs.append((mod, "show_viewport", mod.show_viewport))
+                    mod.show_viewport = mod.show_render
+                for v_attr, r_attr in _RENDER_MOD_ATTR_PAIRS:
+                    if hasattr(mod, v_attr) and hasattr(mod, r_attr):
+                        v_val = getattr(mod, v_attr)
+                        r_val = getattr(mod, r_attr)
+                        if v_val != r_val:
+                            saved_mod_attrs.append((mod, v_attr, v_val))
+                            setattr(mod, v_attr, r_val)
+            if saved_mod_attrs:
+                ob.update_tag()
+                depsgraph.update()
+        try:
+            ob_eval = ob.evaluated_get(depsgraph)
+            me = ob_eval.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
+            mesh_copy = me.copy()
+            ob_eval.to_mesh_clear()
+        finally:
+            if saved_mod_attrs:
+                for mod, attr, orig_val in reversed(saved_mod_attrs):
+                    setattr(mod, attr, orig_val)
+                ob.update_tag()
+                depsgraph.update()
     else:
         mesh_copy = ob.data.copy()
 
