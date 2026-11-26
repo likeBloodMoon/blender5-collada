@@ -9,6 +9,7 @@ from __future__ import annotations
 import math
 from typing import TYPE_CHECKING
 
+import bpy
 from mathutils import Matrix
 
 from ..collada_utils import (
@@ -87,9 +88,67 @@ class AnimationMixin:
         fps = self.scene.render.fps / self.scene.render.fps_base
         return frame / fps
 
+    def _collect_unassigned_action_jobs(self) -> list[tuple[Object, object, object | None]]:
+        """Collect (object, action, slot) tuples for unassigned actions in bpy.data.actions (#44)."""
+        assigned_ptrs: set[int] = set()
+        for ob in self.export_set:
+            if ob.animation_data and ob.animation_data.action:
+                assigned_ptrs.add(ob.animation_data.action.as_pointer())
+            if ob.data is not None:
+                adt = getattr(ob.data, "animation_data", None)
+                if adt and adt.action:
+                    assigned_ptrs.add(adt.action.as_pointer())
+                sk = getattr(ob.data, "shape_keys", None)
+                if sk and sk.animation_data and sk.animation_data.action:
+                    assigned_ptrs.add(sk.animation_data.action.as_pointer())
+            for mslot in getattr(ob, "material_slots", ()):
+                if mslot.material and mslot.material.animation_data and mslot.material.animation_data.action:
+                    assigned_ptrs.add(mslot.material.animation_data.action.as_pointer())
+
+        obj_by_name = {ob.name: ob for ob in self.export_set}
+        armatures = [ob for ob in self.export_set if ob.type == "ARMATURE" and ob.data]
+        jobs: list[tuple[Object, object, object | None]] = []
+
+        for act in bpy.data.actions:
+            if act.as_pointer() in assigned_ptrs:
+                continue
+            if hasattr(act, "layers"):
+                from bpy_extras import anim_utils
+
+                for slot in act.slots:
+                    if getattr(slot, "target_id_type", "OBJECT") != "OBJECT":
+                        continue
+                    cbag = anim_utils.action_get_channelbag_for_slot(act, slot)
+                    if cbag is None or not any(len(fcu.keyframe_points) > 0 for fcu in cbag.fcurves):
+                        continue
+                    target_ob = obj_by_name.get(getattr(slot, "name_display", ""))
+                    if target_ob is None and armatures:
+                        for fcu in cbag.fcurves:
+                            dp = fcu.data_path
+                            if dp.startswith('pose.bones["'):
+                                end_q = dp.find('"]', 12)
+                                if end_q > 12:
+                                    bname = dp[12:end_q]
+                                    for arm_ob in armatures:
+                                        if bname in arm_ob.data.bones:
+                                            target_ob = arm_ob
+                                            break
+                                if target_ob is not None:
+                                    break
+                    if target_ob is None and len(self.export_set) == 1:
+                        target_ob = self.export_set[0]
+                    if target_ob is not None:
+                        jobs.append((target_ob, act, slot))
+            else:
+                fcurves = getattr(act, "fcurves", ())
+                if any(len(fcu.keyframe_points) > 0 for fcu in fcurves) and len(self.export_set) == 1:
+                    jobs.append((self.export_set[0], act, None))
+        return jobs
+
     def _export_animations(self) -> None:
         animated_objs = [ob for ob in reversed(self.export_set) if self._object_has_animations(ob)]
-        if not animated_objs:
+        extra_jobs = self._collect_unassigned_action_jobs() if self.settings.include_all_actions else []
+        if not animated_objs and not extra_jobs:
             return
 
         if True:
@@ -186,6 +245,69 @@ class AnimationMixin:
                             )
 
                 self.sw.close_element()  # action_container
+
+            # Export unassigned actions when include_all_actions is enabled (#44)
+            for ob, act, slot in extra_jobs:
+                had_adt = ob.animation_data is not None
+                orig_act = ob.animation_data.action if had_adt else None
+                orig_slot = getattr(ob.animation_data, "action_slot", None) if had_adt else None
+                try:
+                    if not had_adt:
+                        ob.animation_data_create()
+                    ob.animation_data.action = act
+                    if slot is not None and hasattr(ob.animation_data, "action_slot"):
+                        ob.animation_data.action_slot = slot
+
+                    kfs: set[int] = set()
+                    for fcu in get_assigned_fcurves(ob.animation_data):
+                        for kp in fcu.keyframe_points:
+                            kfs.add(round(kp.co.x))
+                    job_frames_set = set(scene_sample_frames)
+                    if s.keep_keyframes or s.export_animation_type == "keys":
+                        job_frames_set.update(kfs)
+                    job_frames = sorted(f for f in job_frames_set if sfra <= f <= efra)
+
+                    job_obj_mats: dict[int, Matrix] = {}
+                    job_bone_mats: dict[str, dict[int, Matrix]] = {}
+                    for frame_idx in job_frames:
+                        self.scene.frame_set(frame_idx)
+                        job_obj_mats[frame_idx] = _get_object_local_matrix(ob)
+                        if ob.type == "ARMATURE" and ob.pose:
+                            for pchan in ob.pose.bones:
+                                bone = pchan.bone
+                                if pchan.parent:
+                                    bmat = pchan.parent.matrix.inverted() @ pchan.matrix
+                                else:
+                                    bmat = pchan.matrix.copy()
+                                if s.open_sim:
+                                    temp = bone.matrix_local.to_3x3().to_4x4().inverted()
+                                    bmat = bmat @ temp
+                                    if bone.parent:
+                                        ptemp = bone.parent.matrix_local.to_3x3().to_4x4()
+                                        bmat = ptemp @ bmat
+                                job_bone_mats.setdefault(bone.name, {})[frame_idx] = bmat
+
+                    ob_id = self.id_map.translate_id(ob.name)
+                    act_id = self.id_map.translate_id(act.name)
+                    self.sw.open_element(
+                        "animation",
+                        [("id", f"action_container-{ob_id}-{act_id}"), ("name", encode_xml(act.name))],
+                    )
+                    if export_as_matrix:
+                        self._export_object_matrix_animation(ob, job_obj_mats)
+                    self._export_object_curve_animations(ob, job_obj_mats, job_bone_mats, export_as_matrix)
+                    if ob.type == "ARMATURE" and export_as_matrix:
+                        for root_bone in ob.data.bones:
+                            if root_bone.parent is None:
+                                self._export_bone_matrix_animations_recursive(ob, root_bone, job_bone_mats)
+                    self.sw.close_element()
+                finally:
+                    if had_adt:
+                        ob.animation_data.action = orig_act
+                        if hasattr(ob.animation_data, "action_slot"):
+                            ob.animation_data.action_slot = orig_slot
+                    else:
+                        ob.animation_data_clear()
 
             self.sw.close_element()  # library_animations
 
