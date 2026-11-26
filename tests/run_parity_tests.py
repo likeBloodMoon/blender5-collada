@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2026 Blender Authors
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Automated Byte-Parity & Import-Parity Test Suite: Blender 4.5.1 vs Blender 5.3.0."""
 

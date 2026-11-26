@@ -4,6 +4,10 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.7] - 2026-11-26
+
+- Changed: License changed from GPL-2.0-or-later to GPL-3.0-or-later, as extensions.blender.org requires. Allowed by the 'or later' clause of the original Blender code. Torque3D-derived data stays MIT. Shorter tagline.
+
 ## [1.5.6] - 2026-11-26
 
 - Added (#52): full BeamNG v1.5 PBR material import (`"version": 1.5`) with multi-layer (`activeLayers`) compositing, using upper-layer `opacityMap × opacityFactor` as layer masks over lower layers while preserving 1.5.5 base-colour behaviour for legacy materials

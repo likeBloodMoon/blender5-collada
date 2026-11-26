@@ -1,7 +1,7 @@
 # SPDX-FileCopyrightText: 2012 GarageGames, LLC (Torque3D, MIT)
 # SPDX-FileCopyrightText: 2026 Blender5-Collada Authors
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Blender 5.0+ scene builder for BeamNG Cached Collada (.cdae) v31 shapes."""
 

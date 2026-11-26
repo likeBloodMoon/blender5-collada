@@ -1,9 +1,9 @@
 schema_version = "1.0.0"
 
 id = "collada_io"
-version = "1.5.6"
+version = "1.5.7"
 name = "Collada (DAE) Import/Export"
-tagline = "Collada (.dae) & BeamNG (.cdae) I/O (restart Blender on update)"
+tagline = "Collada (.dae) and BeamNG (.cdae) import and export"
 maintainer = "likeBloodMoon"
 type = "add-on"
 
@@ -14,7 +14,7 @@ tags = ["Import-Export"]
 blender_version_min = "5.0.0"
 
 license = [
-  "SPDX:GPL-2.0-or-later",
+  "SPDX:GPL-3.0-or-later",
 ]
 
 [permissions]

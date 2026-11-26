@@ -1,6 +1,6 @@
 # SPDX-FileCopyrightText: 2009-2026 Blender Authors
 #
-# SPDX-License-Identifier: GPL-2.0-or-later
+# SPDX-License-Identifier: GPL-3.0-or-later
 
 """Archive (.zip/.zae/.kmz) indexing, safety caps, manifest, materials JSON, and image loading."""
 

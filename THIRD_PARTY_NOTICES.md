@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-This extension is licensed under **GPL-2.0-or-later**. The BeamNG `.cdae` (v31) support includes data and format conventions derived from the following permissively licensed third-party projects:
+This extension is licensed under **GPL-3.0-or-later**. The BeamNG `.cdae` (v31) support includes data and format conventions derived from the following permissively licensed third-party projects:
 
 ## Torque3D (MIT License)
 

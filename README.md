@@ -8,7 +8,7 @@ Collada (`.dae`) import and export for Blender 5.0 and later, ported from Blende
 [![Latest release](https://img.shields.io/github/v/release/likeBloodMoon/blender5-collada?label=release&color=2ea44f)](https://github.com/likeBloodMoon/blender5-collada/releases/latest)
 [![Downloads](https://img.shields.io/github/downloads/likeBloodMoon/blender5-collada/total?color=informational)](https://github.com/likeBloodMoon/blender5-collada/releases)
 [![Blender 5.0+](https://img.shields.io/badge/Blender-5.0%2B-orange.svg)](https://www.blender.org)
-[![License: GPL v2+](https://img.shields.io/badge/License-GPLv2%2B-blue.svg)](LICENSE)
+[![License: GPL v3+](https://img.shields.io/badge/License-GPLv3%2B-blue.svg)](LICENSE)
 
 <img src="docs/images/beamng_covet_pbr.jpg" alt="BeamNG Covet imported from covet.zip in Blender" width="820">
 
@@ -242,7 +242,7 @@ Textures come from every `*.materials.json` in the car's zip and in `common.zip`
 
 | Version | Focus |
 | --- | --- |
-| 1.5.7 | Correctness round: vertex color types, multiple rigs, shape keys, actions, Geometry Nodes instances |
+| 1.5.8 | Correctness round: vertex color types, multiple rigs, shape keys, actions, Geometry Nodes instances |
 | 1.6 to 2.0 | JBeam-aware vehicles: parts placed where the game puts them (wheels, steering wheels, props), BeamNG Check pre-export linter, material export |
 
 The full plan is in [ROADMAP.md](ROADMAP.md).
@@ -258,4 +258,4 @@ The code is split into small modules under `io_scene_collada/importer/` and `io_
 
 ## License
 
-GPL-2.0-or-later. See [LICENSE](LICENSE). Based on Blender 4.5.1 LTS Collada I/O.
+GPL-3.0-or-later. See [LICENSE](LICENSE). Based on Blender 4.5.1 LTS Collada I/O.
