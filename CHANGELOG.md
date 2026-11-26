@@ -4,6 +4,16 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.6] - 2026-11-26
+
+- Added (#52): full BeamNG v1.5 PBR material import (`"version": 1.5`) with multi-layer (`activeLayers`) compositing, using upper-layer `opacityMap × opacityFactor` as layer masks over lower layers while preserving 1.5.5 base-colour behaviour for legacy materials
+- Added (#52): palette-mask paint blending (`colorPaletteMap` R/G/B and `instanceDiffuse`) driven by per-object `beamng_paint1..3` custom properties (sRGB → linear) read via Object `Attribute` nodes, loaded from `.pc` `paints` or resolved via `defaultPaintName1..3` (`info_<config>.json` → `info.json` → `vehicles/common/paintLibraries/*.paintLibrary.json`)
+- Added (#52): ambient occlusion, metallic, roughness, clearcoat, normal, emissive, and `UV0`/`UV1` naming on BeamNG PBR imports (`<map>UseUV: 1` binds to `UV1`)
+- Added (#52): glass and `alphaTest` rules — only layer 0 controls transparency on `translucent`/`alphaTest` materials (solid parts stay opaque), translucent `glass`/`windshield` materials without an opacity source fall back to `0.35` (noted in the import report), and `alphaTest` materials use `DITHERED` with alpha clip instead of `BLENDED`
+- Added (#52): light placeholder material resolution via jbeam `glowMap` (active config parts → vehicle zip → `common.zip`), keeping placeholder Blender material names for `.dae` export (`beamng_glow_source` custom property), with a **Lights: Off / On** import option and fully transparent rendering for `invis` dashboard warning lamps
+- Improved (#52): slimmed per-layer PBR node graphs to build only the paint mixes, attributes, and maps each layer actually uses — cutting first EEVEE render time on the Covet `DXi_M` from about 4 minutes down to 8 seconds with identical Cycles bake results
+- Added (#52): **BeamNG Materials: Full PBR / Base color only** import option (`Base color only` matches 1.5.5; plain `.dae`/`.zip` imports and 4.5.1 parity exports remain byte-identical)
+
 ## [1.5.5] - 2026-11-26
 
 - Fixed (#51): BeamNG vehicle/config import now builds one shared material table from every `*.materials.json` in the vehicle archive/folder and `common.zip` (vehicle entries win on name clashes), resolves textures vehicle-first then `common.zip`, reuses materials created within the same import without creating `.001` duplicates (tagged with a per-import custom property so pre-existing user materials are never reused), and emits one summary warning per import listing textures missing from both sources. Plain `.dae` and `.zip` imports remain unchanged

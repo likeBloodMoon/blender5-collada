@@ -79,7 +79,7 @@ Everything here is a few lines in the current files, and all of it is either a 4
 1.5.5 ships the code split and #51 together (plain `.dae`/`.zip` behaviour stays identical to 1.5.4).
 
 ## 1.5.6 — BeamNG PBR materials (#52)
-- [ ] #52 BeamNG PBR materials, palette paints, AO, see-through glass: full v1.5 PBR material import (`Stages[0..3]` node graph, palette-mask paints/liveries, ambient occlusion, and see-through glass).
+- [x] #52 BeamNG PBR materials, palette paints, AO, see-through glass: full v1.5 PBR material import (`Stages[0..3]` node graph, palette-mask paints/liveries, ambient occlusion, and see-through glass).
 
 ## 1.5.7 — Correctness (inherited bugs, fixed in the new modules)
 In this order. The module each fix lands in is in brackets.
