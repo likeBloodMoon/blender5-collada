@@ -60,6 +60,7 @@ class CdaeExportSettings:
     filepath: str = ""
     use_selection: bool = False
     apply_modifiers: bool = True
+    export_mesh_type: str = "view"
     keep_normals: bool = True
     compress: bool = False
 
@@ -466,6 +467,7 @@ class CdaeExporter:
                     triangulate=True,
                     keep_normals=True,
                     keep_quads=True,
+                    eval_mode=self.settings.export_mesh_type,
                 )
             else:
                 needs_tri = self.settings.apply_modifiers or any(p.loop_total > 3 for p in ob.data.polygons)
@@ -475,6 +477,7 @@ class CdaeExporter:
                     apply_modifiers=self.settings.apply_modifiers,
                     triangulate=needs_tri,
                     keep_normals=False,
+                    eval_mode=self.settings.export_mesh_type,
                 )
             try:
                 mdata = _build_gpu_mesh_data(
