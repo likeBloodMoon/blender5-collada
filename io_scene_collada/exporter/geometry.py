@@ -9,6 +9,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 from ..collada_utils import (
+    DOUBLE_SIDED_ATTR,
     KEEP_NORMALS_ATTR,
     get_geometry_id,
     get_material_id,
@@ -206,6 +207,21 @@ class GeometryMixin:
         n_loops = len(mesh.loops)
         vcount = len(mesh.vertices)
 
+        # Optional per-face double_sided boolean attribute (#26)
+        ds_poly: np.ndarray | None = None
+        ds_attr = mesh.attributes.get(DOUBLE_SIDED_ATTR)
+        if (
+            ds_attr is not None
+            and ds_attr.domain == "FACE"
+            and ds_attr.data_type == "BOOLEAN"
+            and len(ds_attr.data) == len(mesh.polygons)
+            and len(mesh.polygons) > 0
+        ):
+            _ds_tmp = np.empty(len(mesh.polygons), dtype=bool)
+            ds_attr.data.foreach_get("value", _ds_tmp)
+            if _ds_tmp.any():
+                ds_poly = _ds_tmp
+
         if use_loop_triangles:
             mesh.calc_loop_triangles()
             n_polys = len(mesh.loop_triangles)
@@ -217,11 +233,29 @@ class GeometryMixin:
                 mesh.loop_triangles.foreach_get("loops", tri_loops)
                 mesh.loop_triangles.foreach_get("vertices", loop_vidx)
                 mesh.loop_triangles.foreach_get("material_index", mat_indices)
+            n_back_loops = 0
+            if ds_poly is not None and n_polys > 0:
+                tri_poly_idx = np.empty(n_polys, dtype=np.int32)
+                mesh.loop_triangles.foreach_get("polygon_index", tri_poly_idx)
+                ds_tri = ds_poly[tri_poly_idx]
+                if ds_tri.any():
+                    ds_idx = np.flatnonzero(ds_tri)
+                    back_tri_loops = tri_loops.reshape(n_polys, 3)[ds_idx][:, ::-1].ravel()
+                    back_vidx = loop_vidx.reshape(n_polys, 3)[ds_idx][:, ::-1].ravel()
+                    back_mats = mat_indices[ds_idx]
+                    tri_loops = np.concatenate([tri_loops, back_tri_loops])
+                    loop_vidx = np.concatenate([loop_vidx, back_vidx])
+                    mat_indices = np.concatenate([mat_indices, back_mats])
+                    n_back_loops = int(back_tri_loops.size)
+                    n_polys += int(ds_idx.size)
+                    n_emit_loops += n_back_loops
             loop_totals = np.full(n_polys, 3, dtype=np.int32)
             if n_emit_loops > 0:
                 cn = np.empty(n_loops * 3, dtype=np.float32)
                 mesh.corner_normals.foreach_get("vector", cn)
                 raw64 = cn.reshape(n_loops, 3)[tri_loops].astype(np.float64)
+                if n_back_loops > 0:
+                    raw64[-n_back_loops:] = -raw64[-n_back_loops:]
                 lens = np.linalg.norm(raw64, axis=1, keepdims=True)
                 mask = lens[:, 0] > 0.0
                 raw64[mask] /= lens[mask]
@@ -229,8 +263,9 @@ class GeometryMixin:
             else:
                 normals_arr = np.empty((0, 3), dtype=np.float32)
                 loop_norm_idx = np.empty(0, dtype=np.int32)
+            emit_loops = tri_loops
         else:
-            tri_loops = None
+            emit_loops = None
             n_polys = len(mesh.polygons)
             n_emit_loops = n_loops
             loop_starts = np.empty(n_polys, dtype=np.int32)
@@ -250,6 +285,26 @@ class GeometryMixin:
             normals_arr, loop_norm_idx = self._create_normals(
                 mesh, loop_starts, loop_totals, use_smooth, loop_vidx
             )
+
+            if ds_poly is not None and n_polys > 0:
+                ds_idx = np.flatnonzero(ds_poly)
+                back_loop_list: list[int] = []
+                for pi in ds_idx.tolist():
+                    ls = int(loop_starts[pi])
+                    lt = int(loop_totals[pi])
+                    back_loop_list.extend(range(ls + lt - 1, ls - 1, -1))
+                back_loops = np.asarray(back_loop_list, dtype=np.int32)
+                emit_loops = np.concatenate([np.arange(n_loops, dtype=np.int32), back_loops])
+                loop_vidx = np.concatenate([loop_vidx, loop_vidx[back_loops]])
+                loop_totals = np.concatenate([loop_totals, loop_totals[ds_idx]])
+                mat_indices = np.concatenate([mat_indices, mat_indices[ds_idx]])
+                n_polys += int(ds_idx.size)
+                n_emit_loops = int(emit_loops.size)
+                if len(normals_arr) > 0:
+                    front_n = normals_arr[loop_norm_idx]
+                    back_n = -normals_arr[loop_norm_idx[back_loops]]
+                    all_n = np.vstack([front_n, back_n]).astype(np.float32, copy=False)
+                    normals_arr, loop_norm_idx = _dedup_float_rows(all_n)
 
         # Color attributes on CORNER or POINT domain (BYTE_COLOR or FLOAT_COLOR)
         byte_color_attrs = []
@@ -313,8 +368,8 @@ class GeometryMixin:
                 if n_loops > 0:
                     uvl.data.foreach_get("uv", uv_arr)
                 uv_rows = uv_arr.reshape(n_loops, 2)
-                if tri_loops is not None:
-                    uv_rows = uv_rows[tri_loops] if n_emit_loops > 0 else np.empty((0, 2), dtype=np.float32)
+                if emit_loops is not None:
+                    uv_rows = uv_rows[emit_loops] if n_emit_loops > 0 else np.empty((0, 2), dtype=np.float32)
                 if dedupe_attrs and n_emit_loops > 0:
                     uniq_uv, uv_idx = _dedup_float_rows(uv_rows)
                     self._write_float_source_raw(
@@ -349,8 +404,8 @@ class GeometryMixin:
                 col_rows = col_arr.reshape(src_count, 4)
                 if is_point:
                     col_rows = col_rows[loop_vidx] if n_emit_loops > 0 else np.empty((0, 4), dtype=np.float32)
-                elif tri_loops is not None:
-                    col_rows = col_rows[tri_loops] if n_emit_loops > 0 else np.empty((0, 4), dtype=np.float32)
+                elif emit_loops is not None:
+                    col_rows = col_rows[emit_loops] if n_emit_loops > 0 else np.empty((0, 4), dtype=np.float32)
                 if dedupe_attrs and n_emit_loops > 0:
                     uniq_col, col_idx = _dedup_float_rows(col_rows)
                     self._write_float_source_raw(

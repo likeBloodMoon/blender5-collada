@@ -21,6 +21,7 @@ from ..beamng_materials import (
     lookup_material_color_maps,
     parse_beamng_materials_json,
 )
+from ..collada_utils import DOUBLE_SIDED_ATTR, resolve_duplicate_faces
 from ..import_collada import DocumentImporter
 from .normal_table import U8_TO_NORMAL_TABLE
 from .reader import (
@@ -49,6 +50,7 @@ class CdaeImportSettings:
     normals_mode: str = "EXACT"  # "EXACT", "SHARP", or "UNMERGED"
     merge_distance: float = 1e-5
     sharp_angle_threshold: float = math.radians(1.0)
+    double_sided_faces: str = "KEEP"  # "KEEP", "MERGE", or "REMOVE"
     node_filter: set[str] | None = None
     cdae_bytes: bytes | None = None
     deselect_existing: bool = True
@@ -939,34 +941,53 @@ class CdaeImporter:
         else:
             old_to_new = np.arange(len(verts), dtype=np.int32)
 
-        # Classify duplicate faces sharing identical vertices: keep opposite-winding double-sided
-        # faces and differing-material/attribute overlay layers unwelded; drop only truly identical
-        # duplicate junk before me.validate().
+        # Classify duplicate faces sharing identical vertices (#26):
+        # exact duplicates are always removed; double-sided & overlay faces follow double_sided_faces.
+        uv_list_c = [u for u in (uv0_loops, uv1_loops) if u is not None]
+        col_list_c = [col_loops] if col_loops is not None else []
+        vcounts_c = np.full(len(tris), 3, dtype=np.int32)
         (
             verts,
-            tris,
+            flat_tri_verts,
             dup_kept,
+            double_sided_flags,
             n_double_sided,
             n_layered,
             n_exact_dups,
             _extra_src,
-        ) = _resolve_duplicate_faces(verts, tris, tri_mats, uv0_loops, uv1_loops, col_loops, norm_loops)
+        ) = resolve_duplicate_faces(
+            verts,
+            tris.ravel(),
+            vcounts_c,
+            tri_mats,
+            uv_list_c,
+            col_list_c,
+            norm_loops,
+            mode=self.settings.double_sided_faces,
+        )
+        tris = flat_tri_verts.reshape(-1, 3)
+        if not dup_kept.all():
+            tris = tris[dup_kept]
+            tri_mats = tri_mats[dup_kept]
+            kept_loops = np.repeat(dup_kept, 3)
+            if uv0_loops is not None:
+                uv0_loops = uv0_loops[kept_loops]
+            if uv1_loops is not None:
+                uv1_loops = uv1_loops[kept_loops]
+            if col_loops is not None:
+                col_loops = col_loops[kept_loops]
+            if norm_loops is not None:
+                norm_loops = norm_loops[kept_loops]
         if n_double_sided > 0 or n_layered > 0 or n_exact_dups > 0:
-            self.infos.append(
-                f"Mesh '{mesh_name}': {n_double_sided} double-sided and {n_layered} layered faces "
-                f"kept unwelded, {n_exact_dups} exact duplicates removed"
+            ds_verb = (
+                "kept unwelded"
+                if self.settings.double_sided_faces == "KEEP"
+                else ("merged" if self.settings.double_sided_faces == "MERGE" else "removed")
             )
-            if n_exact_dups > 0:
-                tri_mats = tri_mats[dup_kept]
-                kept_loops = np.repeat(dup_kept, 3)
-                if uv0_loops is not None:
-                    uv0_loops = uv0_loops[kept_loops]
-                if uv1_loops is not None:
-                    uv1_loops = uv1_loops[kept_loops]
-                if col_loops is not None:
-                    col_loops = col_loops[kept_loops]
-                if norm_loops is not None:
-                    norm_loops = norm_loops[kept_loops]
+            self.infos.append(
+                f"Mesh '{mesh_name}': {n_double_sided} double-sided ({ds_verb}) and {n_layered} layered faces, "
+                f"removed {n_exact_dups} duplicate face(s)"
+            )
 
         total_faces = len(tris)
         if total_faces == 0:
@@ -988,6 +1009,10 @@ class CdaeImporter:
 
         cur_n_loops = len(me.loops)
         cur_n_polys = len(me.polygons)
+
+        if double_sided_flags is not None and len(double_sided_flags) == cur_n_polys:
+            ds_attr = me.attributes.new(name=DOUBLE_SIDED_ATTR, type="BOOLEAN", domain="FACE")
+            ds_attr.data.foreach_set("value", double_sided_flags)
 
         # Assign materials referenced by primitives
         used_mat_indices = sorted({int(m) for m in np.unique(tri_mats) if 0 <= int(m) < len(materials)})

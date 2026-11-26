@@ -49,6 +49,7 @@ class ImportSettings:
     sharp_edges_from_normals: bool = False
     sharp_angle_threshold: float = math.radians(1.0)
     archive_mode: str = "ALL"  # "ALL" (all .dae into collections) or "MAIN" (single main .dae)
+    double_sided_faces: str = "KEEP"  # "KEEP", "MERGE", or "REMOVE"
     node_filter: set[str] | None = None
     archive_entry_filter: list[str] | None = None
     find_chains: bool = False

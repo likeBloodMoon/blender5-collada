@@ -22,6 +22,7 @@ if TYPE_CHECKING:
 
 
 LIMITED_PRECISION = 6
+DOUBLE_SIDED_ATTR = "double_sided"
 
 # Exact 256-byte translation tables from collada_internal.cpp
 _TRANSLATE_START_NAME_MAP = bytes([
@@ -669,3 +670,236 @@ def check_target_collection_visibility(view_layer, target_collection) -> str | N
     if hidden:
         return f"Imported into '{target_collection.name}', which is excluded/hidden in this view layer"
     return None
+
+
+def resolve_duplicate_faces(
+    verts,
+    loop_verts,
+    vcounts,
+    face_mats,
+    uv_arrays: list,
+    col_arrays: list,
+    norm_loops,
+    mode: str = "KEEP",
+):
+    """Classify faces sharing identical sorted vertex sets (#26).
+
+    - Exact duplicate (same cyclic winding AND identical material, UVs, colors,
+      and corner normals within tolerance): always removed.
+    - Opposite winding (double-sided pair):
+      - KEEP: keep both by allocating the second face to unwelded vertex copies.
+      - MERGE: keep one face and set ``double_sided_flags[prev_fi] = True``.
+      - REMOVE: keep only the first face (no attribute).
+    - Same winding with differing material, UVs, colors, or normals (overlay):
+      - KEEP / MERGE: keep both on unwelded vertex copies.
+      - REMOVE: keep only the first face.
+
+    Returns ``(out_verts, out_loop_verts, keep_mask, double_sided_flags,
+    double_sided_count, layered_kept, exact_dups_removed, extra_vert_sources)``.
+    """
+    import numpy as np
+
+    n_faces = int(len(vcounts))
+    empty_src = np.empty(0, dtype=np.int32)
+    if n_faces <= 1:
+        return (
+            verts,
+            loop_verts,
+            np.ones(n_faces, dtype=bool),
+            None,
+            0,
+            0,
+            0,
+            empty_src,
+        )
+
+    # Fast check for duplicate sorted vertex sets
+    all_tri = bool((vcounts == 3).all())
+    all_quad = (not all_tri) and bool((vcounts == 4).all())
+
+    groups: list[list[int]] = []
+    if all_tri:
+        tris = loop_verts.reshape(n_faces, 3)
+        sorted_f = np.ascontiguousarray(np.sort(tris, axis=1))
+        s_view = sorted_f.view(np.dtype((np.void, sorted_f.dtype.itemsize * 3))).ravel()
+        _, inv, counts = np.unique(s_view, return_inverse=True, return_counts=True)
+        if not (counts > 1).any():
+            return verts, loop_verts, np.ones(n_faces, dtype=bool), None, 0, 0, 0, empty_src
+        dup_face_idx = np.flatnonzero(counts[inv] > 1)
+        order = np.argsort(inv[dup_face_idx], kind="stable")
+        dup_face_idx = dup_face_idx[order]
+        dup_groups = inv[dup_face_idx]
+        split_pts = np.flatnonzero(np.diff(dup_groups)) + 1
+        groups = [g.tolist() for g in np.split(dup_face_idx, split_pts)]
+    elif all_quad:
+        quads = loop_verts.reshape(n_faces, 4)
+        sorted_f = np.ascontiguousarray(np.sort(quads, axis=1))
+        s_view = sorted_f.view(np.dtype((np.void, sorted_f.dtype.itemsize * 4))).ravel()
+        _, inv, counts = np.unique(s_view, return_inverse=True, return_counts=True)
+        if not (counts > 1).any():
+            return verts, loop_verts, np.ones(n_faces, dtype=bool), None, 0, 0, 0, empty_src
+        dup_face_idx = np.flatnonzero(counts[inv] > 1)
+        order = np.argsort(inv[dup_face_idx], kind="stable")
+        dup_face_idx = dup_face_idx[order]
+        dup_groups = inv[dup_face_idx]
+        split_pts = np.flatnonzero(np.diff(dup_groups)) + 1
+        groups = [g.tolist() for g in np.split(dup_face_idx, split_pts)]
+    else:
+        lv_list = loop_verts.tolist()
+        vc_list = vcounts.tolist()
+        by_key: dict[tuple[int, ...], list[int]] = {}
+        cur = 0
+        for fi, vc in enumerate(vc_list):
+            key = tuple(sorted(lv_list[cur : cur + vc]))
+            cur += vc
+            by_key.setdefault(key, []).append(fi)
+        groups = [g for g in by_key.values() if len(g) > 1]
+        if not groups:
+            return verts, loop_verts, np.ones(n_faces, dtype=bool), None, 0, 0, 0, empty_src
+
+    # Precompute loop start offsets for general polygon indexing
+    loop_starts = np.empty(n_faces, dtype=np.int64)
+    loop_starts[0] = 0
+    if n_faces > 1:
+        np.cumsum(vcounts[:-1], out=loop_starts[1:])
+
+    def _face_winding_and_verts(fi: int) -> tuple[int, list[int]]:
+        ls = int(loop_starts[fi])
+        vc = int(vcounts[fi])
+        vs = loop_verts[ls : ls + vc].tolist()
+        min_i = min(range(vc), key=lambda k: vs[k])
+        nxt = vs[(min_i + 1) % vc]
+        prv = vs[(min_i - 1) % vc]
+        return (1 if nxt < prv else 0), vs
+
+    def _same_face_attrs(f0: int, v0: list[int], fk: int, vk: list[int]) -> bool:
+        if face_mats is not None and int(face_mats[f0]) != int(face_mats[fk]):
+            return False
+        vc = len(v0)
+        if vc != len(vk):
+            return False
+        try:
+            shift = vk.index(v0[0])
+        except ValueError:
+            return False
+        # Verify cyclic alignment matches
+        for k in range(vc):
+            if vk[(shift + k) % vc] != v0[k]:
+                return False
+        ls0 = int(loop_starts[f0])
+        lsk = int(loop_starts[fk])
+        perm = [lsk + ((shift + k) % vc) for k in range(vc)]
+        sl0 = slice(ls0, ls0 + vc)
+        for uv in uv_arrays:
+            if float(np.abs(uv[sl0] - uv[perm]).max()) > 1e-4:
+                return False
+        for col in col_arrays:
+            if float(np.abs(col[sl0] - col[perm]).max()) > 2e-3:
+                return False
+        if norm_loops is not None:
+            if float(np.abs(norm_loops[sl0] - norm_loops[perm]).max()) > 1e-3:
+                return False
+        return True
+
+    keep_mask = np.ones(n_faces, dtype=bool)
+    ds_flags = np.zeros(n_faces, dtype=bool) if mode == "MERGE" else None
+    layer_faces: list[list[int]] = []
+    double_sided_count = 0
+    layered_kept = 0
+    exact_dups_removed = 0
+
+    for grp in groups:
+        # Track kept faces in this vertex-set group: list of (face_idx, winding, verts_list)
+        kept_in_grp: list[tuple[int, int, list[int]]] = []
+        for fi in grp:
+            w, vs = _face_winding_and_verts(fi)
+            is_exact_dup = False
+            has_same_winding = False
+            opp_fi = -1
+            for prev_fi, prev_w, prev_vs in kept_in_grp:
+                if prev_w == w:
+                    has_same_winding = True
+                    if _same_face_attrs(prev_fi, prev_vs, fi, vs):
+                        is_exact_dup = True
+                        break
+                elif opp_fi < 0:
+                    opp_fi = prev_fi
+            if is_exact_dup:
+                keep_mask[fi] = False
+                exact_dups_removed += 1
+                continue
+
+            if not kept_in_grp:
+                kept_in_grp.append((fi, w, vs))
+                continue
+
+            if not has_same_winding:
+                # Opposite winding: double-sided pair
+                if mode == "KEEP":
+                    layer_slot = len(kept_in_grp)
+                    kept_in_grp.append((fi, w, vs))
+                    double_sided_count += 1
+                    while len(layer_faces) < layer_slot:
+                        layer_faces.append([])
+                    layer_faces[layer_slot - 1].append(fi)
+                elif mode == "MERGE":
+                    if ds_flags is not None and opp_fi >= 0:
+                        ds_flags[opp_fi] = True
+                    keep_mask[fi] = False
+                    double_sided_count += 1
+                else:  # REMOVE
+                    keep_mask[fi] = False
+                    double_sided_count += 1
+            else:
+                # Same winding, differing material/UV/color/normal (overlay)
+                if mode == "REMOVE":
+                    keep_mask[fi] = False
+                else:
+                    layer_slot = len(kept_in_grp)
+                    kept_in_grp.append((fi, w, vs))
+                    layered_kept += 1
+                    while len(layer_faces) < layer_slot:
+                        layer_faces.append([])
+                    layer_faces[layer_slot - 1].append(fi)
+
+    out_loop_verts = loop_verts.copy() if layer_faces else loop_verts
+    out_verts = verts
+    extra_src_parts: list = []
+
+    if layer_faces:
+        n_base_verts = len(verts)
+        vert_parts = [verts]
+        cur_base = n_base_verts
+        for lf in layer_faces:
+            # Collect all loop indices belonging to faces in this layer
+            lf_loop_idx_list: list[int] = []
+            for fi in lf:
+                ls = int(loop_starts[fi])
+                vc = int(vcounts[fi])
+                lf_loop_idx_list.extend(range(ls, ls + vc))
+            lf_loop_idx = np.asarray(lf_loop_idx_list, dtype=np.int64)
+            lf_verts = np.unique(out_loop_verts[lf_loop_idx])
+            vert_parts.append(verts[lf_verts].copy())
+            remap = np.arange(n_base_verts, dtype=np.int32)
+            remap[lf_verts] = np.arange(cur_base, cur_base + len(lf_verts), dtype=np.int32)
+            out_loop_verts[lf_loop_idx] = remap[out_loop_verts[lf_loop_idx]]
+            extra_src_parts.append(lf_verts.astype(np.int32, copy=False))
+            cur_base += len(lf_verts)
+        out_verts = np.vstack(vert_parts)
+
+    extra_src = np.concatenate(extra_src_parts) if extra_src_parts else empty_src
+    if ds_flags is not None:
+        ds_flags = ds_flags[keep_mask]
+        if not ds_flags.any():
+            ds_flags = None
+
+    return (
+        out_verts,
+        out_loop_verts,
+        keep_mask,
+        ds_flags,
+        double_sided_count,
+        layered_kept,
+        exact_dups_removed,
+        extra_src,
+    )

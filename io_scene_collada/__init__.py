@@ -614,6 +614,17 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
 
     interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
+    double_sided_faces: EnumProperty(
+        name="Double-Sided Faces",
+        description="How to handle faces sharing the same vertices (opposite-winding back faces and overlays)",
+        items=(
+            ("KEEP", "Keep (separate vertices)", "Keep back faces and overlays on separate vertex copies"),
+            ("MERGE", "Merge into one face", "Keep one face and mark double-sided pairs with a 'double_sided' face attribute"),
+            ("REMOVE", "Remove back faces", "Keep only one side of double-sided faces"),
+        ),
+        default="KEEP",
+    )
+
     fix_orientation: BoolProperty(
         name="Fix Leaf Bones",
         description="Fix Orientation of Leaf Bones (Collada does only support Joints)",
@@ -659,6 +670,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         box.prop(self, "sharp_edges_from_normals")
         if self.sharp_edges_from_normals:
             box.prop(self, "sharp_angle_threshold")
+        box.prop(self, "double_sided_faces")
         box.prop(self, "archive_mode")
 
         box = layout.box()
@@ -722,6 +734,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
             sharp_edges_from_normals=self.sharp_edges_from_normals,
             sharp_angle_threshold=self.sharp_angle_threshold,
             archive_mode=self.archive_mode,
+            double_sided_faces=self.double_sided_faces,
             find_chains=self.find_chains,
             auto_connect=self.auto_connect,
             fix_orientation=self.fix_orientation,
@@ -836,6 +849,16 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         max=math.pi,
         subtype="ANGLE",
     )
+    double_sided_faces: EnumProperty(
+        name="Double-Sided Faces",
+        description="How to handle faces sharing the same vertices (opposite-winding back faces and overlays)",
+        items=(
+            ("KEEP", "Keep (separate vertices)", "Keep back faces and overlays on separate vertex copies"),
+            ("MERGE", "Merge into one face", "Keep one face and mark double-sided pairs with a 'double_sided' face attribute"),
+            ("REMOVE", "Remove back faces", "Keep only one side of double-sided faces"),
+        ),
+        default="KEEP",
+    )
     beamng_config: StringProperty(
         name="BeamNG Config",
         description="BeamNG .pc path (or name) inside the archive/folder to resolve and import",
@@ -924,6 +947,7 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         sub.enabled = self.normals_mode != "UNMERGED"
         sub.prop(self, "merge_distance")
         sub.prop(self, "sharp_angle_threshold")
+        col.prop(self, "double_sided_faces")
 
     def execute(self, context):
         if not self.filepath or not os.path.exists(self.filepath):
@@ -966,6 +990,7 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
             normals_mode=self.normals_mode,
             merge_distance=self.merge_distance,
             sharp_angle_threshold=self.sharp_angle_threshold,
+            double_sided_faces=self.double_sided_faces,
         )
 
         # Scripted BeamNG config / archive_models path for .cdae (or .cdae inside .zip)

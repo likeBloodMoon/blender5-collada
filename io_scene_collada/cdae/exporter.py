@@ -23,7 +23,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 
-from ..collada_utils import KEEP_NORMALS_ATTR, flush_edit_mode_objects, get_mesh_copy
+from ..collada_utils import DOUBLE_SIDED_ATTR, KEEP_NORMALS_ATTR, flush_edit_mode_objects, get_mesh_copy
 from .msgpack_lite import MsgPackWriter
 from .reader import (
     DTYPE_DETAIL,
@@ -233,6 +233,35 @@ def _build_gpu_mesh_data(
     c_tan = tangents_loops[tri_loops]
     c_uv1 = uv1_loops[tri_loops] if uv1_loops is not None else None
     c_col = col_loops[tri_loops] if col_loops is not None else None
+
+    # Expand double_sided=True faces into reversed-winding back faces with flipped normals (#26)
+    ds_attr = me.attributes.get(DOUBLE_SIDED_ATTR)
+    if (
+        ds_attr is not None
+        and ds_attr.domain == "FACE"
+        and ds_attr.data_type == "BOOLEAN"
+        and len(ds_attr.data) == n_polys
+    ):
+        ds_poly = np.empty(n_polys, dtype=bool)
+        ds_attr.data.foreach_get("value", ds_poly)
+        if ds_poly.any():
+            tri_poly_idx = np.empty(n_tris, dtype=np.int32)
+            me.loop_triangles.foreach_get("polygon_index", tri_poly_idx)
+            ds_tri = ds_poly[tri_poly_idx]
+            if ds_tri.any():
+                ds_idx = np.flatnonzero(ds_tri)
+                c_pos = np.vstack([c_pos, c_pos.reshape(n_tris, 3, 3)[ds_idx][:, ::-1, :].reshape(-1, 3)])
+                c_norm = np.vstack([c_norm, -c_norm.reshape(n_tris, 3, 3)[ds_idx][:, ::-1, :].reshape(-1, 3)])
+                c_uv0 = np.vstack([c_uv0, c_uv0.reshape(n_tris, 3, 2)[ds_idx][:, ::-1, :].reshape(-1, 2)])
+                tan_back = c_tan.reshape(n_tris, 3, 4)[ds_idx][:, ::-1, :].copy()
+                tan_back[:, :, 3] *= -1.0
+                c_tan = np.vstack([c_tan, tan_back.reshape(-1, 4)])
+                if c_uv1 is not None:
+                    c_uv1 = np.vstack([c_uv1, c_uv1.reshape(n_tris, 3, 2)[ds_idx][:, ::-1, :].reshape(-1, 2)])
+                if c_col is not None:
+                    c_col = np.vstack([c_col, c_col.reshape(n_tris, 3, 4)[ds_idx][:, ::-1, :].reshape(-1, 4)])
+                tri_mat_slots = np.concatenate([tri_mat_slots, tri_mat_slots[ds_idx]])
+                n_tris += int(ds_idx.size)
 
     # Exact float32 bit-level GPU vertex deduplication on (pos, normal, uv0, uv1, color),
     # matching Torque3D's ColladaAppMesh VertTupleMap equality (canonicalize -0.0 -> +0.0).

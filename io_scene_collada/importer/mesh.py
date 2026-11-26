@@ -14,6 +14,7 @@ import bpy
 import numpy as np
 from mathutils import Vector
 
+from ..collada_utils import DOUBLE_SIDED_ATTR, resolve_duplicate_faces
 from .xml_parse import (
     _find_child,
     _find_children,
@@ -645,6 +646,19 @@ class MeshMixin:
             if chunks:
                 col_arrays[cn] = np.vstack(chunks) if len(chunks) > 1 else chunks[0]
 
+        # Prepare vertex coordinates array before duplicate-face resolution so
+        # double-sided / overlay faces can allocate unwelded vertex copies when KEEP is selected.
+        if num_verts > 0:
+            if pos_stride == 3:
+                verts_arr = pos_vals[:num_verts * 3].reshape(num_verts, 3)
+            else:
+                verts_arr = np.zeros((num_verts, 3), dtype=np.float32)
+                cols_k = min(pos_stride, 3)
+                verts_arr[:, :cols_k] = pos_vals[:num_verts * pos_stride].reshape(num_verts, pos_stride)[:, :cols_k]
+        else:
+            verts_arr = np.empty((0, 3), dtype=np.float32)
+
+        double_sided_flags: np.ndarray | None = None
         if total_faces > 0:
             all_vcounts = np.concatenate(vcount_chunks) if len(vcount_chunks) > 1 else vcount_chunks[0]
             all_loop_verts = np.concatenate(loop_vert_chunks) if len(loop_vert_chunks) > 1 else loop_vert_chunks[0]
@@ -652,70 +666,46 @@ class MeshMixin:
             if face_sharp_chunks:
                 all_face_sharp = np.concatenate(face_sharp_chunks) if len(face_sharp_chunks) > 1 else face_sharp_chunks[0]
 
-            keep_face: np.ndarray | None = None
+            # Step 1: Drop degenerate faces (repeated vertex within the same face)
+            degen_keep: np.ndarray | None = None
             n_degen = 0
-            n_dups = 0
             if bool((all_vcounts == 3).all()):
                 tris = all_loop_verts.reshape(total_faces, 3)
                 non_degen = (tris[:, 0] != tris[:, 1]) & (tris[:, 1] != tris[:, 2]) & (tris[:, 0] != tris[:, 2])
                 n_degen = int((~non_degen).sum())
-                valid_idx = np.flatnonzero(non_degen)
-                if valid_idx.size > 0:
-                    s_tris = np.ascontiguousarray(np.sort(tris[valid_idx], axis=1))
-                    s_view = s_tris.view(np.dtype((np.void, s_tris.dtype.itemsize * 3))).ravel()
-                    _, first_pos = np.unique(s_view, return_index=True)
-                    n_dups = int(valid_idx.size - first_pos.size)
-                    if n_degen > 0 or n_dups > 0:
-                        keep_face = np.zeros(total_faces, dtype=bool)
-                        keep_face[valid_idx[first_pos]] = True
-                elif n_degen > 0:
-                    keep_face = np.zeros(total_faces, dtype=bool)
+                if n_degen > 0:
+                    degen_keep = non_degen
             elif bool((all_vcounts == 4).all()):
                 quads = all_loop_verts.reshape(total_faces, 4)
-                s_all = np.ascontiguousarray(np.sort(quads, axis=1))
+                s_all = np.sort(quads, axis=1)
                 non_degen = (
                     (s_all[:, 0] != s_all[:, 1])
                     & (s_all[:, 1] != s_all[:, 2])
                     & (s_all[:, 2] != s_all[:, 3])
                 )
                 n_degen = int((~non_degen).sum())
-                valid_idx = np.flatnonzero(non_degen)
-                if valid_idx.size > 0:
-                    s_valid = np.ascontiguousarray(s_all[valid_idx])
-                    s_view = s_valid.view(np.dtype((np.void, s_valid.dtype.itemsize * 4))).ravel()
-                    _, first_pos = np.unique(s_view, return_index=True)
-                    n_dups = int(valid_idx.size - first_pos.size)
-                    if n_degen > 0 or n_dups > 0:
-                        keep_face = np.zeros(total_faces, dtype=bool)
-                        keep_face[valid_idx[first_pos]] = True
-                elif n_degen > 0:
-                    keep_face = np.zeros(total_faces, dtype=bool)
+                if n_degen > 0:
+                    degen_keep = non_degen
             else:
-                kf = np.ones(total_faces, dtype=bool)
+                dk = np.ones(total_faces, dtype=bool)
                 lv_list_chk = all_loop_verts.tolist()
-                seen_faces: set[tuple[int, ...]] = set()
                 cur_chk = 0
                 for fi, vc in enumerate(all_vcounts.tolist()):
-                    sv = tuple(sorted(lv_list_chk[cur_chk : cur_chk + vc]))
+                    sv = sorted(lv_list_chk[cur_chk : cur_chk + vc])
                     cur_chk += vc
                     if any(sv[k] == sv[k + 1] for k in range(vc - 1)):
-                        kf[fi] = False
+                        dk[fi] = False
                         n_degen += 1
-                    elif sv in seen_faces:
-                        kf[fi] = False
-                        n_dups += 1
-                    else:
-                        seen_faces.add(sv)
-                if n_degen > 0 or n_dups > 0:
-                    keep_face = kf
+                if n_degen > 0:
+                    degen_keep = dk
 
-            if keep_face is not None:
-                keep_loop = np.repeat(keep_face, all_vcounts)
-                all_vcounts = all_vcounts[keep_face]
+            if degen_keep is not None:
+                keep_loop = np.repeat(degen_keep, all_vcounts)
+                all_vcounts = all_vcounts[degen_keep]
                 all_loop_verts = all_loop_verts[keep_loop]
-                all_face_mats = all_face_mats[keep_face]
+                all_face_mats = all_face_mats[degen_keep]
                 if all_face_sharp is not None:
-                    all_face_sharp = all_face_sharp[keep_face]
+                    all_face_sharp = all_face_sharp[degen_keep]
                 if all_loop_normals is not None and len(all_loop_normals) == keep_loop.size:
                     all_loop_normals = all_loop_normals[keep_loop]
                 for u_id in list(uv_arrays.keys()):
@@ -726,13 +716,59 @@ class MeshMixin:
                         col_arrays[cn] = col_arrays[cn][keep_loop]
                 total_faces = int(all_vcounts.size)
                 total_loops = int(all_loop_verts.size)
+
+            # Step 2: Resolve exact duplicates, double-sided pairs, and differing-attribute overlays (#26)
+            n_exact_dups = 0
+            if total_faces > 1:
+                uv_list = [uv_arrays[u_id] for u_id in uv_set_order if u_id in uv_arrays and len(uv_arrays[u_id]) == total_loops]
+                col_list = [col_arrays[cn] for cn in col_set_order if cn in col_arrays and len(col_arrays[cn]) == total_loops]
+                norm_arg = all_loop_normals if (all_loop_normals is not None and len(all_loop_normals) == total_loops) else None
+                (
+                    verts_arr,
+                    all_loop_verts,
+                    dup_keep,
+                    double_sided_flags,
+                    _n_ds,
+                    _n_layered,
+                    n_exact_dups,
+                    _extra_src,
+                ) = resolve_duplicate_faces(
+                    verts_arr,
+                    all_loop_verts,
+                    all_vcounts,
+                    all_face_mats,
+                    uv_list,
+                    col_list,
+                    norm_arg,
+                    mode=self.settings.double_sided_faces,
+                )
+                num_verts = len(verts_arr)
+                if not dup_keep.all():
+                    keep_loop = np.repeat(dup_keep, all_vcounts)
+                    all_vcounts = all_vcounts[dup_keep]
+                    all_loop_verts = all_loop_verts[keep_loop]
+                    all_face_mats = all_face_mats[dup_keep]
+                    if all_face_sharp is not None:
+                        all_face_sharp = all_face_sharp[dup_keep]
+                    if all_loop_normals is not None and len(all_loop_normals) == keep_loop.size:
+                        all_loop_normals = all_loop_normals[keep_loop]
+                    for u_id in list(uv_arrays.keys()):
+                        if len(uv_arrays[u_id]) == keep_loop.size:
+                            uv_arrays[u_id] = uv_arrays[u_id][keep_loop]
+                    for cn in list(col_arrays.keys()):
+                        if len(col_arrays[cn]) == keep_loop.size:
+                            col_arrays[cn] = col_arrays[cn][keep_loop]
+                    total_faces = int(all_vcounts.size)
+                    total_loops = int(all_loop_verts.size)
+
+            if n_exact_dups > 0 or n_degen > 0:
                 parts = []
-                if n_dups > 0:
-                    parts.append(f"{n_dups} duplicate")
+                if n_exact_dups > 0:
+                    parts.append(f"{n_exact_dups} duplicate")
                 if n_degen > 0:
                     parts.append(f"{n_degen} degenerate")
                 self.warnings.append(
-                    f"Geometry '{geom_name}': dropped {' and '.join(parts)} face(s)"
+                    f"Geometry '{geom_name}': removed {' and '.join(parts)} face(s)"
                 )
 
         mat_prims: dict[str, np.ndarray] = {}
@@ -744,16 +780,7 @@ class MeshMixin:
 
         # Construct Blender Mesh with foreach_set (fast path when no loose edges)
         me = bpy.data.meshes.new(name=geom_name)
-        if num_verts > 0:
-            if pos_stride == 3:
-                pos_flat = pos_vals[:num_verts * 3]
-            else:
-                p_mat = np.zeros((num_verts, 3), dtype=np.float32)
-                cols_k = min(pos_stride, 3)
-                p_mat[:, :cols_k] = pos_vals[:num_verts * pos_stride].reshape(num_verts, pos_stride)[:, :cols_k]
-                pos_flat = p_mat.ravel()
-        else:
-            pos_flat = np.empty(0, dtype=np.float32)
+        pos_flat = np.ascontiguousarray(verts_arr, dtype=np.float32).ravel() if num_verts > 0 else np.empty(0, dtype=np.float32)
 
         if not loose_edges and total_faces > 0 and all_vcounts is not None and all_loop_verts is not None:
             loop_starts = np.empty(total_faces, dtype=np.int32)
@@ -791,6 +818,9 @@ class MeshMixin:
                 me.polygons.foreach_set("use_smooth", np.ones(total_faces, dtype=bool))
             elif all_face_sharp is not None:
                 me.polygons.foreach_set("use_smooth", np.logical_not(all_face_sharp))
+            if double_sided_flags is not None and len(double_sided_flags) == cur_n_polys:
+                ds_attr = me.attributes.new(name=DOUBLE_SIDED_ATTR, type="BOOLEAN", domain="FACE")
+                ds_attr.data.foreach_set("value", double_sided_flags)
 
         loops_match = (cur_n_loops == total_loops)
         if not loops_match and (uv_set_order or col_set_order or all_loop_normals is not None):
