@@ -10,6 +10,10 @@ Collada (`.dae`) import and export for Blender 5.0 and later, ported from Blende
 [![Blender 5.0+](https://img.shields.io/badge/Blender-5.0%2B-orange.svg)](https://www.blender.org)
 [![License: GPL v2+](https://img.shields.io/badge/License-GPLv2%2B-blue.svg)](LICENSE)
 
+<img src="docs/images/beamng_covet_pbr.jpg" alt="BeamNG Covet imported from covet.zip in Blender" width="820">
+
+<sub>Covet DXi_M imported straight from the game's <code>covet.zip</code>: factory paint, layered materials, glass and lights (BeamNG Full PBR, 1.5.6). Rendered in EEVEE.</sub>
+
 [Install](#install) · [Features](#features) · [Benchmarks](#benchmarks-and-tests) · [BeamNG](#beamng-drive) · [Roadmap](ROADMAP.md) · [Changelog](CHANGELOG.md)
 
 </div>
@@ -212,7 +216,7 @@ Open a vehicle `.zip` (for example `content\vehicles\etk800.zip`) and the **Impo
 | Config + other parts hidden | everything, with unused parts in excluded collections |
 | Everything | every mesh in the archive |
 
-Textures come from every `*.materials.json` in the car's zip and in `common.zip`. In testing, the ETK800 got 17 of 17 color textures and the Covet 34 of 34. A part that still needs its jbeam position goes into a **Needs placement** collection.
+Textures come from every `*.materials.json` in the car's zip and in `common.zip`. In testing, the ETK800 got 17 of 17 color textures and the Covet 34 of 34. A part that still needs its jbeam position goes into a **Needs placement** collection. With **Full PBR** (1.5.6), the car also gets its factory paint, ambient occlusion, clearcoat, layered trim and see-through glass, and headlights and indicators use their real light materials.
 
 <details>
 <summary><b>.cdae details and verification</b></summary>
