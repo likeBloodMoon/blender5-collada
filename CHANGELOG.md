@@ -6,7 +6,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ## [1.5.7] - 2026-11-26
 
-- Changed: License changed from GPL-2.0-or-later to GPL-3.0-or-later, as extensions.blender.org requires. Allowed by the 'or later' clause of the original Blender code. Torque3D-derived data stays MIT. Shorter tagline.
+- Changed: License changed from GPL-2.0-or-later to GPL-3.0-or-later, as extensions.blender.org requires; allowed by the 'or later' clause of the original Blender code. Torque3D-derived data stays MIT. Shortened extension tagline to "Collada (.dae) and BeamNG (.cdae) import and export".
+- Fixed (#39): export `FLOAT_COLOR` (linear → sRGB) and `POINT`-domain color attributes to `.dae`, warning on unsupported types/domains; on import, create `FLOAT_COLOR` (sRGB → linear) when a `COLOR` source has HDR values above `1.0` instead of clamping to `BYTE_COLOR`
+- Fixed (#38): resolve skin controller joint SIDs/IDs within each controller's `<skeleton>` subtree before falling back to global lookup so two armatures sharing bone names bind to their own rigs
+- Fixed (#42): keep sanitized bone IDs and SIDs unique in `GlobalIdMap` (e.g. `Bone L`, `Bone.L`, `Bone_L` → `Bone_L`, `Bone_L2`, `Bone_L3`) so bone names and vertex groups round-trip without collisions
+- Fixed (#40, #41): evaluate each shape key separately through the depsgraph when `apply_modifiers` changes vertex count (Subsurf, Array, Mirror), and write `Basis + (key - relative_key)` for chained relative shape keys
+- Added (#26): **Double-Sided Faces** import option (`Keep (separate vertices)` / `Merge into one face` / `Remove back faces`) consistent across `.dae` and `.cdae` import, exact-duplicate filtering on winding + material + UVs + colors + corner normals, and double-sided export (`double_sided = True` face attribute written twice with reversed winding and flipped normals in `.dae` and `.cdae`, including `Keep Normals` and `Keep Quads`)
+- Fixed (#43): give linked duplicates with active modifiers distinct geometry IDs when `apply_modifiers` and `use_object_instantiation` are both enabled, while keeping unmodified linked duplicates shared
+- Fixed (#47): warn when exporting skinned meshes to `.cdae` (StandardMesh-only) and temporarily switch referenced armatures to rest pose by default
+- Fixed (#48): refuse collinear Forward/Up axes from Python (`CANCELLED` + error report) when `apply_global_orientation` is enabled, and auto-swap the other axis in the export UI
+- Added (#50): register `.cdae` export (`bl_export_operator = "export_scene.beamng_cdae"`) on `IO_FH_beamng_cdae` with a hidden `collection` property so `.cdae` works as a Blender Collection Exporter
+- Fixed (#44): export unassigned (fake-user) actions when **Include all Actions** is enabled by temporarily assigning each matching Blender 5 action/slot, sampling it, and restoring original `animation_data`
+- Fixed (#45): realize Geometry Nodes instances from `depsgraph.object_instances` into the exported mesh copy when `apply_modifiers` is enabled (`.dae` and `.cdae`)
+- Docs: added `docs/profiling.md` (`cProfile` breakdown on a 1M-tri mesh, 4,000-object scene, and BeamNG Covet `DXi_M` config import)
+- CI (#6): added weekly/manual allow-failure workflow (`.github/workflows/daily-blender.yml`) testing against the latest Blender daily build
 
 ## [1.5.6] - 2026-11-26
 

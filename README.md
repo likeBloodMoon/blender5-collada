@@ -242,7 +242,6 @@ Textures come from every `*.materials.json` in the car's zip and in `common.zip`
 
 | Version | Focus |
 | --- | --- |
-| 1.5.8 | Correctness round: vertex color types, multiple rigs, shape keys, actions, Geometry Nodes instances |
 | 1.6 to 2.0 | JBeam-aware vehicles: parts placed where the game puts them (wheels, steering wheels, props), BeamNG Check pre-export linter, material export |
 
 The full plan is in [ROADMAP.md](ROADMAP.md).

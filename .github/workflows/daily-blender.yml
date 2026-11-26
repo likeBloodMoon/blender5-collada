@@ -1,0 +1,83 @@
+name: Blender Daily Compatibility Check
+
+on:
+  schedule:
+    - cron: "0 6 * * 1" # Weekly on Monday 06:00 UTC
+  workflow_dispatch:
+
+jobs:
+  test-daily-blender:
+    runs-on: ubuntu-latest
+    continue-on-error: true
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Install headless Blender runtime libraries
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq --no-install-recommends \
+            libx11-6 libxi6 libxrender1 libxxf86vm1 libxfixes3 libgl1 libxkbcommon0 libsm6 xz-utils
+
+      - name: Download latest Blender daily build (linux-x64)
+        run: |
+          mkdir -p .tools /tmp/blender_daily
+          python3 - <<'PY'
+          import json, urllib.request
+          url = "https://builder.blender.org/download/daily/?format=json&v=1"
+          with urllib.request.urlopen(url, timeout=30) as resp:
+              entries = json.loads(resp.read().decode("utf-8"))
+          picks = [
+              e for e in entries
+              if e.get("platform") == "linux"
+              and e.get("architecture") in ("x86_64", "amd64")
+              and str(e.get("file_name", "")).endswith(".tar.xz")
+              and e.get("risk_id") in ("alpha", "beta", "candidate", "stable")
+          ]
+          picks.sort(key=lambda e: (e.get("version", ""), e.get("file_mtime", 0)), reverse=True)
+          if not picks:
+              raise RuntimeError("No linux-x64 .tar.xz Blender daily build found")
+          chosen = picks[0]
+          print(f"Selected Blender daily: {chosen.get('version')} ({chosen.get('risk_id')}) -> {chosen['url']}")
+          with open("/tmp/blender_daily/url.txt", "w", encoding="utf-8") as fh:
+              fh.write(chosen["url"])
+          PY
+          DAILY_URL=$(cat /tmp/blender_daily/url.txt)
+          curl -fsSL "$DAILY_URL" -o /tmp/blender_daily/blender-daily.tar.xz
+          mkdir -p .tools/blender-daily-linux-x64
+          tar -xJf /tmp/blender_daily/blender-daily.tar.xz --strip-components=1 -C .tools/blender-daily-linux-x64
+          rm -rf /tmp/blender_daily
+
+      - name: Validate, build, and install extension into Blender daily
+        run: |
+          mkdir -p .tools/blender-daily-linux-x64/portable dist
+          BLENDER_5X=".tools/blender-daily-linux-x64/blender"
+          "$BLENDER_5X" --version
+          "$BLENDER_5X" --command extension validate io_scene_collada
+          "$BLENDER_5X" --command extension build --source-dir io_scene_collada --output-dir dist
+          ZIP_FILE=$(ls dist/collada_io-*.zip | head -n 1)
+          "$BLENDER_5X" --command extension install-file -r user_default -e "$ZIP_FILE"
+
+      - name: Run synthetic regression & round-trip suites against Blender daily
+        run: |
+          export BLENDER_5X=".tools/blender-daily-linux-x64/blender"
+          python3 -m pip install --quiet numpy
+          python3 tests/test_accuracy_roundtrip.py
+          python3 tests/test_malformed.py
+          python3 tests/test_archives.py
+          python3 tests/test_cdae_import.py
+          python3 tests/test_cdae_export.py
+          python3 tests/test_keep_normals.py
+          python3 tests/test_keep_quads.py
+          python3 tests/test_color_attributes_export.py
+          python3 tests/test_two_rigs_import.py
+          python3 tests/test_bone_id_uniqueness.py
+          python3 tests/test_shapekeys_export.py
+          python3 tests/test_double_sided_faces.py
+          python3 tests/test_linked_duplicates_modifiers.py
+          python3 tests/test_cdae_skinned_warning.py
+          python3 tests/test_axis_validation.py
+          python3 tests/test_cdae_collection_exporter.py
+          python3 tests/test_include_all_actions.py
+          python3 tests/test_geonodes_instances.py
+          python3 tests/test_beamng_pbr_52.py
+          python3 tests/test_beamng_glowmap.py
