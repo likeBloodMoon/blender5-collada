@@ -35,7 +35,7 @@ jobs:
           python3 tests/smoke_fastfmt.py
           python3 tests/fuzz_fastfmt.py
       - name: Upload linux-x64 native binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-linux-x64
           path: io_scene_collada/_native/libfastfmt.so
@@ -56,7 +56,7 @@ jobs:
           python -m pip install --quiet numpy
           python tests/smoke_fastfmt.py
       - name: Upload windows-x64 native binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-windows-x64
           path: io_scene_collada/_native/fastfmt.dll
@@ -75,12 +75,12 @@ jobs:
           /tmp/smoke_venv/bin/pip install --quiet numpy
           /tmp/smoke_venv/bin/python tests/smoke_fastfmt.py
       - name: Upload macos-arm64 native binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-macos-arm64
           path: out/macos-arm64/libfastfmt.dylib
       - name: Upload macos-x64 native binary
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: native-macos-x64
           path: out/macos-x64/libfastfmt.dylib
@@ -260,7 +260,7 @@ jobs:
           ls -lh dist/
 
       - name: Upload built extension artifacts
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: collada_io-extensions
           path: |
