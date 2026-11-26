@@ -40,18 +40,18 @@ This extension is a full port of Blender 4.5.1's Collada I/O to Python, with the
 
    | System | File |
    | --- | --- |
-   | Windows | `collada_io-1.5.5-windows_x64.zip` |
-   | Linux | `collada_io-1.5.5-linux_x64.zip` |
-   | macOS (Apple Silicon) | `collada_io-1.5.5-macos_arm64.zip` |
-   | macOS (Intel) | `collada_io-1.5.5-macos_x64.zip` |
-   | Any, no compiled code | `collada_io-1.5.5-pure-python.zip` |
+   | Windows | `collada_io-1.5.6-windows_x64.zip` |
+   | Linux | `collada_io-1.5.6-linux_x64.zip` |
+   | macOS (Apple Silicon) | `collada_io-1.5.6-macos_arm64.zip` |
+   | macOS (Intel) | `collada_io-1.5.6-macos_x64.zip` |
+   | Any, no compiled code | `collada_io-1.5.6-pure-python.zip` |
 
 2. Drag the `.zip` into Blender, or go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…**
 3. **Restart Blender after updating.** Blender keeps the old add-on code loaded until it restarts.
 
 ```bash
 # or from the command line
-blender --command extension install-file -r user_default -e collada_io-1.5.5-windows_x64.zip
+blender --command extension install-file -r user_default -e collada_io-1.5.6-windows_x64.zip
 ```
 
 Every release has a `SHA256SUMS.txt` to verify the download.
@@ -242,7 +242,6 @@ Textures come from every `*.materials.json` in the car's zip and in `common.zip`
 
 | Version | Focus |
 | --- | --- |
-| 1.5.6 | BeamNG PBR materials: paint colors from the `.pc` through palette masks (liveries), ambient occlusion, clearcoat, see-through glass ([#52](https://github.com/likeBloodMoon/blender5-collada/issues/52)) |
 | 1.5.7 | Correctness round: vertex color types, multiple rigs, shape keys, actions, Geometry Nodes instances |
 | 1.6 to 2.0 | JBeam-aware vehicles: parts placed where the game puts them (wheels, steering wheels, props), BeamNG Check pre-export linter, material export |
 
