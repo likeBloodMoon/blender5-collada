@@ -93,7 +93,7 @@ In this order. The module each fix lands in is in brackets.
 - [x] #48 Same axis for Forward and Up accepted `[__init__]`: swap the other axis in the UI (like glTF/FBX) and refuse it from Python.
 - [x] #50 `.cdae` as a Collection Exporter `[__init__]`: `bl_export_operator` + a hidden `collection` property.
 - [x] #44 "Include all Actions" does nothing `[exporter/animation]`: export unassigned actions by temporarily assigning them (with a matching slot) and sampling.
-- [ ] #45 Geometry Nodes instances export empty `[exporter/geometry]`: realize instances from `depsgraph.object_instances`, or at least warn.
+- [x] #45 Geometry Nodes instances export empty `[exporter/geometry]`: realize instances from `depsgraph.object_instances`, or at least warn.
 - [ ] **Profiling pass** after the split, so the profile maps onto modules: `cProfile` on a 1M-tri mesh, a 4,000-object scene and a full BeamNG config import. Known suspect: duplicate-face filtering falls back to a per-face Python loop on mixed tri/quad/n-gon meshes. Write the top functions per case into `docs/profiling.md`.
 - [ ] #6 Allow-failure CI job against Blender daily builds.
 

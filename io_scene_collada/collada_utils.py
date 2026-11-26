@@ -473,6 +473,47 @@ def get_mesh_copy(
             me = ob_eval.to_mesh(preserve_all_data_layers=True, depsgraph=depsgraph)
             mesh_copy = me.copy()
             ob_eval.to_mesh_clear()
+
+            # Realize Geometry Nodes instances into mesh_copy (#45)
+            if any(mod.type == "NODES" and mod.show_viewport for mod in ob.modifiers):
+                inv_parent = ob_eval.matrix_world.inverted_safe()
+                inst_bm = None
+                inst_count = 0
+                for inst in depsgraph.object_instances:
+                    if not inst.is_instance or inst.parent != ob_eval:
+                        continue
+                    inst_ob = inst.object
+                    if inst_ob is None or inst_ob.type != "MESH":
+                        continue
+                    inst_me = inst_ob.to_mesh()
+                    try:
+                        if inst_me is None or len(inst_me.vertices) == 0:
+                            continue
+                        if inst_bm is None:
+                            inst_bm = bmesh.new()
+                            if len(mesh_copy.vertices) > 0:
+                                inst_bm.from_mesh(mesh_copy)
+                        rel_mat = inv_parent @ inst.matrix_world
+                        prev_v_count = len(inst_bm.verts)
+                        prev_f_count = len(inst_bm.faces)
+                        inst_bm.from_mesh(inst_me)
+                        inst_bm.verts.ensure_lookup_table()
+                        bmesh.ops.transform(
+                            inst_bm,
+                            matrix=rel_mat,
+                            verts=inst_bm.verts[prev_v_count:],
+                        )
+                        if rel_mat.determinant() < 0.0:
+                            inst_bm.faces.ensure_lookup_table()
+                            bmesh.ops.reverse_faces(inst_bm, faces=inst_bm.faces[prev_f_count:])
+                        inst_count += 1
+                    finally:
+                        inst_ob.to_mesh_clear()
+                if inst_bm is not None and inst_count > 0:
+                    inst_bm.normal_update()
+                    inst_bm.to_mesh(mesh_copy)
+                    inst_bm.free()
+                    mesh_copy.update()
         finally:
             if saved_mod_attrs:
                 for mod, attr, orig_val in reversed(saved_mod_attrs):
