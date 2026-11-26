@@ -37,6 +37,7 @@ from .collada_utils import (
     bc_decompose,
     build_export_set,
     build_global_transform,
+    flush_edit_mode_objects,
     focallength_to_fov,
     get_action_id,
     get_assigned_armature,
@@ -308,6 +309,7 @@ class DocumentExporter:
             s.object_transformation_type = s.animation_transformation_type
 
         self.id_map.clear()
+        flush_edit_mode_objects(self.view_layer, self.depsgraph)
         self.export_set = build_export_set(
             self.scene,
             self.view_layer,

@@ -279,6 +279,20 @@ def is_object_visible_in_view_layer(ob: Object, view_layer: ViewLayer) -> bool:
     return ob.visible_get(view_layer=view_layer)
 
 
+def flush_edit_mode_objects(view_layer: ViewLayer, depsgraph=None) -> bool:
+    """Flush unsaved Edit Mode changes back to datablocks before export."""
+    updated = False
+    for ob in view_layer.objects:
+        if ob.mode == "EDIT":
+            if ob.update_from_editmode():
+                updated = True
+    if updated:
+        view_layer.update()
+        if depsgraph is not None:
+            depsgraph.update()
+    return updated
+
+
 def build_export_set(
     scene: Scene,
     view_layer: ViewLayer,

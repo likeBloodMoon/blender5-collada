@@ -23,7 +23,7 @@ import bpy
 import numpy as np
 from mathutils import Matrix, Quaternion, Vector
 
-from ..collada_utils import KEEP_NORMALS_ATTR, get_mesh_copy
+from ..collada_utils import KEEP_NORMALS_ATTR, flush_edit_mode_objects, get_mesh_copy
 from .msgpack_lite import MsgPackWriter
 from .reader import (
     DTYPE_DETAIL,
@@ -341,6 +341,7 @@ class CdaeExporter:
         self.warnings: list[str] = []
 
     def export_document(self) -> bool:
+        flush_edit_mode_objects(self.context.view_layer)
         if self.settings.use_selection:
             mesh_obs = [ob for ob in self.context.selected_objects if ob.type == "MESH"]
         else:
