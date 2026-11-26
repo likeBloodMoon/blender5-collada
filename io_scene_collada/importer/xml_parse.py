@@ -101,7 +101,6 @@ _LEGACY_NONFINITE_RE = re.compile(r"[+-]?\d+\.#(?:QNAN|SNAN|IND|INF)\d*", re.IGN
 
 def _fromstring_f32_strict(text: str):
     """Parse whitespace-separated float32 values without relying on NumPy DeprecationWarning."""
-    import numpy as np
 
     toks = text.split()
     if not toks:
@@ -117,7 +116,6 @@ def _fromstring_f32_strict(text: str):
 
 def _fromstring_i32_strict(text: str):
     """Parse whitespace-separated int32 values without relying on NumPy DeprecationWarning."""
-    import numpy as np
 
     toks = text.split()
     if not toks:
@@ -130,7 +128,6 @@ def _fromstring_i32_strict(text: str):
 
 
 def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: str = ""):
-    import numpy as np
 
     if not text or not text.strip():
         return np.empty(0, dtype=np.float32)
@@ -156,7 +153,6 @@ def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: st
 
 
 def _parse_i32_np(text: str | None, warnings: list[str] | None = None, label: str = ""):
-    import numpy as np
 
     if not text or not text.strip():
         return np.empty(0, dtype=np.int32)

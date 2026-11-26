@@ -11,19 +11,19 @@ import xml.etree.ElementTree as ET
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from mathutils import Matrix
+from mathutils import Matrix, Vector
 
 from ..collada_utils import (
     create_fcurve_on_channelbag,
     dae_flat_to_matrix,
     ensure_action_and_channelbag,
+    fov_to_focallength,
 )
 from .xml_parse import (
     _find_child,
     _find_children,
     _parse_floats,
     _parse_strings,
-    _safe_int,
     _slice_accessor_array,
     _strip_ns,
     _uri_to_local_id,

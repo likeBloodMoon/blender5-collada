@@ -19,13 +19,12 @@ from .xml_parse import (
     _find_children,
     _parse_floats,
     _safe_float,
-    _strip_ns,
     _uri_to_local_id,
     _uri_to_native_path,
 )
 
 if TYPE_CHECKING:
-    from bpy.types import Material, Object
+    from bpy.types import Material, Mesh, Object
 
 
 class MaterialsMixin:
@@ -383,7 +382,6 @@ class MaterialsMixin:
             return
         mat_prims = self.mesh_mat_prims.get(geom_id, {})
         mesh: Mesh = ob.data
-        import numpy as np
 
         n_polys = len(mesh.polygons)
         mat_idx_arr = np.zeros(n_polys, dtype=np.int32)

@@ -23,7 +23,6 @@ from .xml_parse import (
     _parse_ints,
     _parse_strings,
     _safe_float,
-    _safe_int,
     _slice_accessor_array,
     _uri_to_local_id,
 )

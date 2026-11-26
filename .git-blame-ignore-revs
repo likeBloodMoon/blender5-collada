@@ -6,3 +6,4 @@ b9c57bb472cdcd3c68fdb94417900846d69e104a  # importer/materials.py
 54d6a5141c01ea7a01029bb9d31451e1d16a8e91  # importer/mesh.py
 d083fd9c26ba59269513cf38144f0126ebc6b6c6  # importer/rig.py
 bc87745f8acc536c7285a30160e8af7c9292a19a  # importer/animation.py
+f550d9500b4de49f206426bf704fe734f3594b9b  # importer/scene.py

@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import math
 import os
-import re
 import traceback
 import xml.etree.ElementTree as ET
 import zipfile
@@ -17,21 +16,15 @@ from typing import TYPE_CHECKING
 
 import bpy
 import numpy as np
-from mathutils import Matrix, Vector
 
 from .collada_utils import (
     check_target_collection_visibility,
-    create_fcurve_on_channelbag,
-    dae_flat_to_matrix,
-    ensure_action_and_channelbag,
-    fov_to_focallength,
-    set_editbone_property_matrix,
 )
 
 from .importer.archive import ArchiveMixin
 from .importer.materials import MaterialsMixin
 from .importer.mesh import MeshMixin
-from .importer.rig import MINIMUM_BONE_LENGTH, RigMixin, _MorphData, _SkinData
+from .importer.rig import RigMixin, _MorphData, _SkinData
 from .importer.animation import AnimationMixin, _AnimChannelData
 from .importer.scene import SceneMixin
 if TYPE_CHECKING:
@@ -42,19 +35,8 @@ from .importer.xml_parse import (
     _find_child,
     _find_children,
     _norm_archive_path,
-    _parse_extra_blender,
-    _parse_f32_np,
-    _parse_floats,
-    _parse_i32_np,
-    _parse_ints,
-    _parse_strings,
     _parse_xml_safe,
-    _safe_float,
-    _safe_int,
-    _slice_accessor_array,
     _strip_ns,
-    _uri_to_local_id,
-    _uri_to_native_path,
 )
 
 
