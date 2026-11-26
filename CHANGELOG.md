@@ -4,6 +4,11 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.3] - 2026-11-26
+
+- Fixed (#19): **Resolution → Render** (`export_mesh_type_selection='render'`) now actually evaluates modifiers at render settings (render levels and `show_render` visibility, non-destructively restored after export) on `.dae` export, and added the matching **Apply Modifiers + Resolution** (`Viewport` / `Render`) pair to `.cdae` export
+- Docs: clarified in `docs/cdae_format.md` that pure `int16` `Quat16` quantization is at most `~0.0035°` and the extra up to `0.0396°` in paired verification comes from BeamNG's shipped game files themselves
+
 ## [1.5.2] - 2026-11-26
 
 - Added (#18): **Keep Quads** export option (`keep_quads`, default `False`) under **Triangulate** on `.dae` export to triangulate n-gons only and preserve 4-sided quads in `<polylist>` (greyed out for `.cdae`)
