@@ -70,6 +70,39 @@ def _has_nearby_beamng_pc(filepath: str) -> bool:
     return False
 
 
+def _pick_swapped_axis(changed_axis: str, other_axis: str, prev_changed: str) -> str:
+    """Return a non-collinear replacement for ``other_axis`` when ``changed_axis`` collides with it (#48)."""
+    base_changed = changed_axis.lstrip("-")
+    if base_changed != other_axis.lstrip("-"):
+        return other_axis
+    if prev_changed and prev_changed.lstrip("-") != base_changed:
+        return prev_changed
+    for cand in ("Y", "Z", "X"):
+        if cand != base_changed:
+            return cand
+    return "Y"
+
+
+def _on_forward_axis_update(self, _context):
+    fwd = self.export_global_forward_selection
+    if self.axis_ui_active:
+        new_up = _pick_swapped_axis(fwd, self.export_global_up_selection, self.prev_forward_axis)
+        if new_up != self.export_global_up_selection:
+            self.prev_up_axis = new_up
+            self.export_global_up_selection = new_up
+    self.prev_forward_axis = fwd
+
+
+def _on_up_axis_update(self, _context):
+    up = self.export_global_up_selection
+    if self.axis_ui_active:
+        new_fwd = _pick_swapped_axis(up, self.export_global_forward_selection, self.prev_up_axis)
+        if new_fwd != self.export_global_forward_selection:
+            self.prev_forward_axis = new_fwd
+            self.export_global_forward_selection = new_fwd
+    self.prev_up_axis = up
+
+
 class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
     """Save a Collada file"""
 
@@ -131,6 +164,7 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
         description="Global Forward axis for export",
         items=_AXIS_ITEMS,
         default="Y",
+        update=_on_forward_axis_update,
     )
 
     export_global_up_selection: EnumProperty(
@@ -138,7 +172,12 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
         description="Global Up axis for export",
         items=_AXIS_ITEMS,
         default="Z",
+        update=_on_up_axis_update,
     )
+
+    axis_ui_active: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
+    prev_forward_axis: StringProperty(default="Y", options={"HIDDEN", "SKIP_SAVE"})
+    prev_up_axis: StringProperty(default="Z", options={"HIDDEN", "SKIP_SAVE"})
 
     apply_global_orientation: BoolProperty(
         name="Apply Global Orientation",
@@ -418,9 +457,25 @@ class WM_OT_collada_export(bpy.types.Operator, ExportHelper):
             col.prop(self, "keep_bind_info")
             col.prop(self, "limit_precision")
 
+    def invoke(self, context, event):
+        self.axis_ui_active = True
+        self.prev_forward_axis = self.export_global_forward_selection
+        self.prev_up_axis = self.export_global_up_selection
+        return super().invoke(context, event)
+
     def execute(self, context):
         if not self.filepath:
             self.report({"ERROR"}, "No filepath given")
+            return {"CANCELLED"}
+
+        if self.apply_global_orientation and (
+            self.export_global_forward_selection.lstrip("-") == self.export_global_up_selection.lstrip("-")
+        ):
+            self.report(
+                {"ERROR"},
+                f"Forward axis ({self.export_global_forward_selection}) and Up axis "
+                f"({self.export_global_up_selection}) cannot be on the same axis",
+            )
             return {"CANCELLED"}
 
         filepath = bpy.path.ensure_ext(self.filepath, ".dae")
