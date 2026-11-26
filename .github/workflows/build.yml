@@ -168,6 +168,7 @@ jobs:
           python3 tests/test_dae_edge_cases.py
           python3 tests/test_render_modifiers.py
           python3 tests/test_edit_mode_export.py
+          python3 tests/test_hidden_objects_export.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
 

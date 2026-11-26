@@ -303,24 +303,24 @@ def build_export_set(
     collection: str = "",
 ) -> list[Object]:
     """Exact port of BKE_object_relational_superset + bc_bubble_sort_by_Object_name."""
-    # Base objects in view_layer order (matching BKE_object_relational_superset)
-    # In Blender C++, view_layer->object_bases is iterated in order.
+    # Base objects in view_layer order (matching BKE_object_relational_superset).
+    # view_layer.objects already excludes objects in excluded collections while
+    # keeping objects hidden via H (hide_set) or Disable in Viewports (hide_viewport).
     if collection:
         coll = bpy.data.collections.get(collection)
         if coll is None:
             return []
         coll_ptrs = {ob.as_pointer() for ob in coll.all_objects}
-        visible_objs = [
-            ob for ob in view_layer.objects
-            if ob.as_pointer() in coll_ptrs and ob.visible_get(view_layer=view_layer)
-        ]
+        layer_objs = [ob for ob in view_layer.objects if ob.as_pointer() in coll_ptrs]
     else:
-        visible_objs = [ob for ob in view_layer.objects if ob.visible_get(view_layer=view_layer)]
+        layer_objs = list(view_layer.objects)
+
+    layer_ptrs = {ob.as_pointer() for ob in layer_objs} if include_armatures else set()
 
     if selected:
-        seed = [ob for ob in visible_objs if ob.select_get(view_layer=view_layer)]
+        seed = [ob for ob in layer_objs if ob.select_get(view_layer=view_layer)]
     else:
-        seed = list(visible_objs)
+        seed = list(layer_objs)
 
     export_set: list[Object] = []
     seen: set[int] = set()
@@ -341,12 +341,12 @@ def build_export_set(
             ob = export_set[idx]
             idx += 1
             if include_children:
-                for child in visible_objs:
+                for child in layer_objs:
                     if child.parent == ob:
                         add_obj(child)
             if include_armatures:
                 arm = get_assigned_armature(ob)
-                if arm is not None and arm.visible_get(view_layer=view_layer):
+                if arm is not None and arm.as_pointer() in layer_ptrs:
                     add_obj(arm)
 
     if sort_by_name:
