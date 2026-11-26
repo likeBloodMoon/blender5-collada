@@ -63,6 +63,7 @@ class CdaeExportSettings:
     export_mesh_type: str = "view"
     keep_normals: bool = True
     compress: bool = False
+    collection: str = ""
 
 
 def _blender_quat_to_quat16(q: Quaternion) -> tuple[int, int, int, int]:
@@ -371,7 +372,18 @@ class CdaeExporter:
 
     def export_document(self) -> bool:
         flush_edit_mode_objects(self.context.view_layer)
-        if self.settings.use_selection:
+        if self.settings.collection:
+            coll = bpy.data.collections.get(self.settings.collection)
+            if coll is None:
+                self.errors.append(f"Collection '{self.settings.collection}' not found")
+                return False
+            candidates = list(coll.all_objects)
+            if self.settings.use_selection:
+                sel_ptrs = {ob.as_pointer() for ob in self.context.selected_objects}
+                mesh_obs = [ob for ob in candidates if ob.type == "MESH" and ob.as_pointer() in sel_ptrs]
+            else:
+                mesh_obs = [ob for ob in candidates if ob.type == "MESH"]
+        elif self.settings.use_selection:
             mesh_obs = [ob for ob in self.context.selected_objects if ob.type == "MESH"]
         else:
             mesh_obs = [ob for ob in self.scene.objects if ob.type == "MESH"]

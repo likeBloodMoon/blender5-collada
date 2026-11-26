@@ -91,7 +91,7 @@ In this order. The module each fix lands in is in brackets.
 - [x] #43 Linked duplicates with different modifiers share one mesh `[exporter/geometry]`: only share a geometry when the evaluated meshes are the same.
 - [x] #47 `.cdae` skinned mesh exported in the current pose with no warning `[cdae/exporter]`: warn; export the rest pose by default.
 - [x] #48 Same axis for Forward and Up accepted `[__init__]`: swap the other axis in the UI (like glTF/FBX) and refuse it from Python.
-- [ ] #50 `.cdae` as a Collection Exporter `[__init__]`: `bl_export_operator` + a hidden `collection` property.
+- [x] #50 `.cdae` as a Collection Exporter `[__init__]`: `bl_export_operator` + a hidden `collection` property.
 - [ ] #44 "Include all Actions" does nothing `[exporter/animation]`: export unassigned actions by temporarily assigning them (with a matching slot) and sampling.
 - [ ] #45 Geometry Nodes instances export empty `[exporter/geometry]`: realize instances from `depsgraph.object_instances`, or at least warn.
 - [ ] **Profiling pass** after the split, so the profile maps onto modules: `cProfile` on a 1M-tri mesh, a 4,000-object scene and a full BeamNG config import. Known suspect: duplicate-face filtering falls back to a per-face Python loop on mixed tri/quad/n-gon meshes. Write the top functions per case into `docs/profiling.md`.

@@ -1095,6 +1095,13 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
         options={"HIDDEN"},
     )
 
+    collection: StringProperty(
+        name="Collection",
+        description="Export only objects in this collection (used by Blender Collection Exporters)",
+        default="",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
     use_selection: BoolProperty(
         name="Selection Only",
         description="Export selected mesh objects only",
@@ -1158,12 +1165,13 @@ class EXPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ExportHelper):
             return {"CANCELLED"}
 
         settings = CdaeExportSettings(
-            filepath=self.filepath,
+            filepath=bpy.path.ensure_ext(self.filepath, ".cdae"),
             use_selection=self.use_selection,
             apply_modifiers=self.apply_modifiers,
             export_mesh_type=self.export_mesh_type_selection,
             keep_normals=self.keep_normals,
             compress=self.compress and zstd_available(),
+            collection=self.collection,
         )
         exporter = CdaeExporter(context, settings)
         ok = exporter.export_document()
@@ -1190,6 +1198,7 @@ class IO_FH_beamng_cdae(bpy.types.FileHandler):
     bl_idname = "IO_FH_beamng_cdae"
     bl_label = "BeamNG Cached Collada"
     bl_import_operator = "import_scene.beamng_cdae"
+    bl_export_operator = "export_scene.beamng_cdae"
     bl_file_extensions = ".cdae"
 
     @classmethod

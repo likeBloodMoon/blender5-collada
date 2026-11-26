@@ -180,6 +180,7 @@ jobs:
           python3 tests/test_linked_duplicates_modifiers.py
           python3 tests/test_cdae_skinned_warning.py
           python3 tests/test_axis_validation.py
+          python3 tests/test_cdae_collection_exporter.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
           python3 tests/test_beamng_materials_51.py
