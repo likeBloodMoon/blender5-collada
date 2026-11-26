@@ -524,7 +524,15 @@ class CdaeImporter:
                 if ma is None:
                     ma = bpy.data.materials.new(name=mat.name)
             if beamng_mat_maps:
-                refs = lookup_material_color_maps(beamng_mat_maps, mat.name)
+                if self._beamng_mat_ctx is not None:
+                    glow_target = self._beamng_mat_ctx.resolve_glow_target(mat.name)
+                    if glow_target is not None:
+                        ma["beamng_glow_source"] = glow_target
+                        refs = lookup_material_color_maps(beamng_mat_maps, glow_target, mat.name)
+                    else:
+                        refs = lookup_material_color_maps(beamng_mat_maps, mat.name)
+                else:
+                    refs = lookup_material_color_maps(beamng_mat_maps, mat.name)
                 if refs:
                     ntree = ma.node_tree
                     shader_node = (

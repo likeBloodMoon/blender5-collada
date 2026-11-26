@@ -54,6 +54,8 @@ class BeamngMaterialContext:
         *,
         pbr_mode: bool = True,
         rename_uvs: bool = False,
+        lights_mode: str = "OFF",
+        resolved_part_names: list[str] | None = None,
     ) -> None:
         self.sources: list[VehicleSource] = [vehicle_src]
         if common_src is not None and common_src.path != vehicle_src.path:
@@ -61,9 +63,12 @@ class BeamngMaterialContext:
 
         self.pbr_mode: bool = pbr_mode
         self.rename_uvs: bool = rename_uvs
+        self.lights_mode: str = lights_mode
+        self._resolved_part_names: list[str] = list(resolved_part_names) if resolved_part_names else []
         self.import_token: str = uuid.uuid4().hex
         self.mat_maps: dict[str, list[str]] = {}
         self.mat_specs: dict[str, BeamngMaterialSpec] = {}
+        self.glow_map: dict[str, dict[str, str]] = {}
         self.warnings: list[str] = []
         self.missing_textures: list[str] = []
         self._missing_seen: set[str] = set()
@@ -86,6 +91,7 @@ class BeamngMaterialContext:
 
     def __enter__(self) -> BeamngMaterialContext:
         self._load_all_materials_json()
+        self._load_glow_maps()
         return self
 
     def __exit__(self, exc_type, exc_val, exc_tb) -> None:
@@ -191,11 +197,62 @@ class BeamngMaterialContext:
         self.mat_maps = combined
         self.mat_specs = combined_specs
 
+    def _load_glow_maps(self) -> None:
+        """Collect jbeam glowMap entries: config's resolved parts first, then vehicle zip, then common.zip."""
+        gm: dict[str, dict[str, str]] = {}
+
+        def _add_part_glow(part) -> None:
+            for mat_key, state_map in part.glow_map.items():
+                k = mat_key.strip().lower()
+                if k and k not in gm:
+                    gm[k] = dict(state_map)
+
+        # 1. Active config's resolved parts first
+        if self._resolved_part_names:
+            veh_parts = self.sources[0].part_index.parts
+            com_parts = self.sources[1].part_index.parts if len(self.sources) > 1 else {}
+            for pname in self._resolved_part_names:
+                p = veh_parts.get(pname) or com_parts.get(pname)
+                if p is not None and p.glow_map:
+                    _add_part_glow(p)
+
+        # 2. All jbeam parts in vehicle zip, then 3. all jbeam parts in common.zip
+        for src in self.sources:
+            for p in sorted(src.part_index.parts.values(), key=lambda x: (x.file.lower(), x.name.lower())):
+                if p.glow_map:
+                    _add_part_glow(p)
+
+        self.glow_map = gm
+
+    def resolve_glow_target(self, *names: str) -> str | None:
+        """If any of ``names`` is a jbeam glowMap placeholder, return the mapped real material name."""
+        if not self.glow_map:
+            return None
+        for nm in names:
+            if not nm:
+                continue
+            k = nm.strip().lower()
+            candidates = [k]
+            for suffix in ("-material", "-effect", "_material"):
+                if k.endswith(suffix) and len(k) > len(suffix):
+                    candidates.append(k[: -len(suffix)])
+            for cand in candidates:
+                entry = self.glow_map.get(cand)
+                if entry is not None:
+                    if self.lights_mode == "ON":
+                        return entry.get("on") or entry.get("on_intense") or entry.get("off")
+                    return entry.get("off") or entry.get("on") or entry.get("on_intense")
+        return None
+
     def apply_material(self, ma: Material, *names: str, dae_dir: str = "") -> bool:
         """Apply full v1.5 PBR node tree if pbr_mode is enabled and a v1.5 spec exists."""
+        glow_target = self.resolve_glow_target(*names)
+        if glow_target is not None:
+            ma["beamng_glow_source"] = glow_target
         if not self.pbr_mode or not self.mat_specs:
             return False
-        spec = lookup_material_spec(self.mat_specs, *names)
+        lookup_names = (glow_target, *names) if glow_target is not None else names
+        spec = lookup_material_spec(self.mat_specs, *lookup_names)
         if spec is None or not spec.is_v15:
             return False
         apply_beamng_pbr_material(ma, spec, self, dae_dir=dae_dir)

@@ -601,6 +601,17 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         options={"HIDDEN", "SKIP_SAVE"},
     )
 
+    beamng_lights: EnumProperty(
+        name="Lights",
+        description="Which jbeam glowMap material state to use for light placeholder materials",
+        items=(
+            ("OFF", "Off", "Use each glowMap's 'off' material"),
+            ("ON", "On", "Use each glowMap's 'on' material (lit headlights/taillights)"),
+        ),
+        default="OFF",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
     interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     fix_orientation: BoolProperty(
@@ -730,6 +741,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
                 use_common=self.use_common,
                 spread_out=self.spread_out,
                 beamng_materials=self.beamng_materials,
+                beamng_lights=self.beamng_lights,
                 base_dae_settings=settings,
             )
             report_capped(self, "WARNING", warnings)
@@ -874,6 +886,17 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         default="PBR",
         options={"HIDDEN", "SKIP_SAVE"},
     )
+
+    beamng_lights: EnumProperty(
+        name="Lights",
+        description="Which jbeam glowMap material state to use for light placeholder materials",
+        items=(
+            ("OFF", "Off", "Use each glowMap's 'off' material"),
+            ("ON", "On", "Use each glowMap's 'on' material (lit headlights/taillights)"),
+        ),
+        default="OFF",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
     interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     def invoke(self, context, event):
@@ -957,6 +980,7 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
                 use_common=self.use_common,
                 spread_out=self.spread_out,
                 beamng_materials=self.beamng_materials,
+                beamng_lights=self.beamng_lights,
                 base_cdae_settings=settings,
             )
             report_capped(self, "WARNING", warnings)

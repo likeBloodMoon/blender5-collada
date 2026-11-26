@@ -378,6 +378,7 @@ def execute_beamng_import(
     use_common: bool = True,
     spread_out: bool = False,
     beamng_materials: str = "PBR",
+    beamng_lights: str = "OFF",
     base_dae_settings: ImportSettings | None = None,
     base_cdae_settings: CdaeImportSettings | None = None,
 ) -> tuple[bool, str, list[str], list[str]]:
@@ -437,7 +438,13 @@ def execute_beamng_import(
         groups: list[tuple[list, list]] = []
         total_meshes = 0
         any_ok = False
-        with BeamngMaterialContext(src, common_src_m1, pbr_mode=pbr_mode, rename_uvs=pbr_mode) as mat_ctx:
+        with BeamngMaterialContext(
+            src,
+            common_src_m1,
+            pbr_mode=pbr_mode,
+            rename_uvs=pbr_mode,
+            lights_mode=beamng_lights,
+        ) as mat_ctx:
             for m in selected:
                 if len(selected) > 1:
                     stem = os.path.splitext(m.path.rsplit("/", 1)[-1])[0] or "Model"
@@ -604,7 +611,14 @@ def execute_beamng_import(
     pc_paints = ce.pc.paints if ce.pc is not None else []
     glass_fallbacks: list[str] = []
 
-    with BeamngMaterialContext(src, common_src, pbr_mode=pbr_mode, rename_uvs=pbr_mode) as mat_ctx:
+    with BeamngMaterialContext(
+        src,
+        common_src,
+        pbr_mode=pbr_mode,
+        rename_uvs=pbr_mode,
+        lights_mode=beamng_lights,
+        resolved_part_names=[p.name for p in res.parts],
+    ) as mat_ctx:
         for m in own_models_to_import:
             if beamng_parts_mode == "CONFIG":
                 want_here = own_file_map.get(m.path, set()) - imported_own_names
@@ -970,6 +984,15 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
         ),
         default="PBR",
     )
+    lights_mode: EnumProperty(
+        name="Lights",
+        description="Which jbeam glowMap material state to use for light placeholder materials",
+        items=(
+            ("OFF", "Off", "Use each glowMap's 'off' material"),
+            ("ON", "On", "Use each glowMap's 'on' material (lit headlights/taillights)"),
+        ),
+        default="OFF",
+    )
     models: CollectionProperty(type=BeamNGModelItem)
     active_model_index: IntProperty(default=0)
     common_status: StringProperty(default="", options={"HIDDEN"})
@@ -1001,6 +1024,7 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             "use_common": bool(self.use_common),
             "spread_out": bool(self.spread_out),
             "materials_mode": self.materials_mode,
+            "lights_mode": self.lights_mode,
             "selected_models": [it.path for it in self.models if it.selected],
         }
         try:
@@ -1065,6 +1089,8 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             self.spread_out = bool(saved["spread_out"])
         if saved.get("materials_mode") in ("PBR", "BASE_COLOR"):
             self.materials_mode = saved["materials_mode"]
+        if saved.get("lights_mode") in ("OFF", "ON"):
+            self.lights_mode = saved["lights_mode"]
 
         _update_model_ticks_for_config(self)
         if self.config_path == _NO_CONFIG_ID and isinstance(saved.get("selected_models"), list):
@@ -1119,7 +1145,9 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             rows=min(max(len(self.models), 3), 10),
         )
 
-        layout.prop(self, "materials_mode")
+        row = layout.row(align=True)
+        row.prop(self, "materials_mode")
+        row.prop(self, "lights_mode")
         layout.prop(self, "spread_out")
 
     def execute(self, context):
@@ -1157,6 +1185,7 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             use_common=bool(self.use_common),
             spread_out=bool(self.spread_out),
             beamng_materials=self.materials_mode,
+            beamng_lights=self.lights_mode,
             base_dae_settings=base_dae,
             base_cdae_settings=base_cdae,
         )

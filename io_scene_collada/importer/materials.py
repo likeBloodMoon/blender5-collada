@@ -131,7 +131,15 @@ class MaterialsMixin:
 
     def _try_apply_beamng_material_texture(self, ma: Material, mat_name: str, mat_id: str) -> None:
         """If a material has no Base Color texture yet, look up colorMap/baseColorMap from main.materials.json."""
-        refs = lookup_material_color_maps(self._beamng_mat_maps, mat_name, mat_id)
+        if self._beamng_mat_ctx is not None:
+            glow_target = self._beamng_mat_ctx.resolve_glow_target(mat_name, mat_id)
+            if glow_target is not None:
+                ma["beamng_glow_source"] = glow_target
+                refs = lookup_material_color_maps(self._beamng_mat_maps, glow_target, mat_name, mat_id)
+            else:
+                refs = lookup_material_color_maps(self._beamng_mat_maps, mat_name, mat_id)
+        else:
+            refs = lookup_material_color_maps(self._beamng_mat_maps, mat_name, mat_id)
         if not refs:
             return
 

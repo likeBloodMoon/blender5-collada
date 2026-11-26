@@ -70,6 +70,7 @@ class PartDef:
     meshes: list[MeshRef] = field(default_factory=list)
     variables: list[VarDef] = field(default_factory=list)
     components: dict[str, Any] = field(default_factory=dict)
+    glow_map: dict[str, dict[str, str]] = field(default_factory=dict)
     raw_slot_type: Any = None
 
 
@@ -305,6 +306,20 @@ def extract_part_def(part_name: str, part_data: dict[str, Any], source_file: str
     raw_comp = part_data.get("components")
     components = dict(raw_comp) if isinstance(raw_comp, dict) else {}
 
+    glow_map: dict[str, dict[str, str]] = {}
+    raw_glow = part_data.get("glowMap")
+    if isinstance(raw_glow, dict):
+        for mat_key, gval in raw_glow.items():
+            if not isinstance(mat_key, str) or not mat_key.strip() or not isinstance(gval, dict):
+                continue
+            entry_map: dict[str, str] = {}
+            for state in ("off", "on", "on_intense"):
+                sv = gval.get(state)
+                if isinstance(sv, str) and sv.strip():
+                    entry_map[state] = sv.strip()
+            if entry_map:
+                glow_map[mat_key.strip()] = entry_map
+
     return PartDef(
         name=part_name,
         file=source_file,
@@ -314,6 +329,7 @@ def extract_part_def(part_name: str, part_data: dict[str, Any], source_file: str
         meshes=meshes,
         variables=variables,
         components=components,
+        glow_map=glow_map,
         raw_slot_type=raw_st,
     )
 
