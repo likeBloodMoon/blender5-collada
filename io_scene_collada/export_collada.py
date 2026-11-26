@@ -2179,7 +2179,7 @@ class DocumentExporter:
             self.marked_ptrs.discard(child.as_pointer())
 
     def _write_node(self, ob: Object) -> None:
-        child_objects = self._children_by_parent_ptr.get(ob.as_pointer(), ())
+        child_objects = list(self._children_by_parent_ptr.get(ob.as_pointer(), ()))
         can_export = ob.as_pointer() in self.export_set_ptrs
 
         armature_exported = False
