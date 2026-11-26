@@ -20,6 +20,57 @@ from .parts import (
 
 
 @dataclass
+class PcPaint:
+    base_color_srgb: tuple[float, float, float] = (1.0, 1.0, 1.0)
+    metallic: float = 0.0
+    roughness: float = 0.5
+    clearcoat: float = 0.0
+    clearcoat_roughness: float = 0.05
+
+
+def srgb_to_linear(c: float) -> float:
+    """Convert a single sRGB channel [0..1] to linear light (IEC 61966-2-1)."""
+    v = max(0.0, float(c))
+    if v <= 0.04045:
+        return v / 12.92
+    return ((v + 0.055) / 1.055) ** 2.4
+
+
+def _parse_pc_paints(raw_paints: Any) -> list[PcPaint]:
+    if not isinstance(raw_paints, list):
+        return []
+    out: list[PcPaint] = []
+    for item in raw_paints[:3]:
+        if not isinstance(item, dict):
+            continue
+        bc = item.get("baseColor")
+        if isinstance(bc, (list, tuple)) and len(bc) >= 3:
+            try:
+                rgb = (max(0.0, float(bc[0])), max(0.0, float(bc[1])), max(0.0, float(bc[2])))
+            except (TypeError, ValueError):
+                rgb = (1.0, 1.0, 1.0)
+        else:
+            rgb = (1.0, 1.0, 1.0)
+
+        def _f(key: str, default: float, d: dict[str, Any] = item) -> float:
+            val = d.get(key)
+            if isinstance(val, (int, float)):
+                return max(0.0, min(1.0, float(val)))
+            return default
+
+        out.append(
+            PcPaint(
+                base_color_srgb=rgb,
+                metallic=_f("metallic", 0.0),
+                roughness=_f("roughness", 0.5),
+                clearcoat=_f("clearcoat", 0.0),
+                clearcoat_roughness=_f("clearcoatRoughness", 0.05),
+            )
+        )
+    return out
+
+
+@dataclass
 class PcConfig:
     path: str
     fmt: int | None
@@ -29,6 +80,7 @@ class PcConfig:
     by_name: dict[str, str] = field(default_factory=dict)
     by_path: dict[str, str] = field(default_factory=dict)
     vars: dict[str, Any] = field(default_factory=dict)
+    paints: list[PcPaint] = field(default_factory=list)
     is_legacy: bool = False
 
 
@@ -90,6 +142,7 @@ def parse_pc(text: str, path: str = "") -> PcConfig:
 
     raw_vars = doc.get("vars")
     vars_dict = dict(raw_vars) if isinstance(raw_vars, dict) else {}
+    paints_list = _parse_pc_paints(doc.get("paints"))
 
     if "parts" not in doc or not isinstance(doc.get("parts"), dict):
         # Legacy .pc: the top-level dict IS the slot map (minus 'vars')
@@ -111,6 +164,7 @@ def parse_pc(text: str, path: str = "") -> PcConfig:
             by_name=by_name,
             by_path=by_path,
             vars=vars_dict,
+            paints=paints_list,
             is_legacy=True,
         )
 
@@ -136,6 +190,7 @@ def parse_pc(text: str, path: str = "") -> PcConfig:
         by_name=by_name,
         by_path=by_path,
         vars=vars_dict,
+        paints=paints_list,
         is_legacy=False,
     )
 

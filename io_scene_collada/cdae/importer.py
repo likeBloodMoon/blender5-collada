@@ -516,6 +516,9 @@ class CdaeImporter:
                     continue
                 ma = bpy.data.materials.new(name=mat.name)
                 self._beamng_mat_ctx.register_material(mat.name, ma)
+                if self._beamng_mat_ctx.pbr_mode and self._beamng_mat_ctx.apply_material(ma, mat.name):
+                    materials.append(ma)
+                    continue
             else:
                 ma = bpy.data.materials.get(mat.name)
                 if ma is None:
@@ -994,11 +997,12 @@ class CdaeImporter:
             )
 
         if loops_match:
+            rename_uvs = self._beamng_mat_ctx is not None and self._beamng_mat_ctx.rename_uvs
             if uv0_loops is not None:
-                uv_layer = me.uv_layers.new(name="UVMap")
+                uv_layer = me.uv_layers.new(name="UV0" if rename_uvs else "UVMap")
                 uv_layer.data.foreach_set("uv", uv0_loops.ravel())
             if uv1_loops is not None:
-                uv_layer2 = me.uv_layers.new(name="UVMap.001")
+                uv_layer2 = me.uv_layers.new(name="UV1" if rename_uvs else "UVMap.001")
                 uv_layer2.data.foreach_set("uv", uv1_loops.ravel())
             if col_loops is not None:
                 cattr = me.color_attributes.new(name="Color", type="BYTE_COLOR", domain="CORNER")

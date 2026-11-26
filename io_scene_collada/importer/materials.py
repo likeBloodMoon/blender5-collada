@@ -123,6 +123,9 @@ class MaterialsMixin:
                 if eff_elem is not None:
                     self._apply_effect_to_material(eff_elem, ma)
 
+            if self._beamng_mat_ctx is not None and self._beamng_mat_ctx.pbr_mode:
+                if self._beamng_mat_ctx.apply_material(ma, mat_name, mat_id, dae_dir=self._archive_dae_dir):
+                    continue
             if self._beamng_mat_maps:
                 self._try_apply_beamng_material_texture(ma, mat_name, mat_id)
 

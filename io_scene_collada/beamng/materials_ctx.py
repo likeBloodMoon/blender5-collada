@@ -14,7 +14,14 @@ from typing import TYPE_CHECKING
 
 import bpy
 
-from ..beamng_materials import alt_image_refs, parse_beamng_materials_json
+from ..beamng_materials import (
+    BeamngMaterialSpec,
+    alt_image_refs,
+    lookup_material_spec,
+    parse_beamng_material_specs,
+    parse_beamng_materials_json,
+)
+from .pbr_nodes import apply_beamng_pbr_material
 from .source import VehicleSource, _is_ignored_entry, _norm_path
 
 if TYPE_CHECKING:
@@ -44,18 +51,25 @@ class BeamngMaterialContext:
         self,
         vehicle_src: VehicleSource,
         common_src: VehicleSource | None = None,
+        *,
+        pbr_mode: bool = True,
+        rename_uvs: bool = False,
     ) -> None:
         self.sources: list[VehicleSource] = [vehicle_src]
         if common_src is not None and common_src.path != vehicle_src.path:
             self.sources.append(common_src)
 
+        self.pbr_mode: bool = pbr_mode
+        self.rename_uvs: bool = rename_uvs
         self.import_token: str = uuid.uuid4().hex
         self.mat_maps: dict[str, list[str]] = {}
+        self.mat_specs: dict[str, BeamngMaterialSpec] = {}
         self.warnings: list[str] = []
         self.missing_textures: list[str] = []
         self._missing_seen: set[str] = set()
+        self.glass_fallback_materials: list[str] = []
         self._materials_by_name: dict[str, Material] = {}
-        self._images_by_key: dict[tuple[int, str], Image] = {}
+        self._images_by_key: dict[tuple[int, str, str], Image] = {}
         self._open_zips: dict[int, zipfile.ZipFile] = {}
         self._bytes_read: int = 0
 
@@ -127,7 +141,9 @@ class BeamngMaterialContext:
         with open(disk_path, "rb") as f:
             return f.read()
 
-    def _scan_source_materials(self, src_idx: int, src: VehicleSource) -> dict[str, list[str]]:
+    def _scan_source_materials(
+        self, src_idx: int, src: VehicleSource
+    ) -> tuple[dict[str, list[str]], dict[str, BeamngMaterialSpec]]:
         mat_entries: list[str] = []
         for norm in src.entries:
             if _is_ignored_entry(norm):
@@ -139,29 +155,55 @@ class BeamngMaterialContext:
         mat_entries.sort(key=lambda p: (p.count("/"), p.lower()))
 
         merged: dict[str, list[str]] = {}
+        specs: dict[str, BeamngMaterialSpec] = {}
         for norm in mat_entries:
             try:
                 raw = self._read_entry_bytes(src_idx, src, norm)
                 if not raw:
                     continue
-                parsed = parse_beamng_materials_json(raw.decode("utf-8", errors="replace"))
+                text = raw.decode("utf-8", errors="replace")
+                parsed = parse_beamng_materials_json(text)
                 for k, refs in parsed.items():
                     cur = merged.setdefault(k, [])
                     for r in refs:
                         if r not in cur:
                             cur.append(r)
+                if self.pbr_mode:
+                    parsed_specs = parse_beamng_material_specs(text)
+                    for k, sp in parsed_specs.items():
+                        if k not in specs:
+                            specs[k] = sp
             except Exception as exc:
                 self.warnings.append(f"Could not parse '{norm}': {exc}")
-        return merged
+        return merged, specs
 
     def _load_all_materials_json(self) -> None:
         # Load common.zip first, then overwrite any clashing keys with vehicle entries.
         combined: dict[str, list[str]] = {}
+        combined_specs: dict[str, BeamngMaterialSpec] = {}
         if len(self.sources) > 1:
-            combined.update(self._scan_source_materials(1, self.sources[1]))
-        veh_maps = self._scan_source_materials(0, self.sources[0])
+            com_maps, com_specs = self._scan_source_materials(1, self.sources[1])
+            combined.update(com_maps)
+            combined_specs.update(com_specs)
+        veh_maps, veh_specs = self._scan_source_materials(0, self.sources[0])
         combined.update(veh_maps)
+        combined_specs.update(veh_specs)
         self.mat_maps = combined
+        self.mat_specs = combined_specs
+
+    def apply_material(self, ma: Material, *names: str, dae_dir: str = "") -> bool:
+        """Apply full v1.5 PBR node tree if pbr_mode is enabled and a v1.5 spec exists."""
+        if not self.pbr_mode or not self.mat_specs:
+            return False
+        spec = lookup_material_spec(self.mat_specs, *names)
+        if spec is None or not spec.is_v15:
+            return False
+        apply_beamng_pbr_material(ma, spec, self, dae_dir=dae_dir)
+        return True
+
+    def record_glass_fallback(self, mat_name: str) -> None:
+        if mat_name not in self.glass_fallback_materials:
+            self.glass_fallback_materials.append(mat_name)
 
     def get_reusable_material(self, mat_name: str) -> Material | None:
         """Return a material already created in this import, never a pre-existing user material."""
@@ -229,7 +271,7 @@ class BeamngMaterialContext:
                 return matches[0]
         return None
 
-    def load_texture(self, raw_ref: str, *, dae_dir: str = "") -> Image | None:
+    def load_texture(self, raw_ref: str, *, dae_dir: str = "", colorspace: str = "sRGB") -> Image | None:
         """Look up and load a texture from the vehicle source first, then common.zip."""
         refs = alt_image_refs(raw_ref)
         if not refs:
@@ -241,7 +283,7 @@ class BeamngMaterialContext:
                 if norm_entry is None:
                     continue
 
-                cache_key = (src_idx, norm_entry)
+                cache_key = (src_idx, norm_entry, colorspace)
                 cached = self._images_by_key.get(cache_key)
                 if cached is not None:
                     try:
@@ -250,19 +292,24 @@ class BeamngMaterialContext:
                     except ReferenceError:
                         self._images_by_key.pop(cache_key, None)
 
-                img = self._load_source_image(src_idx, src, norm_entry)
+                img = self._load_source_image(src_idx, src, norm_entry, colorspace=colorspace)
                 if img is not None:
                     self._images_by_key[cache_key] = img
                     return img
         return None
 
-    def _load_source_image(self, src_idx: int, src: VehicleSource, norm_entry: str) -> Image | None:
+    def _load_source_image(
+        self, src_idx: int, src: VehicleSource, norm_entry: str, *, colorspace: str = "sRGB"
+    ) -> Image | None:
         if not src.is_zip:
             disk_path = src.disk_paths.get(norm_entry)
             if not disk_path or not os.path.isfile(disk_path):
                 return None
             try:
-                return bpy.data.images.load(disk_path, check_existing=True)
+                img = bpy.data.images.load(disk_path, check_existing=(colorspace == "sRGB"))
+                if colorspace != "sRGB":
+                    img.colorspace_settings.name = colorspace
+                return img
             except Exception as exc:
                 self.warnings.append(f"Could not decode texture '{norm_entry}': {exc}")
                 return None
@@ -283,6 +330,8 @@ class BeamngMaterialContext:
             img.filepath = f"//{os.path.basename(src.path)}/{norm_entry}"
             img.pack(data=data, data_len=len(data))
             img.source = "FILE"
+            if colorspace != "sRGB":
+                img.colorspace_settings.name = colorspace
             px_len = len(img.pixels)
             if not img.has_data or px_len == 0:
                 raise RuntimeError("image data could not be decoded")

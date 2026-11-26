@@ -590,6 +590,17 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
         options={"HIDDEN", "SKIP_SAVE"},
     )
 
+    beamng_materials: EnumProperty(
+        name="BeamNG Materials",
+        description="How to build BeamNG v1.5 materials from *.materials.json",
+        items=(
+            ("PBR", "Full PBR", "Build shared 'BeamNG v1.5 Material' PBR node group with paints, AO, normal, clearcoat, and glass"),
+            ("BASE_COLOR", "Base color only", "Connect only the base color map (1.5.5 behaviour)"),
+        ),
+        default="PBR",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
+
     interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     fix_orientation: BoolProperty(
@@ -718,6 +729,7 @@ class WM_OT_collada_import(bpy.types.Operator, ImportHelper):
                 archive_models=self.archive_models,
                 use_common=self.use_common,
                 spread_out=self.spread_out,
+                beamng_materials=self.beamng_materials,
                 base_dae_settings=settings,
             )
             report_capped(self, "WARNING", warnings)
@@ -851,6 +863,17 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
         default=False,
         options={"HIDDEN", "SKIP_SAVE"},
     )
+
+    beamng_materials: EnumProperty(
+        name="BeamNG Materials",
+        description="How to build BeamNG v1.5 materials from *.materials.json",
+        items=(
+            ("PBR", "Full PBR", "Build shared 'BeamNG v1.5 Material' PBR node group with paints, AO, normal, clearcoat, and glass"),
+            ("BASE_COLOR", "Base color only", "Connect only the base color map (1.5.5 behaviour)"),
+        ),
+        default="PBR",
+        options={"HIDDEN", "SKIP_SAVE"},
+    )
     interactive_picker: BoolProperty(default=False, options={"HIDDEN", "SKIP_SAVE"})
 
     def invoke(self, context, event):
@@ -933,6 +956,7 @@ class IMPORT_SCENE_OT_beamng_cdae(bpy.types.Operator, ImportHelper):
                 archive_models=self.archive_models,
                 use_common=self.use_common,
                 spread_out=self.spread_out,
+                beamng_materials=self.beamng_materials,
                 base_cdae_settings=settings,
             )
             report_capped(self, "WARNING", warnings)

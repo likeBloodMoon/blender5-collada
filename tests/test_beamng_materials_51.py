@@ -253,7 +253,7 @@ def base_color_image_name(ma):
     if ma is None or ma.node_tree is None:
         return None
     for node in ma.node_tree.nodes:
-        if node.type == "BSDF_PRINCIPLED":
+        if node.type in ("BSDF_PRINCIPLED", "GROUP"):
             sock = node.inputs.get("Base Color")
             if sock is not None and sock.is_linked:
                 src_node = sock.links[0].from_node

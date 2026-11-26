@@ -801,14 +801,16 @@ class MeshMixin:
 
         if loops_match:
             # UVs (foreach_set)
-            for u_id in uv_set_order:
+            rename_uvs = self._beamng_mat_ctx is not None and self._beamng_mat_ctx.rename_uvs
+            for uv_idx, u_id in enumerate(uv_set_order):
                 uv_arr = uv_arrays.get(u_id)
                 if uv_arr is None:
                     continue
                 if len(uv_arr) == cur_n_loops:
                     if not np.isfinite(uv_arr).all():
                         uv_arr = np.where(np.isfinite(uv_arr), uv_arr, np.float32(0.0))
-                    uv_layer = me.uv_layers.new(name=u_id)
+                    uv_name = f"UV{uv_idx}" if (rename_uvs and uv_idx < 2) else u_id
+                    uv_layer = me.uv_layers.new(name=uv_name)
                     uv_layer.data.foreach_set("uv", uv_arr.ravel())
 
             # Byte Color Attributes (foreach_set)

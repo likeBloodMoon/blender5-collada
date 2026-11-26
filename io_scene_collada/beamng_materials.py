@@ -7,6 +7,7 @@
 from __future__ import annotations
 
 import os
+from dataclasses import dataclass
 from typing import Any
 
 from .beamng.lenient_json import parse as loads_lenient_json
@@ -158,3 +159,250 @@ def lookup_material_color_maps(mat_index: dict[str, list[str]], *names: str) -> 
                 seen_maps.add(ref)
                 out.append(ref)
     return out
+
+
+@dataclass
+class BeamngMaterialSpec:
+    """Parsed BeamNG v1.5 PBR material definition from Stages[0] of *.materials.json."""
+
+    name: str
+    is_v15: bool = False
+    base_color_map: str = ""
+    color_palette_map: str = ""
+    ambient_occlusion_map: str = ""
+    metallic_map: str = ""
+    roughness_map: str = ""
+    clearcoat_map: str = ""
+    normal_map: str = ""
+    opacity_map: str = ""
+    emissive_map: str = ""
+    base_color_uv: int = 0
+    color_palette_uv: int = 0
+    ambient_occlusion_uv: int = 0
+    metallic_uv: int = 0
+    roughness_uv: int = 0
+    clearcoat_uv: int = 0
+    normal_uv: int = 0
+    opacity_uv: int = 0
+    emissive_uv: int = 0
+    base_color_factor: tuple[float, float, float, float] = (1.0, 1.0, 1.0, 1.0)
+    metallic_factor: float = 0.0
+    roughness_factor: float = 0.5
+    clearcoat_factor: float = 0.0
+    clearcoat_roughness_factor: float = 0.05
+    opacity_factor: float = 1.0
+    has_opacity_factor: bool = False
+    emissive_factor: tuple[float, float, float] = (0.0, 0.0, 0.0)
+    instance_diffuse: bool = False
+    translucent: bool = False
+    double_sided: bool = False
+
+
+def _first_map(d: dict[str, Any], *keys: str) -> tuple[str, int]:
+    """Return (first_valid_map_path, use_uv_index) from dict d checking keys in order."""
+    for key in keys:
+        if key not in d:
+            continue
+        refs = _extract_map_strings(d[key])
+        if refs:
+            uv_raw = d.get(f"{key}UseUV", 0)
+            uv_idx = 1 if uv_raw in (1, True, "1") else 0
+            return refs[0], uv_idx
+    return "", 0
+
+
+def _first_float(d: dict[str, Any], *keys: str) -> float | None:
+    for key in keys:
+        val = d.get(key)
+        if isinstance(val, (int, float)) and not isinstance(val, bool):
+            return float(val)
+    return None
+
+
+def _first_bool(d: dict[str, Any], *keys: str) -> bool:
+    for key in keys:
+        val = d.get(key)
+        if isinstance(val, bool):
+            return val
+        if isinstance(val, (int, float)):
+            return bool(val)
+    return False
+
+
+def _parse_rgba_factor(val: Any) -> tuple[float, float, float, float]:
+    if isinstance(val, (list, tuple)) and len(val) >= 3:
+        try:
+            r = max(0.0, float(val[0]))
+            g = max(0.0, float(val[1]))
+            b = max(0.0, float(val[2]))
+            a = max(0.0, min(1.0, float(val[3]))) if len(val) >= 4 else 1.0
+            return (r, g, b, a)
+        except (TypeError, ValueError):
+            pass
+    return (1.0, 1.0, 1.0, 1.0)
+
+
+def _parse_rgb_factor(val: Any, default: tuple[float, float, float]) -> tuple[float, float, float]:
+    if isinstance(val, (list, tuple)) and len(val) >= 3:
+        try:
+            return (max(0.0, float(val[0])), max(0.0, float(val[1])), max(0.0, float(val[2])))
+        except (TypeError, ValueError):
+            pass
+    if isinstance(val, (int, float)) and not isinstance(val, bool):
+        v = max(0.0, float(val))
+        return (v, v, v)
+    return default
+
+
+def _parse_single_spec(name: str, entry: dict[str, Any]) -> BeamngMaterialSpec | None:
+    stages = entry.get("Stages")
+    has_stages = isinstance(stages, list) and len(stages) > 0 and isinstance(stages[0], dict)
+    if not has_stages:
+        return None
+
+    s0: dict[str, Any] = stages[0]
+
+    def _map(*keys: str) -> tuple[str, int]:
+        path, uv = _first_map(s0, *keys)
+        if not path:
+            path, uv = _first_map(entry, *keys)
+        return path, uv
+
+    bc_map, bc_uv = _map("baseColorMap", "colorMap", "diffuseMap")
+    pal_map, pal_uv = _map("colorPaletteMap")
+    ao_map, ao_uv = _map("ambientOcclusionMap")
+    met_map, met_uv = _map("metallicMap")
+    rgh_map, rgh_uv = _map("roughnessMap")
+    coat_map, coat_uv = _map("clearCoatMap", "clearcoatMap")
+    nrm_map, nrm_uv = _map("normalMap")
+    op_map, op_uv = _map("opacityMap")
+    em_map, em_uv = _map("emissiveMap")
+
+    bc_fac = _parse_rgba_factor(s0.get("baseColorFactor", entry.get("baseColorFactor")))
+
+    met_raw = _first_float(s0, "metallicFactor")
+    if met_raw is None:
+        met_raw = _first_float(entry, "metallicFactor")
+    met_fac = max(0.0, min(1.0, met_raw)) if met_raw is not None else (1.0 if met_map else 0.0)
+
+    rgh_raw = _first_float(s0, "roughnessFactor")
+    if rgh_raw is None:
+        rgh_raw = _first_float(entry, "roughnessFactor")
+    rgh_fac = max(0.0, min(1.0, rgh_raw)) if rgh_raw is not None else (1.0 if rgh_map else 0.5)
+
+    coat_raw = _first_float(s0, "clearCoatFactor", "clearcoatFactor")
+    if coat_raw is None:
+        coat_raw = _first_float(entry, "clearCoatFactor", "clearcoatFactor")
+    coat_fac = max(0.0, min(1.0, coat_raw)) if coat_raw is not None else (1.0 if coat_map else 0.0)
+
+    coat_rgh_raw = _first_float(s0, "clearCoatRoughnessFactor", "clearcoatRoughnessFactor")
+    if coat_rgh_raw is None:
+        coat_rgh_raw = _first_float(entry, "clearCoatRoughnessFactor", "clearcoatRoughnessFactor")
+    coat_rgh_fac = max(0.0, min(1.0, coat_rgh_raw)) if coat_rgh_raw is not None else 0.05
+
+    op_raw = _first_float(s0, "opacityFactor")
+    if op_raw is None:
+        op_raw = _first_float(entry, "opacityFactor")
+    has_op = op_raw is not None
+    op_fac = max(0.0, min(1.0, op_raw)) if op_raw is not None else 1.0
+
+    em_default = (1.0, 1.0, 1.0) if em_map else (0.0, 0.0, 0.0)
+    em_raw = s0.get("emissiveFactor", entry.get("emissiveFactor"))
+    em_fac = _parse_rgb_factor(em_raw, em_default) if em_raw is not None else em_default
+
+    inst_diff = _first_bool(s0, "instanceDiffuse") or _first_bool(entry, "instanceDiffuse")
+    translucent = _first_bool(entry, "translucent") or _first_bool(s0, "translucent")
+    double_sided = _first_bool(entry, "doubleSided") or _first_bool(s0, "doubleSided")
+
+    return BeamngMaterialSpec(
+        name=name,
+        is_v15=True,
+        base_color_map=bc_map,
+        color_palette_map=pal_map,
+        ambient_occlusion_map=ao_map,
+        metallic_map=met_map,
+        roughness_map=rgh_map,
+        clearcoat_map=coat_map,
+        normal_map=nrm_map,
+        opacity_map=op_map,
+        emissive_map=em_map,
+        base_color_uv=bc_uv,
+        color_palette_uv=pal_uv,
+        ambient_occlusion_uv=ao_uv,
+        metallic_uv=met_uv,
+        roughness_uv=rgh_uv,
+        clearcoat_uv=coat_uv,
+        normal_uv=nrm_uv,
+        opacity_uv=op_uv,
+        emissive_uv=em_uv,
+        base_color_factor=bc_fac,
+        metallic_factor=met_fac,
+        roughness_factor=rgh_fac,
+        clearcoat_factor=coat_fac,
+        clearcoat_roughness_factor=coat_rgh_fac,
+        opacity_factor=op_fac,
+        has_opacity_factor=has_op,
+        emissive_factor=em_fac,
+        instance_diffuse=inst_diff,
+        translucent=translucent,
+        double_sided=double_sided,
+    )
+
+
+def parse_beamng_material_specs(text: str) -> dict[str, BeamngMaterialSpec]:
+    """Parse BeamNG *.materials.json into {lowercased_material_name: BeamngMaterialSpec}."""
+    data = loads_lenient_json(text)
+    if not isinstance(data, dict):
+        return {}
+
+    primary: dict[str, BeamngMaterialSpec] = {}
+    secondary: dict[str, BeamngMaterialSpec] = {}
+
+    for top_key, entry in data.items():
+        if not isinstance(entry, dict):
+            continue
+        spec = _parse_single_spec(str(top_key), entry)
+        if spec is None:
+            continue
+
+        map_to = entry.get("mapTo")
+        if isinstance(map_to, str) and map_to.strip() and map_to.strip().lower() != "unmapped_mat":
+            k = map_to.strip().lower()
+            if k not in primary:
+                primary[k] = spec
+
+        mat_name = entry.get("name")
+        if isinstance(mat_name, str) and mat_name.strip():
+            k = mat_name.strip().lower()
+            if k not in secondary:
+                secondary[k] = spec
+        if isinstance(top_key, str) and top_key.strip():
+            k = top_key.strip().lower()
+            if k not in secondary:
+                secondary[k] = spec
+
+    result = dict(primary)
+    for k, spec in secondary.items():
+        if k not in result:
+            result[k] = spec
+    return result
+
+
+def lookup_material_spec(
+    spec_index: dict[str, BeamngMaterialSpec], *names: str
+) -> BeamngMaterialSpec | None:
+    """Look up a BeamngMaterialSpec trying exact names and common COLLADA suffixes."""
+    if not spec_index:
+        return None
+    for nm in names:
+        if not nm:
+            continue
+        k = nm.strip().lower()
+        if k in spec_index:
+            return spec_index[k]
+        for suffix in ("-material", "-effect", "_material"):
+            if k.endswith(suffix) and len(k) > len(suffix):
+                stripped = k[: -len(suffix)]
+                if stripped in spec_index:
+                    return spec_index[stripped]
+    return None

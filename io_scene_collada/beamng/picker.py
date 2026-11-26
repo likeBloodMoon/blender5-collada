@@ -25,6 +25,7 @@ from mathutils import Vector
 from ..cdae.importer import CdaeImporter, CdaeImportSettings
 from ..import_collada import DocumentImporter, ImportSettings
 from .materials_ctx import BeamngMaterialContext
+from .pbr_nodes import DEFAULT_GLASS_OPACITY, apply_paint_properties_to_object
 from .resolve import ResolvedConfig, ResolvedMesh, resolve_config
 from .source import (
     ConfigEntry,
@@ -311,6 +312,7 @@ def _write_report_text_block(
     own_count: int,
     common_count: int,
     warnings: list[str],
+    glass_fallbacks: list[str] | None = None,
 ) -> None:
     title = f"BeamNG import \u2013 {vehicle_name} {config_name}"
     txt = bpy.data.texts.get(title)
@@ -348,6 +350,14 @@ def _write_report_text_block(
         for uk in res.unused_path_keys:
             lines.append(f"  - {uk}")
         lines.append("")
+    if glass_fallbacks:
+        lines.append(
+            f"Translucent materials using default glass opacity ({DEFAULT_GLASS_OPACITY:g}) "
+            f"({len(glass_fallbacks)}):"
+        )
+        for gm in glass_fallbacks:
+            lines.append(f"  - {gm}")
+        lines.append("")
     if warnings:
         lines.append(f"Warnings ({len(warnings)}):")
         for w in warnings:
@@ -367,6 +377,7 @@ def execute_beamng_import(
     archive_models: str = "",
     use_common: bool = True,
     spread_out: bool = False,
+    beamng_materials: str = "PBR",
     base_dae_settings: ImportSettings | None = None,
     base_cdae_settings: CdaeImportSettings | None = None,
 ) -> tuple[bool, str, list[str], list[str]]:
@@ -422,10 +433,11 @@ def execute_beamng_import(
         if use_common and src.common_path:
             common_src_m1 = load_vehicle_source(src.common_path, index_dae_nodes=False)
 
+        pbr_mode = beamng_materials == "PBR"
         groups: list[tuple[list, list]] = []
         total_meshes = 0
         any_ok = False
-        with BeamngMaterialContext(src, common_src_m1) as mat_ctx:
+        with BeamngMaterialContext(src, common_src_m1, pbr_mode=pbr_mode, rename_uvs=pbr_mode) as mat_ctx:
             for m in selected:
                 if len(selected) > 1:
                     stem = os.path.splitext(m.path.rsplit("/", 1)[-1])[0] or "Model"
@@ -457,6 +469,8 @@ def execute_beamng_import(
                     total_meshes += len(mesh_obs)
                     for ob in mesh_obs:
                         ob["beamng_source"] = f"{src_bname}:{m.path}"
+                        if pbr_mode:
+                            apply_paint_properties_to_object(ob, [])
                     groups.append((roots, mesh_obs))
 
             warnings.extend(mat_ctx.warnings)
@@ -586,7 +600,11 @@ def execute_beamng_import(
     imported_common_names: set[str] = set()
     groups_for_spread: list[tuple[list, list]] = []
 
-    with BeamngMaterialContext(src, common_src) as mat_ctx:
+    pbr_mode = beamng_materials == "PBR"
+    pc_paints = ce.pc.paints if ce.pc is not None else []
+    glass_fallbacks: list[str] = []
+
+    with BeamngMaterialContext(src, common_src, pbr_mode=pbr_mode, rename_uvs=pbr_mode) as mat_ctx:
         for m in own_models_to_import:
             if beamng_parts_mode == "CONFIG":
                 want_here = own_file_map.get(m.path, set()) - imported_own_names
@@ -613,6 +631,9 @@ def execute_beamng_import(
             )
             if not ok:
                 continue
+            if pbr_mode:
+                for ob in mesh_obs:
+                    apply_paint_properties_to_object(ob, pc_paints)
             groups_for_spread.append((roots, mesh_obs))
 
             for node_nm, obs in by_node.items():
@@ -672,6 +693,9 @@ def execute_beamng_import(
                 )
                 if not ok:
                     continue
+                if pbr_mode:
+                    for ob in mesh_obs:
+                        apply_paint_properties_to_object(ob, pc_paints)
                 for node_nm, obs in by_node.items():
                     rm = mesh_meta.get(node_nm)
                     src_tag = f"{com_bname}:{com_entry}"
@@ -688,6 +712,7 @@ def execute_beamng_import(
         miss_warn = mat_ctx.format_missing_textures_warning()
         if miss_warn:
             warnings.append(miss_warn)
+        glass_fallbacks = list(mat_ctx.glass_fallback_materials)
 
     if spread_out and len(groups_for_spread) > 1:
         _spread_model_groups(context, groups_for_spread)
@@ -707,6 +732,7 @@ def execute_beamng_import(
         len(imported_own_names),
         len(imported_common_names),
         warnings,
+        glass_fallbacks=glass_fallbacks,
     )
 
     summary = (
@@ -935,6 +961,15 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
         description="Lay out each imported model on a grid instead of stacking at the origin",
         default=False,
     )
+    materials_mode: EnumProperty(
+        name="BeamNG Materials",
+        description="How to build BeamNG v1.5 materials from *.materials.json",
+        items=(
+            ("PBR", "Full PBR", "Build shared 'BeamNG v1.5 Material' PBR node group with paints, AO, normal, clearcoat, and glass"),
+            ("BASE_COLOR", "Base color only", "Connect only the base color map (1.5.5 behaviour)"),
+        ),
+        default="PBR",
+    )
     models: CollectionProperty(type=BeamNGModelItem)
     active_model_index: IntProperty(default=0)
     common_status: StringProperty(default="", options={"HIDDEN"})
@@ -965,6 +1000,7 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             "parts_mode": self.parts_mode,
             "use_common": bool(self.use_common),
             "spread_out": bool(self.spread_out),
+            "materials_mode": self.materials_mode,
             "selected_models": [it.path for it in self.models if it.selected],
         }
         try:
@@ -1027,6 +1063,8 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             self.use_common = bool(saved["use_common"])
         if "spread_out" in saved:
             self.spread_out = bool(saved["spread_out"])
+        if saved.get("materials_mode") in ("PBR", "BASE_COLOR"):
+            self.materials_mode = saved["materials_mode"]
 
         _update_model_ticks_for_config(self)
         if self.config_path == _NO_CONFIG_ID and isinstance(saved.get("selected_models"), list):
@@ -1081,6 +1119,7 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             rows=min(max(len(self.models), 3), 10),
         )
 
+        layout.prop(self, "materials_mode")
         layout.prop(self, "spread_out")
 
     def execute(self, context):
@@ -1117,6 +1156,7 @@ class WM_OT_collada_beamng_picker(bpy.types.Operator):
             archive_models=selected_paths,
             use_common=bool(self.use_common),
             spread_out=bool(self.spread_out),
+            beamng_materials=self.materials_mode,
             base_dae_settings=base_dae,
             base_cdae_settings=base_cdae,
         )
