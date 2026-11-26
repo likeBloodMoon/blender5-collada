@@ -380,6 +380,38 @@ class CdaeExporter:
             self.errors.append("No mesh objects to export")
             return False
 
+        # Detect skinned meshes: .cdae export is StandardMesh-only, so warn and
+        # temporarily switch referenced armatures to REST pose (#47).
+        use_render = self.settings.export_mesh_type == "render"
+        saved_arm_poses: list[tuple[bpy.types.Armature, str]] = []
+        seen_arm_ptrs: set[int] = set()
+        for ob in mesh_obs:
+            arm_ob = None
+            for mod in ob.modifiers:
+                if (
+                    mod.type == "ARMATURE"
+                    and mod.object is not None
+                    and mod.object.type == "ARMATURE"
+                    and (mod.show_render if use_render else mod.show_viewport)
+                ):
+                    arm_ob = mod.object
+                    break
+            if arm_ob is None and ob.parent is not None and ob.parent.type == "ARMATURE":
+                arm_ob = ob.parent
+            if arm_ob is not None:
+                self.warnings.append(
+                    f"'{ob.name}' is skinned to '{arm_ob.name}'; "
+                    f".cdae export is StandardMesh-only and writes it as a static mesh in rest pose"
+                )
+                arm_data = arm_ob.data
+                if arm_data is not None and arm_data.as_pointer() not in seen_arm_ptrs:
+                    seen_arm_ptrs.add(arm_data.as_pointer())
+                    if arm_data.pose_position != "REST":
+                        saved_arm_poses.append((arm_data, arm_data.pose_position))
+                        arm_data.pose_position = "REST"
+        if saved_arm_poses:
+            self.context.view_layer.update()
+
         # Collect ancestor hierarchy nodes (Empty / Mesh parents)
         node_obs_set = set(mesh_obs)
         for ob in list(mesh_obs):
@@ -548,6 +580,10 @@ class CdaeExporter:
             if temp_meshes:
                 bpy.data.batch_remove(temp_meshes)
                 temp_meshes.clear()
+            if saved_arm_poses:
+                for arm_data, orig_pos in saved_arm_poses:
+                    arm_data.pose_position = orig_pos
+                self.context.view_layer.update()
 
         if not exported_meshes:
             self.errors.append("No non-empty mesh geometry to export")

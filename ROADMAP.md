@@ -89,7 +89,7 @@ In this order. The module each fix lands in is in brackets.
 - [x] #40 + #41 Shape keys `[exporter/rig]`, one PR: evaluate each key separately when modifiers change the vertex count (#40), and write `Basis + (key − relative_key)` for chained keys (#41).
 - [x] #26 Doubled triangles `[importer/mesh]`: the Double-sided faces option (Keep / Merge / Remove back faces), with exact duplicates defined as identical winding, material, UVs and corner normals, as specified in the issue. Consistent between `.dae` and `.cdae` import.
 - [x] #43 Linked duplicates with different modifiers share one mesh `[exporter/geometry]`: only share a geometry when the evaluated meshes are the same.
-- [ ] #47 `.cdae` skinned mesh exported in the current pose with no warning `[cdae/exporter]`: warn; export the rest pose by default.
+- [x] #47 `.cdae` skinned mesh exported in the current pose with no warning `[cdae/exporter]`: warn; export the rest pose by default.
 - [ ] #48 Same axis for Forward and Up accepted `[__init__]`: swap the other axis in the UI (like glTF/FBX) and refuse it from Python.
 - [ ] #50 `.cdae` as a Collection Exporter `[__init__]`: `bl_export_operator` + a hidden `collection` property.
 - [ ] #44 "Include all Actions" does nothing `[exporter/animation]`: export unassigned actions by temporarily assigning them (with a matching slot) and sampling.
