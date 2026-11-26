@@ -40,18 +40,18 @@ This extension is a full port of Blender 4.5.1's Collada I/O to Python, with the
 
    | System | File |
    | --- | --- |
-   | Windows | `collada_io-1.5.6-windows_x64.zip` |
-   | Linux | `collada_io-1.5.6-linux_x64.zip` |
-   | macOS (Apple Silicon) | `collada_io-1.5.6-macos_arm64.zip` |
-   | macOS (Intel) | `collada_io-1.5.6-macos_x64.zip` |
-   | Any, no compiled code | `collada_io-1.5.6-pure-python.zip` |
+   | Windows | `collada_io-1.5.7-windows_x64.zip` |
+   | Linux | `collada_io-1.5.7-linux_x64.zip` |
+   | macOS (Apple Silicon) | `collada_io-1.5.7-macos_arm64.zip` |
+   | macOS (Intel) | `collada_io-1.5.7-macos_x64.zip` |
+   | Any, no compiled code | `collada_io-1.5.7-pure-python.zip` |
 
 2. Drag the `.zip` into Blender, or go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…**
 3. **Restart Blender after updating.** Blender keeps the old add-on code loaded until it restarts.
 
 ```bash
 # or from the command line
-blender --command extension install-file -r user_default -e collada_io-1.5.6-windows_x64.zip
+blender --command extension install-file -r user_default -e collada_io-1.5.7-windows_x64.zip
 ```
 
 Every release has a `SHA256SUMS.txt` to verify the download.
