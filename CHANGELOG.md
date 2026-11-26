@@ -4,19 +4,24 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [1.5.3] - 2026-11-26
+
+- Fixed (#19): **Resolution → Render** (`export_mesh_type_selection='render'`) now actually evaluates modifiers at render settings (render levels and `show_render` visibility, non-destructively restored after export) on `.dae` export, and added the matching **Apply Modifiers + Resolution** (`Viewport` / `Render`) pair to `.cdae` export
+- Docs: clarified in `docs/cdae_format.md` that pure `int16` `Quat16` quantization is at most `~0.0035°` and the extra up to `0.0396°` in paired verification comes from BeamNG's shipped game files themselves
+
+## [1.5.2] - 2026-11-26
 
 - Added (#18): **Keep Quads** export option (`keep_quads`, default `False`) under **Triangulate** on `.dae` export to triangulate n-gons only and preserve 4-sided quads in `<polylist>` (greyed out for `.cdae`)
 - Improved (#12): deduplicate UV and vertex color sources on `.dae` export (cuts `big_mesh` `.dae` size from `8.96 MB` to `< 6 MB` with byte-exact round-trip and faster export/import)
-- Fixed (#2): raise `MsgPackError` for unhashable MsgPack map keys and replace NumPy `DeprecationWarning` control flow in `.dae` array parsing with explicit token-count validation
-- Improved (#3): harden archive and XML imports by capping zip archives at 50,000 entries and rejecting XML `<!DOCTYPE>` / `<!ENTITY>` declarations at the expat parser level
-- Added (#22): automated `.dae` and `.cdae` round-trip accuracy CI gate (`tests/test_accuracy_roundtrip.py`) covering 11 synthetic scenes with selfcheck and strict position/normal/flip/UV/color/material assertions
-- Fixed (#16): eliminate `ERROR: Image "" not available. Keeping packed image` stderr noise when importing packed archive textures on Blender 5.0+ by setting `img.filepath` before `img.pack()` and `img.source = "FILE"`
 - Fixed (#17): use Blender's viewport `mesh.loop_triangles` split on the default triangulated export path for `.dae` and `.cdae` (keeping `bmesh` `SHORT_EDGE` behind `keep_normals=False` for 4.5.1 parity), fixing opposite-winding co-vertex triangles on `monkey_sharp_edges`/`big_mesh` and cutting `nonplanar_quads` area error from `-0.32%` to `~0%`
-- Improved (#8): warn after `.dae` or `.cdae` import when the active target collection is excluded or hidden in the current view layer
+- Fixed (#16): eliminate `ERROR: Image "" not available. Keeping packed image` stderr noise when importing packed archive textures on Blender 5.0+ by setting `img.filepath` before `img.pack()` and `img.source = "FILE"`
 - Fixed (#27): respect `<accessor>` `offset` and `count` across mesh, skin controller, and animation source readers (including `Name_array` / `IDREF_array`), preventing shifted vertices and stray loose vertices
 - Fixed (#28): tessellate `<polygons>/<ph>` hole outlines (`<h>`) using `mathutils.geometry.tessellate_polygon` while preserving per-corner normals, UVs, and vertex colors (with warning and outer-polygon fallback on degenerate holes)
+- Fixed (#2): raise `MsgPackError` for unhashable MsgPack map keys and replace NumPy `DeprecationWarning` control flow in `.dae` array parsing with explicit token-count validation
+- Improved (#3): harden archive and XML imports by capping zip archives at 50,000 entries and rejecting XML `<!DOCTYPE>` / `<!ENTITY>` declarations at the expat parser level
+- Improved (#7, #8): factor operator warning/error capping into shared `report_capped()` helper and warn after `.dae`/`.cdae` import when the active target collection is excluded or hidden in the current view layer
 - Improved (#9): make the "restart Blender after updating" requirement visible in extension metadata, add-on Preferences, and a one-time popup when an update is detected in-session
+- Added (#22): automated `.dae` and `.cdae` round-trip accuracy CI gate (`tests/test_accuracy_roundtrip.py`) covering 11 synthetic scenes (all 22 `.dae`/`.cdae` checks passing strictly with 0 xfails)
 - Improved (#4, #5): smoke-test native `fastfmt` binaries on Windows, macOS, and Linux in CI (`tests/smoke_fastfmt.py`), pin all GitHub Actions to commit SHAs with Dependabot, verify downloaded Blender tarballs with `sha256sum`, and publish `SHA256SUMS.txt` with release artifacts
 
 ### Details

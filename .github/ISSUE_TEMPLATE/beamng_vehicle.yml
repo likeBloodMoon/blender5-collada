@@ -1,0 +1,89 @@
+name: BeamNG vehicle problem
+description: A vehicle or config imports with missing parts, parts in the wrong place, or wrong materials.
+title: "[BeamNG] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Placing parts where the game puts them (wheels, steering wheels, gauges) is still being worked on. Check the [roadmap](https://github.com/likeBloodMoon/blender5-collada/blob/main/ROADMAP.md) to see if your problem is already planned.
+
+  - type: input
+    id: vehicle
+    attributes:
+      label: Vehicle
+      description: The folder or zip name.
+      placeholder: sunburst2
+    validations:
+      required: true
+
+  - type: dropdown
+    id: source
+    attributes:
+      label: Vanilla or mod?
+      options:
+        - Vanilla (ships with the game)
+        - Mod from the BeamNG repository
+        - Mod from somewhere else
+    validations:
+      required: true
+
+  - type: input
+    id: mod-link
+    attributes:
+      label: Mod link
+      description: Only if it's a mod.
+
+  - type: input
+    id: config
+    attributes:
+      label: Config (.pc)
+      placeholder: sport_RS_wagon_DCT
+    validations:
+      required: true
+
+  - type: dropdown
+    id: problem
+    attributes:
+      label: What's wrong?
+      multiple: true
+      options:
+        - A part is at 0,0,0 or in the wrong place
+        - A part is missing
+        - Extra parts that shouldn't be there
+        - Wrong or missing textures or materials
+        - The config doesn't show up in the picker
+        - Import fails with an error
+        - Something else
+    validations:
+      required: true
+
+  - type: textarea
+    id: details
+    attributes:
+      label: Details
+      description: Which parts? A screenshot from Blender next to one from the game makes this much faster to fix.
+    validations:
+      required: true
+
+  - type: input
+    id: versions
+    attributes:
+      label: Add-on, Blender and BeamNG versions
+      placeholder: add-on 1.5.0, Blender 5.3.0, BeamNG 0.40.6
+    validations:
+      required: true
+
+  - type: checkboxes
+    id: common
+    attributes:
+      label: Import settings
+      options:
+        - label: 'The "Use parts from common.zip" option was on.'
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: Paste any warnings or errors from the import.
+      render: shell
