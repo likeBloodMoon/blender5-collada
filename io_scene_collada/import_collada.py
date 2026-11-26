@@ -2877,7 +2877,11 @@ class DocumentImporter:
             mesh.polygons.foreach_set("material_index", mat_idx_arr)
 
     def _process_node(
-        self, node: ET.Element, parent_node: ET.Element | None, parent_ob: Object | None
+        self,
+        node: ET.Element,
+        parent_node: ET.Element | None,
+        parent_ob: Object | None,
+        parent_bone: str | None = None,
     ) -> None:
         if self._kept_nodes is not None and id(node) not in self._kept_nodes:
             return
@@ -2974,11 +2978,14 @@ class DocumentImporter:
 
         mat = self._read_node_matrix(node)
         for ob in created:
-            ob.matrix_basis = mat
             if parent_ob is not None:
                 ob.parent = parent_ob
+                if parent_bone and parent_ob.type == "ARMATURE" and parent_bone in parent_ob.data.bones:
+                    ob.parent_type = "BONE"
+                    ob.parent_bone = parent_bone
             else:
                 self.root_objects.append(ob)
+            ob.matrix_basis = mat
             if node_id:
                 self.object_by_node_id[node_id] = ob
 
@@ -3068,6 +3075,30 @@ class DocumentImporter:
 
         for ob_arm, rjoints in arms_to_roots.values():
             self._build_armature_edit_bones(ob_arm, rjoints, joint_inv_bind)
+
+        # Create non-JOINT child objects parented to armature bones (#34)
+        n_mesh_before = len(self.imported_mesh_objects)
+
+        def attach_bone_children(jnode: ET.Element, ob_arm: Object) -> None:
+            jid = jnode.attrib.get("id", "")
+            bname = (
+                self.joint_bone_name_by_id.get(jid)
+                or jnode.attrib.get("name")
+                or jid
+                or jnode.attrib.get("sid", "")
+            )
+            for ch in _find_children(jnode, "node"):
+                if ch.attrib.get("type", "NODE").upper() == "JOINT":
+                    attach_bone_children(ch, ob_arm)
+                else:
+                    self._process_node(ch, jnode, ob_arm, parent_bone=bname)
+
+        for ob_arm, rjoints in arms_to_roots.values():
+            for rj in rjoints:
+                attach_bone_children(rj, ob_arm)
+
+        if len(self.imported_mesh_objects) > n_mesh_before:
+            self._optimize_material_assignments()
 
         # Link skins to meshes
         for skin in self.skins_by_id.values():
