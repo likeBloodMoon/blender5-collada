@@ -251,11 +251,16 @@ class GeometryMixin:
                 mesh, loop_starts, loop_totals, use_smooth, loop_vidx
             )
 
-        # Byte color attributes on CORNER domain (matching CD_PROP_BYTE_COLOR)
-        byte_color_attrs = [
-            attr for attr in mesh.color_attributes
-            if attr.domain == "CORNER" and attr.data_type == "BYTE_COLOR"
-        ]
+        # Color attributes on CORNER or POINT domain (BYTE_COLOR or FLOAT_COLOR)
+        byte_color_attrs = []
+        for attr in mesh.color_attributes:
+            if attr.domain in ("CORNER", "POINT") and attr.data_type in ("BYTE_COLOR", "FLOAT_COLOR"):
+                byte_color_attrs.append(attr)
+            else:
+                self.warnings.append(
+                    f"Mesh '{geom_name}': skipped unsupported color attribute '{attr.name}' "
+                    f"(domain={attr.domain}, type={attr.data_type})"
+                )
         has_color = len(byte_color_attrs) > 0
         has_uvs = len(mesh.uv_layers) > 0
 
@@ -326,11 +331,25 @@ class GeometryMixin:
         if has_color:
             for idx, attr in enumerate(byte_color_attrs):
                 layer_id = f"{geom_id}-colors-{attr.name}"
-                col_arr = np.empty(n_loops * 4, dtype=np.float32)
-                if n_loops > 0:
-                    attr.data.foreach_get("color_srgb", col_arr)
-                col_rows = col_arr.reshape(n_loops, 4)
-                if tri_loops is not None:
+                is_point = attr.domain == "POINT"
+                src_count = vcount if is_point else n_loops
+                col_arr = np.empty(src_count * 4, dtype=np.float32)
+                if src_count > 0:
+                    if attr.data_type == "BYTE_COLOR":
+                        attr.data.foreach_get("color_srgb", col_arr)
+                    else:
+                        attr.data.foreach_get("color", col_arr)
+                        rgb = np.maximum(col_arr.reshape(src_count, 4)[:, :3], np.float32(0.0))
+                        srgb = np.where(
+                            rgb <= 0.0031308,
+                            rgb * 12.92,
+                            1.055 * np.power(rgb, 1.0 / 2.4) - 0.055,
+                        )
+                        col_arr.reshape(src_count, 4)[:, :3] = srgb.astype(np.float32, copy=False)
+                col_rows = col_arr.reshape(src_count, 4)
+                if is_point:
+                    col_rows = col_rows[loop_vidx] if n_emit_loops > 0 else np.empty((0, 4), dtype=np.float32)
+                elif tri_loops is not None:
                     col_rows = col_rows[tri_loops] if n_emit_loops > 0 else np.empty((0, 4), dtype=np.float32)
                 if dedupe_attrs and n_emit_loops > 0:
                     uniq_col, col_idx = _dedup_float_rows(col_rows)
