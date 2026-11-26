@@ -1,0 +1,105 @@
+name: Bug report
+description: Something imports or exports wrong, or the add-on throws an error.
+title: "[Bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for reporting. If the problem is with a BeamNG vehicle (wrong parts, parts in the wrong place, a config that won't load), use the **BeamNG vehicle problem** template instead.
+        Questions go in [Discussions](https://github.com/likeBloodMoon/blender5-collada/discussions/categories/q-a).
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: Describe what went wrong. Screenshots help a lot.
+      placeholder: Exported a .dae with Keep Normals on, and the hood looks faceted in BeamNG.
+    validations:
+      required: true
+
+  - type: textarea
+    id: steps
+    attributes:
+      label: Steps to reproduce
+      placeholder: |
+        1. Open the attached .blend
+        2. File > Export > Collada (.dae) with default settings
+        3. Import the file again
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: What did you expect?
+    validations:
+      required: true
+
+  - type: input
+    id: addon-version
+    attributes:
+      label: Add-on version
+      description: Preferences > Add-ons > Collada IO, or the zip name.
+      placeholder: "1.5.0"
+    validations:
+      required: true
+
+  - type: input
+    id: blender-version
+    attributes:
+      label: Blender version
+      placeholder: "5.3.0"
+    validations:
+      required: true
+
+  - type: dropdown
+    id: os
+    attributes:
+      label: Operating system
+      options:
+        - Windows
+        - Linux
+        - macOS (Apple Silicon)
+        - macOS (Intel)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: build
+    attributes:
+      label: Which zip did you install?
+      options:
+        - Pure Python
+        - Windows x64
+        - Linux x64
+        - macOS arm64
+        - macOS x64
+        - Not sure
+    validations:
+      required: true
+
+  - type: textarea
+    id: file
+    attributes:
+      label: File
+      description: |
+        Attach the file (zip it first) or link to it. A small file that shows the problem is best.
+        Please don't attach files ripped from BeamNG or other games. Name the vehicle and part instead.
+
+  - type: textarea
+    id: console
+    attributes:
+      label: Console output
+      description: On Windows, Window > Toggle System Console. On Linux and macOS, start Blender from a terminal. Paste any errors.
+      render: shell
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Before submitting
+      options:
+        - label: I'm on the latest release, or I've checked the bug is still there in it.
+          required: true
+        - label: I searched the existing issues.
+          required: true
