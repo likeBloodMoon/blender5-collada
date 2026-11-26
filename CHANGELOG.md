@@ -4,6 +4,12 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.5] - 2026-11-26
+
+- Fixed (#51): BeamNG vehicle/config import now builds one shared material table from every `*.materials.json` in the vehicle archive/folder and `common.zip` (vehicle entries win on name clashes), resolves textures vehicle-first then `common.zip`, reuses materials created within the same import without creating `.001` duplicates (tagged with a per-import custom property so pre-existing user materials are never reused), and emits one summary warning per import listing textures missing from both sources. Plain `.dae` and `.zip` imports remain unchanged
+- Refactored: split `import_collada.py` and `export_collada.py` into focused mixin modules under `io_scene_collada/importer/` (`xml_parse`, `archive`, `materials`, `mesh`, `rig`, `animation`, `scene`) and `io_scene_collada/exporter/` (`geometry`, `materials`, `rig`, `animation`, `scene`) while keeping `DocumentImporter` and `DocumentExporter` as thin entry points with byte-identical 4.5.1 parity output; added `.git-blame-ignore-revs` and `docs/architecture.md`
+- Improved (#14): expanded `ruff` lint coverage (`E, F, W, B, UP`) across `io_scene_collada` and added `mypy --strict` type-checking in CI for `cdae/msgpack_lite.py` and `cdae/reader.py` via `pyproject.toml`
+
 ## [1.5.4] - 2026-11-26
 
 - Fixed (#35): flush unsaved Edit Mode edits (`update_from_editmode()`) before `.dae` and `.cdae` export so changes made without leaving Edit Mode are exported
