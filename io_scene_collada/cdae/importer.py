@@ -979,15 +979,17 @@ class CdaeImporter:
             if norm_loops is not None:
                 norm_loops = norm_loops[kept_loops]
         if n_double_sided > 0 or n_layered > 0 or n_exact_dups > 0:
-            ds_verb = (
-                "kept unwelded"
-                if self.settings.double_sided_faces == "KEEP"
-                else ("merged" if self.settings.double_sided_faces == "MERGE" else "removed")
-            )
-            self.infos.append(
-                f"Mesh '{mesh_name}': {n_double_sided} double-sided ({ds_verb}) and {n_layered} layered faces, "
-                f"removed {n_exact_dups} duplicate face(s)"
-            )
+            if self.settings.double_sided_faces == "KEEP":
+                self.infos.append(
+                    f"Mesh '{mesh_name}': {n_double_sided} double-sided and {n_layered} layered faces "
+                    f"kept unwelded, {n_exact_dups} exact duplicates removed"
+                )
+            else:
+                ds_verb = "merged" if self.settings.double_sided_faces == "MERGE" else "removed"
+                self.infos.append(
+                    f"Mesh '{mesh_name}': {n_double_sided} double-sided ({ds_verb}) and {n_layered} layered faces, "
+                    f"{n_exact_dups} exact duplicates removed"
+                )
 
         total_faces = len(tris)
         if total_faces == 0:
