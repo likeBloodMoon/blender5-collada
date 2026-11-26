@@ -497,7 +497,7 @@ def get_mesh_copy(
                     need_tri_raw = bool((loop_totals > 4).any())
             else:
                 need_tri_raw = True
-        if readonly and not need_tri_raw:
+        if readonly and not need_tri_raw and ob.mode != "EDIT":
             return ob.data, False
         mesh_copy = ob.data.copy()
 

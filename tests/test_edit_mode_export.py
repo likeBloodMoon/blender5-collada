@@ -101,7 +101,7 @@ def main() -> None:
         with open(worker_py, "w", encoding="utf-8") as f:
             f.write(WORKER_SCRIPT)
         proc = subprocess.run(
-            [blender, "--background", "--factory-startup", "--python", worker_py, "--", REPO_ROOT, workdir, out_json],
+            [blender, "--background", "--factory-startup", "--python-exit-code", "1", "--python", worker_py, "--", REPO_ROOT, workdir, out_json],
             capture_output=True,
             text=True,
         )
