@@ -4,6 +4,14 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.4] - 2026-11-26
+
+- Fixed (#35): flush unsaved Edit Mode edits (`update_from_editmode()`) before `.dae` and `.cdae` export so changes made without leaving Edit Mode are exported
+- Fixed (#36): export viewport-hidden objects (`H` / eye icon and `Disable in Viewports` / monitor icon) on `.dae` export, matching Blender 4.5.1 while still skipping excluded collections
+- Fixed (#37): eliminate O(N²) export scaling on scenes with thousands of objects (`.dae` and `.cdae`) by batch-removing temporary meshes once per export, skipping unnecessary copies for unmodified read-only meshes, and building a single `parent → children` map (4,000 cubes: `13.76 s → 1.43 s` `.dae`, `10.49 s → 1.69 s` `.cdae`, byte-identical output)
+- Fixed (#46): cap combined `random()` candidates at 256 with O(1) set deduplication and catch `RecursionError` in `beamng/expr.py`, and add a nesting depth guard (`MAX_NESTING_DEPTH = 256`) in `beamng/lenient_json.py`
+- Fixed (#34): import non-JOINT child objects under armature bones with `parent_type = "BONE"` and `parent_bone` set after armatures are built, preserving exact world transforms
+
 ## [1.5.3] - 2026-11-26
 
 - Fixed (#19): **Resolution → Render** (`export_mesh_type_selection='render'`) now actually evaluates modifiers at render settings (render levels and `show_render` visibility, non-destructively restored after export) on `.dae` export, and added the matching **Apply Modifiers + Resolution** (`Viewport` / `Render`) pair to `.cdae` export

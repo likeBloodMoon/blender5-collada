@@ -29,11 +29,11 @@ Products:
 
 ## 1.5.4 — Regression hotfix (small, before the split)
 Everything here is a few lines in the current files, and all of it is either a 4.5.1 regression or a freeze. In this order, smallest first:
-- [ ] #35 Export ignores unsaved Edit Mode changes: `update_from_editmode()` before building the export set (`.dae` and `.cdae`).
-- [ ] #36 Hidden objects (H / monitor icon) not exported: drop the `visible_get()` filter in `build_export_set()`; excluded collections stay skipped.
-- [ ] #37 Export quadratic in object count: free temporary meshes with one `bpy.data.batch_remove()` per export (`.dae` and `.cdae`), and build a parent → children map once instead of `get_children_in_scene()` scanning the view layer. Target: 4,000 objects in under 1.5 s with byte-identical output.
-- [ ] #46 jbeam expressions can hang: cap total `random()` candidates (e.g. 256), use a set for seen values, catch `RecursionError` in `eval_mesh_expr()`; same depth guard in the lenient JSON parser.
-- [ ] #34 Bone-parented objects dropped on `.dae` import: after armatures are built, walk non-JOINT child nodes under joints and create them with `parent_type = "BONE"`. The largest of the five; if it turns into more than a contained change, ship the other four as 1.5.4 and move #34 to the first PR after the split.
+- [x] #35 Export ignores unsaved Edit Mode changes: `update_from_editmode()` before building the export set (`.dae` and `.cdae`).
+- [x] #36 Hidden objects (H / monitor icon) not exported: drop the `visible_get()` filter in `build_export_set()`; excluded collections stay skipped.
+- [x] #37 Export quadratic in object count: free temporary meshes with one `bpy.data.batch_remove()` per export (`.dae` and `.cdae`), and build a parent → children map once instead of `get_children_in_scene()` scanning the view layer. Target: 4,000 objects in under 1.5 s with byte-identical output.
+- [x] #46 jbeam expressions can hang: cap total `random()` candidates (e.g. 256), use a set for seen values, catch `RecursionError` in `eval_mesh_expr()`; same depth guard in the lenient JSON parser.
+- [x] #34 Bone-parented objects dropped on `.dae` import: after armatures are built, walk non-JOINT child nodes under joints and create them with `parent_type = "BONE"`. The largest of the five; if it turns into more than a contained change, ship the other four as 1.5.4 and move #34 to the first PR after the split.
 - [ ] Release 1.5.4 with the 4.5.1 parity and accuracy suites green.
 
 ## 1.5.5 — Code split (moves only, no behaviour change)
