@@ -456,7 +456,7 @@ class GeometryMixin:
 
         # 7. Primitive lists (<triangles> or <polylist>)
         if n_polys > 0:
-            mat_count = len(ob.material_slots)
+            mat_count = max(len(ob.material_slots), len(mesh.materials))
             loop_mat = np.repeat(mat_indices, loop_totals)
             tex_indices = None if dedupe_attrs else np.arange(n_emit_loops, dtype=np.int32)
             if mat_count > 0:
@@ -571,7 +571,12 @@ class GeometryMixin:
         sel_vcounts = loop_totals[poly_mask]
         is_triangulated = bool((sel_vcounts == 3).all())
 
-        ma = ob.material_slots[material_index].material if len(ob.material_slots) > material_index else None
+        if len(ob.material_slots) > material_index:
+            ma = ob.material_slots[material_index].material
+        elif len(mesh.materials) > material_index:
+            ma = mesh.materials[material_index]
+        else:
+            ma = None
         prim_tag = "triangles" if is_triangulated else "polylist"
         attrs: list[tuple[str, str]] = []
         if ma is not None:

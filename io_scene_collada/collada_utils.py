@@ -474,8 +474,44 @@ def get_mesh_copy(
             mesh_copy = me.copy()
             ob_eval.to_mesh_clear()
 
-            # Realize Geometry Nodes instances into mesh_copy (#45)
+            # Realize Geometry Nodes instances into mesh_copy (#45, #64)
             if any(mod.type == "NODES" and mod.show_viewport for mod in ob.modifiers):
+                # Ensure object-linked host materials are present on mesh_copy before remapping
+                if hasattr(ob, "material_slots") and len(ob.material_slots) > 0:
+                    while len(mesh_copy.materials) < len(ob.material_slots):
+                        mesh_copy.materials.append(None)
+                    for slot_i, slot in enumerate(ob.material_slots):
+                        if slot.link == "OBJECT" and slot.material is not None:
+                            mesh_copy.materials[slot_i] = slot.material
+
+                mat_to_slot: dict[int, int] = {}
+                none_slot: int | None = None
+                for slot_i, ma in enumerate(mesh_copy.materials):
+                    if ma is None:
+                        if none_slot is None:
+                            none_slot = slot_i
+                    else:
+                        mat_to_slot.setdefault(ma.as_pointer(), slot_i)
+                host_has_faces = len(mesh_copy.polygons) > 0
+
+                def _ensure_mat_slot(ma) -> int:
+                    nonlocal none_slot
+                    if ma is None:
+                        if none_slot is None:
+                            none_slot = len(mesh_copy.materials)
+                            mesh_copy.materials.append(None)
+                        return none_slot
+                    ptr = ma.as_pointer()
+                    idx = mat_to_slot.get(ptr)
+                    if idx is None:
+                        if len(mesh_copy.materials) == 0 and host_has_faces:
+                            none_slot = 0
+                            mesh_copy.materials.append(None)
+                        idx = len(mesh_copy.materials)
+                        mesh_copy.materials.append(ma)
+                        mat_to_slot[ptr] = idx
+                    return idx
+
                 inv_parent = ob_eval.matrix_world.inverted_safe()
                 inst_bm = None
                 inst_count = 0
@@ -493,6 +529,28 @@ def get_mesh_copy(
                             inst_bm = bmesh.new()
                             if len(mesh_copy.vertices) > 0:
                                 inst_bm.from_mesh(mesh_copy)
+
+                        inst_mats = list(inst_me.materials)
+                        if hasattr(inst_ob, "material_slots") and len(inst_ob.material_slots) >= len(inst_mats):
+                            inst_mats = [
+                                (
+                                    inst_ob.material_slots[i].material
+                                    if inst_ob.material_slots[i].link == "OBJECT"
+                                    else (
+                                        inst_mats[i]
+                                        if i < len(inst_mats)
+                                        else inst_ob.material_slots[i].material
+                                    )
+                                )
+                                for i in range(len(inst_ob.material_slots))
+                            ]
+                        slot_remap = {src_i: _ensure_mat_slot(ma) for src_i, ma in enumerate(inst_mats)}
+                        default_slot = (
+                            slot_remap[0]
+                            if 0 in slot_remap
+                            else (None if len(mesh_copy.materials) == 0 else _ensure_mat_slot(None))
+                        )
+
                         rel_mat = inv_parent @ inst.matrix_world
                         prev_v_count = len(inst_bm.verts)
                         prev_f_count = len(inst_bm.faces)
@@ -503,9 +561,16 @@ def get_mesh_copy(
                             matrix=rel_mat,
                             verts=inst_bm.verts[prev_v_count:],
                         )
+                        inst_bm.faces.ensure_lookup_table()
+                        new_faces = inst_bm.faces[prev_f_count:]
                         if rel_mat.determinant() < 0.0:
-                            inst_bm.faces.ensure_lookup_table()
-                            bmesh.ops.reverse_faces(inst_bm, faces=inst_bm.faces[prev_f_count:])
+                            bmesh.ops.reverse_faces(inst_bm, faces=new_faces)
+                        if slot_remap or default_slot is not None:
+                            for f in new_faces:
+                                dst = slot_remap.get(f.material_index)
+                                if dst is None:
+                                    dst = default_slot if default_slot is not None else 0
+                                f.material_index = dst
                         inst_count += 1
                     finally:
                         inst_ob.to_mesh_clear()
@@ -564,6 +629,8 @@ def get_mesh_copy(
                     keep_attr = mesh_copy.attributes.new(KEEP_NORMALS_ATTR, "FLOAT_VECTOR", "CORNER")
                     keep_attr.data.foreach_set("vector", cn)
 
+            saved_render_col = getattr(mesh_copy.color_attributes, "render_color_index", -1)
+            saved_active_col = getattr(mesh_copy.color_attributes, "active_color_index", -1)
             bm = bmesh.new()
             bm.from_mesh(mesh_copy)
             bm.normal_update()
@@ -577,6 +644,11 @@ def get_mesh_copy(
                 )
             bm.to_mesh(mesh_copy)
             bm.free()
+            n_ca = len(mesh_copy.color_attributes)
+            if 0 <= saved_render_col < n_ca:
+                mesh_copy.color_attributes.render_color_index = saved_render_col
+            if 0 <= saved_active_col < n_ca:
+                mesh_copy.color_attributes.active_color_index = saved_active_col
 
     return mesh_copy, True
 

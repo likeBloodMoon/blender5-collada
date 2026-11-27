@@ -24,70 +24,8 @@ jobs:
           ruff check io_scene_collada
           mypy --strict io_scene_collada/cdae/msgpack_lite.py io_scene_collada/cdae/reader.py
 
-  build-native-linux:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build and fuzz-test native fastfmt (linux-x64, 10M floats)
-        run: |
-          mkdir -p io_scene_collada/_native
-          g++ -O3 -std=c++17 -shared -fPIC -pthread native/fastfmt.cpp -o io_scene_collada/_native/libfastfmt.so
-          python3 -m pip install --quiet numpy
-          python3 tests/smoke_fastfmt.py
-          python3 tests/fuzz_fastfmt.py
-      - name: Upload linux-x64 native binary
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-linux-x64
-          path: io_scene_collada/_native/libfastfmt.so
-
-  build-native-windows:
-    runs-on: windows-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Setup MSVC
-        uses: ilammy/msvc-dev-cmd@0b201ec74fa43914dc39ae48a89fd1d8cb592756 # v1
-      - name: Build native fastfmt (windows-x64)
-        shell: cmd
-        run: |
-          mkdir io_scene_collada\_native
-          cl /O2 /std:c++17 /LD /EHsc native\fastfmt.cpp /Fe:io_scene_collada\_native\fastfmt.dll
-      - name: Smoke-test native fastfmt (windows-x64)
-        run: |
-          python -m pip install --quiet numpy
-          python tests/smoke_fastfmt.py
-      - name: Upload windows-x64 native binary
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-windows-x64
-          path: io_scene_collada/_native/fastfmt.dll
-
-  build-native-macos:
-    runs-on: macos-latest
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - name: Build and smoke-test native fastfmt (macos-arm64 and macos-x64)
-        run: |
-          mkdir -p out/macos-arm64 out/macos-x64 io_scene_collada/_native
-          clang++ -O3 -std=c++17 -arch arm64 -shared -fPIC native/fastfmt.cpp -o out/macos-arm64/libfastfmt.dylib
-          clang++ -O3 -std=c++17 -arch x86_64 -shared -fPIC native/fastfmt.cpp -o out/macos-x64/libfastfmt.dylib
-          cp out/macos-arm64/libfastfmt.dylib io_scene_collada/_native/libfastfmt.dylib
-          python3 -m venv /tmp/smoke_venv
-          /tmp/smoke_venv/bin/pip install --quiet numpy
-          /tmp/smoke_venv/bin/python tests/smoke_fastfmt.py
-      - name: Upload macos-arm64 native binary
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-macos-arm64
-          path: out/macos-arm64/libfastfmt.dylib
-      - name: Upload macos-x64 native binary
-        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        with:
-          name: native-macos-x64
-          path: out/macos-x64/libfastfmt.dylib
-
   test-parity:
-    needs: [lint, build-native-linux]
+    needs: [lint]
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -101,12 +39,6 @@ jobs:
             blender_sha256: "dacb8264197a3f7fda6001285a5a506fc97ee943881261c2c3bd63c882f22e05"
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download linux-x64 native binary
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          name: native-linux-x64
-          path: io_scene_collada/_native
 
       - name: Install headless Blender runtime libraries
         run: |
@@ -142,22 +74,17 @@ jobs:
           ZIP_FILE=$(ls dist/collada_io-*.zip | head -n 1)
           "$BLENDER_5X" --command extension install-file -r user_default -e "$ZIP_FILE"
 
-      - name: Run Core & Deep Parity Suites (COLLADA_NATIVE=1)
-        env:
-          COLLADA_NATIVE: "1"
+      - name: Run Core & Deep Parity Suites
         run: |
           python3 tests/run_parity_tests.py
           python3 tests/run_deep_verification.py
-          mkdir -p tests/_work_native
-          cp tests/_work/*_53.dae tests/_work_native/
 
       - name: Run Malformed, Fuzz (N=200), Archive, and BeamNG .cdae Synthetic Tests
         run: |
           export BLENDER_5X=".tools/blender-${{ matrix.blender_ver }}-linux-x64/blender"
           python3 -m pip install --quiet numpy
           python3 tests/test_malformed.py
-          COLLADA_NATIVE=1 FUZZ_ITERS=200 python3 tests/fuzz_import.py
-          COLLADA_NATIVE=0 FUZZ_ITERS=200 python3 tests/fuzz_import.py
+          FUZZ_ITERS=200 python3 tests/fuzz_import.py
           python3 tests/test_archives.py
           python3 tests/test_cdae_import.py
           python3 tests/test_cdae_export.py
@@ -183,6 +110,7 @@ jobs:
           python3 tests/test_cdae_collection_exporter.py
           python3 tests/test_include_all_actions.py
           python3 tests/test_geonodes_instances.py
+          python3 tests/test_v158_fixes.py
           python3 tests/test_beamng_parse.py
           python3 tests/test_beamng_resolve.py
           python3 tests/test_beamng_materials_51.py
@@ -190,39 +118,13 @@ jobs:
           python3 tests/test_beamng_glowmap.py
           python3 tests/test_jbeam_expr_limits.py
 
-      - name: Verify byte-identical output with COLLADA_NATIVE=0 fallback
-        env:
-          COLLADA_NATIVE: "0"
-          REUSE_BLENDS: "1"
-        run: |
-          python3 tests/run_parity_tests.py
-          python3 -c "
-          import glob, os, re, sys
-          for p in sorted(glob.glob('tests/_work_native/*_53.dae')):
-              other = os.path.join('tests/_work', os.path.basename(p))
-              b1 = open(p, 'rb').read()
-              b2 = open(other, 'rb').read()
-              n1 = re.sub(rb'<(created|modified)>.*?</\1>', b'', b1)
-              n2 = re.sub(rb'<(created|modified)>.*?</\1>', b'', b2)
-              if n1 != n2:
-                  print(f'NATIVE vs FALLBACK DIFF in {os.path.basename(p)}')
-                  sys.exit(1)
-          print('ALL 19 EXPORTS BYTE-IDENTICAL BETWEEN NATIVE=1 AND NATIVE=0')
-          "
-
   package-and-release:
-    needs: [build-native-linux, build-native-windows, build-native-macos, test-parity]
+    needs: [test-parity]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-
-      - name: Download all available native binaries
-        uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
-        with:
-          pattern: native-*
-          path: native_bins
 
       - name: Install headless Blender runtime libraries
         run: |
@@ -246,35 +148,12 @@ jobs:
           tar -xJf "/tmp/blender_dl/blender-5.3.0-linux-x64.tar.xz" -C .tools
           rm -rf /tmp/blender_dl
 
-      - name: Build pure-Python and per-platform accelerated extension zips
+      - name: Build pure-Python universal extension zip
         run: |
           BLENDER=".tools/blender-5.3.0-linux-x64/blender"
-          VERSION=$(grep '^version' io_scene_collada/blender_manifest.toml | sed -E 's/.*"([^"]+)".*/\1/')
           mkdir -p dist
-
-          # 1. Pure-Python universal zip (works on every platform, no native binary)
-          rm -rf io_scene_collada/_native
           "$BLENDER" --command extension validate io_scene_collada
           "$BLENDER" --command extension build --source-dir io_scene_collada --output-dir dist
-          mv "dist/collada_io-${VERSION}.zip" "dist/collada_io-${VERSION}-pure-python.zip"
-
-          # 2. Per-platform native-accelerated zips for every built platform
-          cp io_scene_collada/blender_manifest.toml /tmp/manifest_orig.toml
-          for plat in linux-x64 windows-x64 macos-arm64 macos-x64; do
-            if [ ! -d "native_bins/native-${plat}" ]; then
-              echo "Skipping ${plat} (native binary not built)"
-              continue
-            fi
-            rm -rf io_scene_collada/_native
-            mkdir -p io_scene_collada/_native
-            cp native_bins/native-${plat}/* io_scene_collada/_native/
-            cp /tmp/manifest_orig.toml io_scene_collada/blender_manifest.toml
-            sed -i "s|^\[permissions\]|platforms = [\"${plat}\"]\n\n[permissions]|" io_scene_collada/blender_manifest.toml
-            "$BLENDER" --command extension validate io_scene_collada
-            "$BLENDER" --command extension build --source-dir io_scene_collada --output-dir dist --split-platforms
-          done
-          cp /tmp/manifest_orig.toml io_scene_collada/blender_manifest.toml
-          rm -rf io_scene_collada/_native
           (cd dist && sha256sum collada_io-*.zip > SHA256SUMS.txt)
           cat dist/SHA256SUMS.txt
           ls -lh dist/

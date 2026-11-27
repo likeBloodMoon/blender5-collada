@@ -431,26 +431,23 @@ for dae_path in dae_paths:
 '''
 
 
-def _run_batch(runner: list[str], worker_path: str, dae_paths: list[str], native: int) -> subprocess.CompletedProcess:
-    env = os.environ.copy()
-    env["COLLADA_NATIVE"] = str(native)
+def _run_batch(runner: list[str], worker_path: str, dae_paths: list[str]) -> subprocess.CompletedProcess:
     if runner[0] == sys.executable:
         cmd = [runner[0], worker_path, REPO_ROOT, *dae_paths]
     else:
         cmd = [*runner, worker_path, "--", REPO_ROOT, *dae_paths]
-    return subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=120)
+    return subprocess.run(cmd, capture_output=True, text=True, timeout=120)
 
 
 def main() -> int:
     n_iters = int(os.environ.get("FUZZ_ITERS", "200"))
     seed = int(os.environ.get("FUZZ_SEED", "1337"))
-    native = int(os.environ.get("COLLADA_NATIVE", "1"))
     batch_size = 25
 
     runner = _find_runner()
     corpus = _load_seed_corpus()
     rng = random.Random(seed)
-    print(f"Fuzzing {n_iters} mutated .dae files (seed={seed}, corpus={len(corpus)}, COLLADA_NATIVE={native})", flush=True)
+    print(f"Fuzzing {n_iters} mutated .dae files (seed={seed}, corpus={len(corpus)})", flush=True)
 
     workdir = tempfile.mkdtemp(prefix="collada_fuzz_")
     try:
@@ -470,11 +467,11 @@ def main() -> int:
         failures: list[str] = []
         for start in range(0, len(dae_paths), batch_size):
             batch = dae_paths[start : start + batch_size]
-            proc = _run_batch(runner, worker_path, batch, native)
+            proc = _run_batch(runner, worker_path, batch)
             if proc.returncode != 0 or "Traceback (most recent call last)" in proc.stderr:
                 # Pinpoint exact failing case(s) in this batch
                 for p in batch:
-                    single = _run_batch(runner, worker_path, [p], native)
+                    single = _run_batch(runner, worker_path, [p])
                     if single.returncode != 0 or "Traceback (most recent call last)" in single.stderr:
                         failures.append(
                             f"FAIL {os.path.basename(p)} (rc={single.returncode}):\n"

@@ -134,26 +134,6 @@ imp_cdae = CdaeImporter(bpy.context, CdaeImportSettings(filepath=cdae_p))
 assert imp_cdae.import_document()
 assert any("Imported into 'HiddenColl', which is excluded/hidden" in w for w in imp_cdae.warnings), imp_cdae.warnings
 
-# Test #9: restart-after-update version check & manifest tagline
-assert io_scene_collada.__version__ != "", "Expected __version__ from blender_manifest.toml"
-
-
-class _DummyPrefs:
-    def __init__(self, v=""):
-        self.last_registered_version = v
-
-
-p_fresh = _DummyPrefs("")
-assert io_scene_collada._check_version_update(p_fresh, io_scene_collada.__version__) is None
-assert p_fresh.last_registered_version == io_scene_collada.__version__
-# Same version again -> no notice
-assert io_scene_collada._check_version_update(p_fresh, io_scene_collada.__version__) is None
-# Upgrade from older version -> one-time restart notice
-p_old = _DummyPrefs("1.5.0")
-notice = io_scene_collada._check_version_update(p_old, io_scene_collada.__version__)
-assert notice is not None and "restart Blender to finish" in notice, notice
-assert p_old.last_registered_version == io_scene_collada.__version__
-
 with open(out_json, "w", encoding="utf-8") as fh:
     json.dump({"ok": True}, fh)
 '''

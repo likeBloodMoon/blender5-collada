@@ -386,8 +386,19 @@ class SceneMixin:
         self.sw.append_values((fmt_f32(loc.x), fmt_f32(loc.y), fmt_f32(loc.z)))
         self.sw.close_element()
 
+    def _get_export_object_matrix(self, ob: Object) -> Matrix:
+        """Return ob's transform relative to its nearest exported ancestor, or world space if root (#66)."""
+        par = ob.parent
+        if par is None or par.as_pointer() in self.export_set_ptrs:
+            return _get_object_local_matrix(ob)
+        while par is not None:
+            if par.as_pointer() in self.export_set_ptrs:
+                return par.matrix_world.inverted_safe() @ ob.matrix_world
+            par = par.parent
+        return ob.matrix_world.copy()
+
     def _write_node_transform_ob(self, ob: Object) -> None:
-        f_obmat = _get_object_local_matrix(ob)
+        f_obmat = self._get_export_object_matrix(ob)
         if self.settings.apply_global_orientation:
             f_obmat = bc_apply_global_transform_mat(f_obmat, self.settings.global_transform)
         else:
@@ -416,6 +427,13 @@ class SceneMixin:
 
     def _write_material_bindings(self, ob: Object) -> None:
         mats = [slot.material for slot in ob.material_slots if slot.material is not None]
+        extra = getattr(self, "_extra_ob_materials", {}).get(ob.as_pointer())
+        if extra:
+            seen_ptrs = {m.as_pointer() for m in mats}
+            for ma in extra:
+                if ma.as_pointer() not in seen_ptrs:
+                    seen_ptrs.add(ma.as_pointer())
+                    mats.append(ma)
         if not mats:
             return
         mesh = ob.data

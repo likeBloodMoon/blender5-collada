@@ -2,8 +2,7 @@
 
 Generates small malformed .dae files and runs each import in an isolated subprocess
 so that any segfault / Blender crash is caught as a test failure. For every imported
-mesh, runs bmesh.from_mesh() and asserts me.validate() == False. Runs all cases with
-both COLLADA_NATIVE=1 and COLLADA_NATIVE=0.
+mesh, runs bmesh.from_mesh() and asserts me.validate() == False.
 
 Usage:
     python tests/test_malformed.py
@@ -156,23 +155,21 @@ with open(out_json, "w", encoding="utf-8") as f:
 '''
 
 
-def _run_case(runner: list[str], worker_path: str, dae_path: str, native: int) -> dict:
-    out_json = dae_path + f".native{native}.json"
-    env = os.environ.copy()
-    env["COLLADA_NATIVE"] = str(native)
+def _run_case(runner: list[str], worker_path: str, dae_path: str) -> dict:
+    out_json = dae_path + ".json"
     if runner[0] == sys.executable:
         cmd = [runner[0], worker_path, REPO_ROOT, dae_path, out_json]
     else:
         cmd = [*runner, worker_path, "--", REPO_ROOT, dae_path, out_json]
-    proc = subprocess.run(cmd, env=env, capture_output=True, text=True, timeout=60)
+    proc = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
     if proc.returncode != 0:
         raise AssertionError(
-            f"Subprocess crashed (rc={proc.returncode}, COLLADA_NATIVE={native}) on {os.path.basename(dae_path)}\n"
+            f"Subprocess crashed (rc={proc.returncode}) on {os.path.basename(dae_path)}\n"
             f"STDOUT:\n{proc.stdout[-1500:]}\nSTDERR:\n{proc.stderr[-1500:]}"
         )
     if "Traceback (most recent call last)" in proc.stderr or "Traceback (most recent call last)" in proc.stdout:
         raise AssertionError(
-            f"Unexpected traceback (COLLADA_NATIVE={native}) on {os.path.basename(dae_path)}\n"
+            f"Unexpected traceback on {os.path.basename(dae_path)}\n"
             f"STDOUT:\n{proc.stdout[-1500:]}\nSTDERR:\n{proc.stderr[-1500:]}"
         )
     with open(out_json, "r", encoding="utf-8") as f:
@@ -181,7 +178,7 @@ def _run_case(runner: list[str], worker_path: str, dae_path: str, native: int) -
         if m["still_invalid"]:
             raise AssertionError(
                 f"Mesh '{m['name']}' still failed me.validate() after import "
-                f"(COLLADA_NATIVE={native}, file={os.path.basename(dae_path)})"
+                f"(file={os.path.basename(dae_path)})"
             )
     return data
 
@@ -845,75 +842,66 @@ def main() -> int:
             with open(dae_path, "w", encoding="utf-8") as f:
                 f.write(dae_xml)
 
-            results = {}
-            for native in (1, 0):
-                try:
-                    res = _run_case(runner, worker_path, dae_path, native)
-                    results[native] = res
-                    if "expect_ok" in exp and res["ok"] is not exp["expect_ok"]:
-                        raise AssertionError(
-                            f"{name} (native={native}): expected ok={exp['expect_ok']}, got {res['ok']} (errors={res['errors']})"
-                        )
-                    if "expect_error_substr" in exp:
-                        esub = exp["expect_error_substr"]
-                        if not any(esub in e for e in res["errors"]):
-                            raise AssertionError(
-                                f"{name} (native={native}): expected error containing {esub!r}, got {res['errors']}"
-                            )
-                    if exp.get("expect_warning") and not res["warnings"]:
-                        raise AssertionError(f"Expected warning for {name} (native={native}), got none")
-                    if "expect_warning_substr" in exp:
-                        sub = exp["expect_warning_substr"]
-                        if not any(sub in w for w in res["warnings"]):
-                            raise AssertionError(
-                                f"{name} (native={native}): expected warning containing {sub!r}, got {res['warnings']}"
-                            )
-                    if "expect_verts" in exp:
-                        got_v = res["meshes"][0]["num_verts"] if res["meshes"] else 0
-                        if got_v != exp["expect_verts"]:
-                            raise AssertionError(
-                                f"{name} (native={native}): expected {exp['expect_verts']} verts, got {got_v}"
-                            )
-                    if "expect_polys" in exp:
-                        got_p = res["meshes"][0]["num_polys"] if res["meshes"] else 0
-                        if got_p != exp["expect_polys"]:
-                            raise AssertionError(
-                                f"{name} (native={native}): expected {exp['expect_polys']} polys, got {got_p}"
-                            )
-                    if exp.get("expect_uvs"):
-                        if not res["meshes"] or not res["meshes"][0]["uv_layers"]:
-                            raise AssertionError(
-                                f"{name} (native={native}): UVs were lost! warnings={res['warnings']}"
-                            )
-                    if exp.get("expect_colors"):
-                        if not res["meshes"] or not res["meshes"][0]["color_attrs"]:
-                            raise AssertionError(
-                                f"{name} (native={native}): vertex colors were lost! warnings={res['warnings']}"
-                            )
-                    if exp.get("expect_custom_normals"):
-                        if not res["meshes"] or not res["meshes"][0]["has_custom_normals"]:
-                            raise AssertionError(
-                                f"{name} (native={native}): custom normals were lost! warnings={res['warnings']}"
-                            )
-                except Exception as exc:
-                    failures.append(f"FAIL {name} (native={native}): {exc}")
-
-            if exp.get("compare_native") and 1 in results and 0 in results:
-                if results[1]["meshes"] != results[0]["meshes"]:
-                    failures.append(
-                        f"FAIL {name}: native=1 and native=0 produced different meshes!\n"
-                        f"  native=1: {results[1]['meshes']}\n  native=0: {results[0]['meshes']}"
+            res = None
+            try:
+                res = _run_case(runner, worker_path, dae_path)
+                if "expect_ok" in exp and res["ok"] is not exp["expect_ok"]:
+                    raise AssertionError(
+                        f"{name}: expected ok={exp['expect_ok']}, got {res['ok']} (errors={res['errors']})"
                     )
+                if "expect_error_substr" in exp:
+                    esub = exp["expect_error_substr"]
+                    if not any(esub in e for e in res["errors"]):
+                        raise AssertionError(
+                            f"{name}: expected error containing {esub!r}, got {res['errors']}"
+                        )
+                if exp.get("expect_warning") and not res["warnings"]:
+                    raise AssertionError(f"Expected warning for {name}, got none")
+                if "expect_warning_substr" in exp:
+                    sub = exp["expect_warning_substr"]
+                    if not any(sub in w for w in res["warnings"]):
+                        raise AssertionError(
+                            f"{name}: expected warning containing {sub!r}, got {res['warnings']}"
+                        )
+                if "expect_verts" in exp:
+                    got_v = res["meshes"][0]["num_verts"] if res["meshes"] else 0
+                    if got_v != exp["expect_verts"]:
+                        raise AssertionError(
+                            f"{name}: expected {exp['expect_verts']} verts, got {got_v}"
+                        )
+                if "expect_polys" in exp:
+                    got_p = res["meshes"][0]["num_polys"] if res["meshes"] else 0
+                    if got_p != exp["expect_polys"]:
+                        raise AssertionError(
+                            f"{name}: expected {exp['expect_polys']} polys, got {got_p}"
+                        )
+                if exp.get("expect_uvs"):
+                    if not res["meshes"] or not res["meshes"][0]["uv_layers"]:
+                        raise AssertionError(
+                            f"{name}: UVs were lost! warnings={res['warnings']}"
+                        )
+                if exp.get("expect_colors"):
+                    if not res["meshes"] or not res["meshes"][0]["color_attrs"]:
+                        raise AssertionError(
+                            f"{name}: vertex colors were lost! warnings={res['warnings']}"
+                        )
+                if exp.get("expect_custom_normals"):
+                    if not res["meshes"] or not res["meshes"][0]["has_custom_normals"]:
+                        raise AssertionError(
+                            f"{name}: custom normals were lost! warnings={res['warnings']}"
+                        )
+            except Exception as exc:
+                failures.append(f"FAIL {name}: {exc}")
 
             if not any(f.startswith(f"FAIL {name}") for f in failures):
-                w_count = len(results.get(0, {}).get("warnings", []))
+                w_count = len((res or {}).get("warnings", []))
                 print(f"  PASS {name} (warnings={w_count})")
 
         if failures:
             print("\n".join(failures))
             return 1
         _run_exception_guard_tests(runner, workdir)
-        print(f"\nAll {len(cases)} malformed .dae test cases + exception guard passed (COLLADA_NATIVE=1 & 0)!")
+        print(f"\nAll {len(cases)} malformed .dae test cases + exception guard passed!")
         return 0
     finally:
         shutil.rmtree(workdir, ignore_errors=True)

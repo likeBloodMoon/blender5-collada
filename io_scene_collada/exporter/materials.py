@@ -34,19 +34,23 @@ class MaterialsMixin:
     def _iter_materials_in_export_set(self):
         seen: set[int] = set()
         for ob in self.export_set:
-            if not hasattr(ob, "material_slots"):
-                continue
-            for slot in ob.material_slots:
-                ma = slot.material
-                if ma is None:
-                    continue
+            if hasattr(ob, "material_slots"):
+                for slot in ob.material_slots:
+                    ma = slot.material
+                    if ma is None:
+                        continue
+                    ptr = ma.as_pointer()
+                    if ptr not in seen:
+                        seen.add(ptr)
+                        yield ma, ob
+            for ma in getattr(self, "_extra_ob_materials", {}).get(ob.as_pointer(), ()):
                 ptr = ma.as_pointer()
                 if ptr not in seen:
                     seen.add(ptr)
                     yield ma, ob
 
     def _export_effects(self) -> None:
-        has_any = any(
+        has_any = bool(getattr(self, "_extra_ob_materials", None)) or any(
             slot.material is not None
             for ob in self.scene.objects
             for slot in getattr(ob, "material_slots", ())

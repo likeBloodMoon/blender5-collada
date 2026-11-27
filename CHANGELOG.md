@@ -4,6 +4,17 @@ All notable changes to **Collada (DAE) Import/Export for Blender 5.0+** are docu
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [1.5.8] - 2026-11-27
+
+- Changed: Removed the local version-check / update-restart popup and the optional `fastfmt` native DLL loader (`_native_loader.py` and `native/fastfmt.cpp`) so the extension is 100% pure Python and meets `extensions.blender.org` guidelines
+- Fixed (#54): Importing a `.dae` mesh with more than 8 UV maps now falls back to `FLOAT2` `CORNER` attributes instead of crashing when `mesh.uv_layers.new()` returns `None` (fixes BeamNG `police_parts.dae` and 6 vanilla police configs)
+- Fixed (#53): **Include all Actions** no longer crashes when an object has `animation_data` with `action = None`
+- Fixed (#63): `.cdae` export now selects the render/active color attribute instead of hard-coding `color_attributes[0]`, converts `FLOAT_COLOR` to sRGB cleanly, and warns when extra UV maps (>2) or color attributes (>1) are skipped
+- Fixed (#64): Realized Geometry Nodes instances now preserve their own materials and face `material_index` mappings on both `.dae` and `.cdae` export
+- Fixed (#66): Exporting a selected child without its parent (`Selection Only`) now writes its world-space transform (or transform relative to its nearest exported ancestor) instead of its parent-local transform, for both static nodes and animations
+- Fixed (#59): Importing with no file selected (a folder path) now reports `"No file selected"` instead of failing in the XML parser
+- Fixed (#79): Updated the 8 regression tests from 1.5.7 to run under `--factory-startup` and register `io_scene_collada` directly from the checkout instead of testing an installed extension
+
 ## [1.5.7] - 2026-11-26
 
 - Changed: License changed from GPL-2.0-or-later to GPL-3.0-or-later, as extensions.blender.org requires; allowed by the 'or later' clause of the original Blender code. Torque3D-derived data stays MIT. Shortened extension tagline to "Collada (.dae) and BeamNG (.cdae) import and export".

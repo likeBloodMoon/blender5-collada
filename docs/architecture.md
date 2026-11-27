@@ -14,10 +14,9 @@ This document maps every module in `io_scene_collada/` to its responsibilities a
 
 | Module | Responsibilities | Blender 4.5.1 C++ origin |
 | --- | --- | --- |
-| `io_scene_collada/__init__.py` | Extension registration, Blender operators (`wm.collada_import`, `wm.collada_export`, `import_scene.beamng_cdae`, `export_scene.beamng_cdae`), FileHandler, Collection Exporter (`IO_FH_collada`), Preferences UI, update-restart notice | `collada.cpp`, `io_collada.cc` |
+| `io_scene_collada/__init__.py` | Extension registration, Blender operators (`wm.collada_import`, `wm.collada_export`, `import_scene.beamng_cdae`, `export_scene.beamng_cdae`), FileHandler, Collection Exporters (`IO_FH_collada`, `IO_FH_beamng_cdae`) | `collada.cpp`, `io_collada.cc` |
 | `io_scene_collada/collada_utils.py` | ID translation (`GlobalIdMap`), matrix/axis transforms, `build_export_set`, `flush_edit_mode_objects`, `get_mesh_copy` (modifier evaluation, Keep Normals, Keep Quads), Blender 5.0+ channelbag F-curve helpers, Principled BSDF socket helpers, `report_capped`, collection visibility checks | `collada_utils.cpp`, `collada_internal.cpp`, `BlenderContext.cpp` |
-| `io_scene_collada/xml_writer.py` | Streaming XML writer (`ColladaStreamWriter`) matching OpenCOLLADA formatting, float32/int32 array formatters with optional native `fastfmt` dispatch | OpenCOLLADA `COLLADASW::StreamWriter` |
-| `io_scene_collada/_native_loader.py` | Optional `ctypes` loader for the C++17 `fastfmt` shared library (`fastfmt.dll` / `libfastfmt.so` / `libfastfmt.dylib`), with silent fallback to pure Python / NumPy | *(new in blender5-collada)* |
+| `io_scene_collada/xml_writer.py` | Streaming XML writer (`ColladaStreamWriter`) matching OpenCOLLADA formatting and float32/int32 array formatters | OpenCOLLADA `COLLADASW::StreamWriter` |
 | `io_scene_collada/beamng_materials.py` | BeamNG `main.materials.json` lookup and `.png`/`.dds` texture fallback helpers | *(new in blender5-collada)* |
 
 ---

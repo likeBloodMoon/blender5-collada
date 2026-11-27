@@ -16,8 +16,6 @@ import xml.parsers.expat as _expat
 
 import numpy as np
 
-from .._native_loader import native_parse_f32, native_parse_i32
-
 _DTD_CHUNK_BYTES = 65536
 
 
@@ -131,9 +129,6 @@ def _parse_f32_np(text: str | None, warnings: list[str] | None = None, label: st
 
     if not text or not text.strip():
         return np.empty(0, dtype=np.float32)
-    res = native_parse_f32(text)
-    if res is not None:
-        return res
     try:
         return _fromstring_f32_strict(text)
     except ValueError:
@@ -156,9 +151,6 @@ def _parse_i32_np(text: str | None, warnings: list[str] | None = None, label: st
 
     if not text or not text.strip():
         return np.empty(0, dtype=np.int32)
-    res = native_parse_i32(text)
-    if res is not None:
-        return res
     try:
         return _fromstring_i32_strict(text)
     except ValueError:

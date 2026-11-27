@@ -36,9 +36,11 @@ import math
 import os
 import sys
 import bpy
-import addon_utils
 
-tmpdir = sys.argv[-1]
+repo_root, tmpdir = sys.argv[-2], sys.argv[-1]
+sys.path.insert(0, repo_root)
+import io_scene_collada
+io_scene_collada.register()
 
 # Build an armature and a cube skinned to "Bone"
 bpy.ops.wm.read_homefile(use_empty=True)
@@ -77,7 +79,7 @@ body.evaluated_get(dg).to_mesh_clear()
 assert posed_max_x > rest_max_x + 3.0, f"expected posed mesh moved, got {posed_max_x} vs {rest_max_x}"
 
 # Export via CdaeExporter directly to inspect warnings AND verify operator behavior
-from bl_ext.user_default.collada_io.cdae.exporter import CdaeExporter, CdaeExportSettings
+from io_scene_collada.cdae.exporter import CdaeExporter, CdaeExportSettings
 
 cdae_path = os.path.join(tmpdir, "skinned.cdae")
 exporter = CdaeExporter(bpy.context, CdaeExportSettings(filepath=cdae_path))
@@ -112,7 +114,7 @@ def main() -> int:
         with open(worker_py, "w", encoding="utf-8") as fh:
             fh.write(WORKER)
         proc = subprocess.run(
-            [blender, "-b", "--python-exit-code", "1", "--python", worker_py, "--", tmpdir],
+            [blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", worker_py, "--", REPO_ROOT, tmpdir],
             capture_output=True,
             text=True,
         )

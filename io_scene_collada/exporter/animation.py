@@ -25,7 +25,6 @@ from ..collada_utils import (
     matrix_to_dae_flat,
 )
 from ..xml_writer import encode_xml, fmt_f32, fmt_float, fmt_int
-from .rig import _get_object_local_matrix
 
 if TYPE_CHECKING:
     from bpy.types import Bone, Object
@@ -207,7 +206,7 @@ class AnimationMixin:
                     ptr = ob.as_pointer()
                     if not (is_scene_sample or frame_idx in obj_keyframes[ptr]):
                         continue
-                    obj_mat_samples[ptr][frame_idx] = _get_object_local_matrix(ob)
+                    obj_mat_samples[ptr][frame_idx] = self._get_export_object_matrix(ob)
                     if ob.type == "ARMATURE" and ob.pose:
                         bmap = bone_mat_samples[ptr]
                         for pchan in ob.pose.bones:
@@ -271,7 +270,7 @@ class AnimationMixin:
                     job_bone_mats: dict[str, dict[int, Matrix]] = {}
                     for frame_idx in job_frames:
                         self.scene.frame_set(frame_idx)
-                        job_obj_mats[frame_idx] = _get_object_local_matrix(ob)
+                        job_obj_mats[frame_idx] = self._get_export_object_matrix(ob)
                         if ob.type == "ARMATURE" and ob.pose:
                             for pchan in ob.pose.bones:
                                 bone = pchan.bone
@@ -303,11 +302,17 @@ class AnimationMixin:
                     self.sw.close_element()
                 finally:
                     if had_adt:
-                        ob.animation_data.action = orig_act
-                        if hasattr(ob.animation_data, "action_slot"):
-                            ob.animation_data.action_slot = orig_slot
+                        try:
+                            ob.animation_data.action = orig_act
+                            if orig_act is not None and hasattr(ob.animation_data, "action_slot"):
+                                ob.animation_data.action_slot = orig_slot
+                        except Exception:
+                            pass
                     else:
-                        ob.animation_data_clear()
+                        try:
+                            ob.animation_data_clear()
+                        except Exception:
+                            pass
 
             self.sw.close_element()  # library_animations
 
@@ -450,11 +455,14 @@ class AnimationMixin:
                 (fcu.data_path, fcu.array_index): fcu
                 for fcu in get_assigned_fcurves(ob.animation_data)
             }
+            has_unexported_parent = (
+                ob.parent is not None and ob.parent.as_pointer() not in self.export_set_ptrs
+            )
             for channel_type in ("location", "rotation_euler", "scale"):
                 axes = _AXIS_FROM_TYPE[channel_type]
                 for idx, axis in enumerate(axes):
                     fcu = fcurve_lookup.get((channel_type, idx))
-                    if self.settings.export_animation_type == "keys" and fcu is not None:
+                    if self.settings.export_animation_type == "keys" and fcu is not None and not has_unexported_parent:
                         c_frames = [kp.co.x for kp in fcu.keyframe_points]
                         c_vals = [kp.co.y for kp in fcu.keyframe_points]
                     else:

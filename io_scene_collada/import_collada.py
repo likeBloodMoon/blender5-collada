@@ -129,6 +129,12 @@ class DocumentImporter(ArchiveMixin, MaterialsMixin, MeshMixin, RigMixin, Animat
         self.joint_parent_elem_by_id: dict[str, ET.Element | None] = {}
 
     def import_document(self) -> bool:
+        if not self.settings.filepath or not os.path.exists(self.settings.filepath):
+            self.errors.append("No filepath given or file does not exist")
+            return False
+        if os.path.isdir(self.settings.filepath):
+            self.errors.append("No file selected")
+            return False
         ext = os.path.splitext(self.settings.filepath)[1].lower()
         if ext in (".zae", ".kmz", ".zip"):
             self._archive_basename = os.path.basename(self.settings.filepath)

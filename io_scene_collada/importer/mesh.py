@@ -841,7 +841,12 @@ class MeshMixin:
                         uv_arr = np.where(np.isfinite(uv_arr), uv_arr, np.float32(0.0))
                     uv_name = f"UV{uv_idx}" if (rename_uvs and uv_idx < 2) else u_id
                     uv_layer = me.uv_layers.new(name=uv_name)
-                    uv_layer.data.foreach_set("uv", uv_arr.ravel())
+                    if uv_layer is not None:
+                        uv_layer.data.foreach_set("uv", uv_arr.ravel())
+                    else:
+                        uv_attr = me.attributes.new(name=uv_name, type="FLOAT2", domain="CORNER")
+                        if uv_attr is not None:
+                            uv_attr.data.foreach_set("vector", uv_arr.ravel())
 
             # Color Attributes (foreach_set): use FLOAT_COLOR (sRGB -> linear) when HDR values > 1.0 are present
             for cn in col_set_order:

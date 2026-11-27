@@ -36,38 +36,16 @@ This extension is a full port of Blender 4.5.1's Collada I/O to Python, with the
 
 ## Install
 
-1. Download the zip for your system from [Releases](https://github.com/likeBloodMoon/blender5-collada/releases/latest):
-
-   | System | File |
-   | --- | --- |
-   | Windows | `collada_io-1.5.7-windows_x64.zip` |
-   | Linux | `collada_io-1.5.7-linux_x64.zip` |
-   | macOS (Apple Silicon) | `collada_io-1.5.7-macos_arm64.zip` |
-   | macOS (Intel) | `collada_io-1.5.7-macos_x64.zip` |
-   | Any, no compiled code | `collada_io-1.5.7-pure-python.zip` |
-
+1. Download `collada_io-1.5.8.zip` from [Releases](https://github.com/likeBloodMoon/blender5-collada/releases/latest) (pure Python — works on Windows, Linux, and macOS).
 2. Drag the `.zip` into Blender, or go to **Edit → Preferences → Get Extensions → ⌄ → Install from Disk…**
 3. **Restart Blender after updating.** Blender keeps the old add-on code loaded until it restarts.
 
 ```bash
 # or from the command line
-blender --command extension install-file -r user_default -e collada_io-1.5.7-windows_x64.zip
+blender --command extension install-file -r user_default -e collada_io-1.5.8.zip
 ```
 
 Every release has a `SHA256SUMS.txt` to verify the download.
-
-<details>
-<summary><b>What is the optional native file (<code>fastfmt.dll</code> / <code>.so</code> / <code>.dylib</code>)?</b></summary>
-
-<br>
-
-The platform zips include a small C++17 helper that converts large number arrays to and from text, which roughly halves import and export time on big meshes.
-
-The source is the ~125 lines in [`native/fastfmt.cpp`](native/fastfmt.cpp). It converts numbers in memory and does nothing else: no file access, no network, no system calls. GitHub Actions compiles every binary from this repository, with SHA-pinned actions, and the checksums are published with each release.
-
-You don't need it. The pure-Python zip has no compiled code and writes byte-identical files, and `COLLADA_NATIVE=0` switches the helper off in any build.
-
-</details>
 
 ## Features
 
@@ -147,8 +125,6 @@ Exporting thousands of separate objects got a lot faster in 1.5.4:
 | 4,000 | 15.6 s | 1.2-1.4 s |
 | 5,000 | 25.1 s | 1.7-2.0 s |
 
-Without the native helper (pure-Python zip, or `COLLADA_NATIVE=0`) big meshes take about twice as long, and the files are byte-identical.
-
 ### Accuracy
 
 Each test scene is built in Blender, exported, imported again and compared corner by corner (64 round-trip cases; a core set also runs in CI):
@@ -163,7 +139,7 @@ Each test scene is built in Blender, exported, imported again and compared corne
 | Cameras and lights | ✓ |
 | `.cdae` normals vs the game's own files | 0.0000° median and p99 across 1,098,870 corners |
 
-On every push, the legacy layout (`deduplicate_attributes=False`) is checked against Blender 4.5.1 itself: 19 export configurations with the same XML structure and float values within 1e-5, with and without the native helper.
+On every push, the legacy layout (`deduplicate_attributes=False`) is checked against Blender 4.5.1 itself: 19 export configurations with the same XML structure and float values within 1e-5.
 
 ### Robustness
 

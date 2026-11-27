@@ -36,7 +36,10 @@ import os
 import sys
 import bpy
 
-tmpdir = sys.argv[-1]
+repo_root, tmpdir = sys.argv[-2], sys.argv[-1]
+sys.path.insert(0, repo_root)
+import io_scene_collada
+io_scene_collada.register()
 
 # --- Case 1 (#40): Shape key with Subsurf modifier (changes vertex count) ---
 bpy.ops.wm.read_homefile(use_empty=True)
@@ -174,7 +177,7 @@ def main() -> int:
         with open(worker_py, "w", encoding="utf-8") as fh:
             fh.write(WORKER)
         proc = subprocess.run(
-            [blender, "-b", "--python-exit-code", "1", "--python", worker_py, "--", tmpdir],
+            [blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", worker_py, "--", REPO_ROOT, tmpdir],
             capture_output=True,
             text=True,
         )

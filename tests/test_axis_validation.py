@@ -36,7 +36,10 @@ import os
 import sys
 import bpy
 
-tmpdir = sys.argv[-1]
+repo_root, tmpdir = sys.argv[-2], sys.argv[-1]
+sys.path.insert(0, repo_root)
+import io_scene_collada
+io_scene_collada.register()
 
 bpy.ops.wm.read_homefile(use_empty=True)
 bpy.ops.mesh.primitive_cube_add()
@@ -81,7 +84,7 @@ assert res == {"FINISHED"}, f"#48 failed: expected FINISHED for -Z/Y, got {res}"
 assert os.path.exists(dae_ok)
 
 # 4. UI axis-swap helper swaps collinear axis to a perpendicular axis
-from bl_ext.user_default.collada_io import _pick_swapped_axis
+from io_scene_collada import _pick_swapped_axis
 
 swapped_up = _pick_swapped_axis("Z", "Z", "Y")
 assert swapped_up.lstrip("-") != "Z", f"expected non-Z swapped axis, got {swapped_up}"
@@ -101,7 +104,7 @@ def main() -> int:
         with open(worker_py, "w", encoding="utf-8") as fh:
             fh.write(WORKER)
         proc = subprocess.run(
-            [blender, "-b", "--python-exit-code", "1", "--python", worker_py, "--", tmpdir],
+            [blender, "-b", "--factory-startup", "--python-exit-code", "1", "--python", worker_py, "--", REPO_ROOT, tmpdir],
             capture_output=True,
             text=True,
         )

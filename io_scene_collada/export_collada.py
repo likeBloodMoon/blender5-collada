@@ -92,6 +92,56 @@ class DocumentExporter(GeometryMixin, MaterialsMixin, RigMixin, AnimationMixin, 
         self.marked_ptrs: set[int] = set()
         self._temp_meshes: list[bpy.types.Mesh] = []
         self._children_by_parent_ptr: dict[int, list[Object]] = {}
+        self._extra_ob_materials: dict[int, list[bpy.types.Material]] = {}
+
+    def _collect_realized_gn_materials(self) -> None:
+        """Collect materials used by Geometry Nodes instances so .dae effects/materials/bindings include them (#64)."""
+        self._extra_ob_materials.clear()
+        if not self.settings.apply_modifiers:
+            return
+        use_render = self.settings.export_mesh_type == "render"
+        gn_eval_to_ob: dict[int, Object] = {}
+        for ob in self.export_set:
+            if ob.type != "MESH":
+                continue
+            if any(
+                mod.type == "NODES" and (mod.show_render if use_render else mod.show_viewport)
+                for mod in ob.modifiers
+            ):
+                gn_eval_to_ob[ob.evaluated_get(self.depsgraph).as_pointer()] = ob
+        if not gn_eval_to_ob:
+            return
+
+        seen_by_ob: dict[int, set[int]] = {}
+        for ob in gn_eval_to_ob.values():
+            seen_by_ob[ob.as_pointer()] = {
+                slot.material.as_pointer() for slot in ob.material_slots if slot.material is not None
+            }
+
+        for inst in self.depsgraph.object_instances:
+            if not inst.is_instance or inst.parent is None:
+                continue
+            host_ob = gn_eval_to_ob.get(inst.parent.as_pointer())
+            if host_ob is None:
+                continue
+            inst_ob = inst.object
+            if inst_ob is None or inst_ob.type != "MESH":
+                continue
+            host_ptr = host_ob.as_pointer()
+            seen = seen_by_ob[host_ptr]
+            cand_mats: list[bpy.types.Material] = []
+            for slot in getattr(inst_ob, "material_slots", ()):
+                if slot.material is not None:
+                    cand_mats.append(slot.material)
+            if inst_ob.data is not None:
+                for ma in getattr(inst_ob.data, "materials", ()):
+                    if ma is not None:
+                        cand_mats.append(ma)
+            for ma in cand_mats:
+                mp = ma.as_pointer()
+                if mp not in seen:
+                    seen.add(mp)
+                    self._extra_ob_materials.setdefault(host_ptr, []).append(ma)
 
     def export_current_scene(self) -> int:
         # Match io_collada.cc option normalization
@@ -124,6 +174,7 @@ class DocumentExporter(GeometryMixin, MaterialsMixin, RigMixin, AnimationMixin, 
             par = ob.parent
             if par is not None:
                 self._children_by_parent_ptr.setdefault(par.as_pointer(), []).append(ob)
+        self._collect_realized_gn_materials()
 
         try:
             self.sw.start_document()

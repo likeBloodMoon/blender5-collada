@@ -168,8 +168,14 @@ def _build_gpu_mesh_data(
             slot_to_global[slot_i] = global_mat_indices[mname]
 
     # UV0 & UV1 (flip V back to Torque3D top-left convention: 1.0 - v)
-    has_uv0 = len(me.uv_layers) > 0
-    has_uv1 = len(me.uv_layers) > 1
+    n_uvs = len(me.uv_layers)
+    has_uv0 = n_uvs > 0
+    has_uv1 = n_uvs > 1
+    if n_uvs > 2 and warnings is not None:
+        label = mesh_name or me.name
+        warnings.append(
+            f"Mesh '{label}': .cdae supports at most 2 UV maps; skipped {n_uvs - 2} extra UV map(s)"
+        )
     uv0_loops = np.zeros((n_loops, 2), dtype=np.float32)
     uv1_loops: np.ndarray | None = None
     tangents_loops = np.zeros((n_loops, 4), dtype=np.float32)
@@ -211,21 +217,44 @@ def _build_gpu_mesh_data(
         uv1_loops = uv1_raw.reshape(n_loops, 2)
         uv1_loops[:, 1] = 1.0 - uv1_loops[:, 1]
 
-    # Vertex colors (sRGB uint8 bytes matching Blender BYTE_COLOR color_srgb)
+    # Vertex colors (sRGB uint8 bytes matching Blender BYTE_COLOR color_srgb) (#63)
     col_loops: np.ndarray | None = None
-    if len(me.color_attributes) > 0:
-        ca = me.color_attributes[0]
-        if ca.domain == "CORNER":
-            c_raw = np.empty(n_loops * 4, dtype=np.float32)
-            ca.data.foreach_get("color_srgb", c_raw)
-            col_loops = np.clip(np.round(c_raw.reshape(n_loops, 4) * 255.0), 0, 255).astype(np.uint8)
-        elif ca.domain == "POINT":
-            c_raw = np.empty(n_verts * 4, dtype=np.float32)
-            ca.data.foreach_get("color_srgb", c_raw)
-            c_u8 = np.clip(np.round(c_raw.reshape(n_verts, 4) * 255.0), 0, 255).astype(np.uint8)
-            lv = np.empty(n_loops, dtype=np.int32)
-            me.loops.foreach_get("vertex_index", lv)
-            col_loops = c_u8[lv]
+    n_cols = len(me.color_attributes)
+    if n_cols > 0:
+        render_idx = getattr(me.color_attributes, "render_color_index", -1)
+        if 0 <= render_idx < n_cols:
+            ca = me.color_attributes[render_idx]
+        else:
+            ca = getattr(me.color_attributes, "active_color", None) or me.color_attributes[0]
+        if n_cols > 1 and warnings is not None:
+            label = mesh_name or me.name
+            warnings.append(
+                f"Mesh '{label}': .cdae supports at most 1 color attribute; "
+                f"exported '{ca.name}' and skipped {n_cols - 1} other color attribute(s)"
+            )
+        if ca.domain in ("CORNER", "POINT") and ca.data_type in ("BYTE_COLOR", "FLOAT_COLOR"):
+            is_point = ca.domain == "POINT"
+            src_count = n_verts if is_point else n_loops
+            c_raw = np.empty(src_count * 4, dtype=np.float32)
+            if ca.data_type == "BYTE_COLOR":
+                ca.data.foreach_get("color_srgb", c_raw)
+                c_srgb = c_raw.reshape(src_count, 4)
+            else:
+                ca.data.foreach_get("color", c_raw)
+                c_srgb = c_raw.reshape(src_count, 4)
+                rgb = np.maximum(c_srgb[:, :3], np.float32(0.0))
+                c_srgb[:, :3] = np.where(
+                    rgb <= 0.0031308,
+                    rgb * 12.92,
+                    1.055 * np.power(rgb, 1.0 / 2.4) - 0.055,
+                ).astype(np.float32, copy=False)
+            c_u8 = np.clip(np.round(c_srgb * 255.0), 0, 255).astype(np.uint8)
+            if is_point:
+                lv = np.empty(n_loops, dtype=np.int32)
+                me.loops.foreach_get("vertex_index", lv)
+                col_loops = c_u8[lv]
+            else:
+                col_loops = c_u8
 
     # Gather per-triangle-corner arrays (length n_tris * 3)
     c_pos = co[tri_verts]

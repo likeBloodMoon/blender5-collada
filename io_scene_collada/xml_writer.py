@@ -17,8 +17,6 @@ import math
 import struct
 from collections.abc import Iterable, Sequence
 
-from ._native_loader import native_fmt_f32_array, native_fmt_i32_array
-
 
 def f32(val: float) -> float:
     """Round a Python float (64-bit) to IEEE 754 32-bit float precision."""
@@ -68,10 +66,6 @@ def _fmt_f32_sanitized(v: float) -> str:
 
 def fmt_f32_array(arr) -> str:
     """Format a 1D/ND numpy float32 array to space-separated OpenCOLLADA floats."""
-    res = native_fmt_f32_array(arr)
-    if res is not None:
-        return res
-
     import numpy as np
 
     a = np.asarray(arr, dtype=np.float32).ravel()
@@ -88,9 +82,6 @@ def fmt_f32_array(arr) -> str:
 
 def fmt_int_array(arr) -> str:
     """Format a 1D/ND numpy integer array to space-separated ints."""
-    res = native_fmt_i32_array(arr)
-    if res is not None:
-        return res
     return " ".join(map(str, arr.ravel().tolist()))
 
 
